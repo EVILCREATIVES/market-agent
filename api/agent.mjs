@@ -2,6 +2,7 @@ import { runMarketingAgent } from "../server/agent.mjs";
 import { createRunRecord } from "../server/agent.mjs";
 import { requireUser } from "../server/auth.mjs";
 import { appendRunForUser, enforceRunBudget } from "../server/db.mjs";
+import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 
 export const config = { maxDuration: 300 };
 
@@ -10,7 +11,8 @@ export default async function handler(req, res) {
   try {
     const { userId } = await requireUser(req);
     await enforceRunBudget(userId, req.body?.mode || "single");
-    const result = await runMarketingAgent(req.body);
+    const userApiEnv = await loadUserApiEnv(userId);
+    const result = await runMarketingAgent(req.body, userApiEnv);
     const run = createRunRecord(result, req.body?.action || "chat", req.body?.prompt || "", req.body?.projectId || "project-default");
     await appendRunForUser(userId, run);
     return res.status(200).json({ ...result, run });

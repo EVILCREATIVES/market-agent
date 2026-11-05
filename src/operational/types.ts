@@ -98,6 +98,24 @@ export interface HealthState {
   runtime: string;
 }
 
+export type ApiProvider = "openai" | "google" | "anthropic";
+
+export interface ApiCredentialConnection {
+  connected: boolean;
+  hint: string;
+  connectedAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface ApiCredentialStatus {
+  ready: boolean;
+  collaborationReady: boolean;
+  mediaReady: boolean;
+  videoReady: boolean;
+  connectedCount: number;
+  credentials: Record<ApiProvider, ApiCredentialConnection>;
+}
+
 export type MediaJobStatus = "awaiting_budget" | "approved" | "running" | "complete" | "failed" | "cancelled";
 
 export interface MediaJob {
@@ -126,6 +144,46 @@ export interface MediaBudgetSummary {
   monthlyCapCents: number;
   approvedThisMonthCents: number;
   actualThisMonthCents: number;
+}
+
+export interface ProjectAsset {
+  id: string;
+  projectId: string;
+  name: string;
+  sourceKind: "upload" | "link";
+  kind: "document" | "image" | "video" | "figma" | "link";
+  mimeType: string;
+  sizeBytes: number;
+  sourceUrl: string;
+  detail: string;
+  status: "analyzing" | "ready" | "failed";
+  tags: string[];
+  summary: string;
+  recommendation: "reuse" | "adapt" | "replace" | "archive" | "review";
+  rationale: string;
+  suggestedChanges: string[];
+  error: string;
+  downloadable: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AssetProposal {
+  id: string;
+  projectId: string;
+  kind: "pdf" | "deck";
+  title: string;
+  description: string;
+  rationale: string;
+  sourceAssetIds: string[];
+  status: "awaiting_approval" | "approved" | "running" | "complete" | "failed" | "cancelled";
+  estimatedCostCents: number;
+  approvedBudgetCents: number;
+  error: string;
+  downloadable: boolean;
+  approvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ConnectionStatus {

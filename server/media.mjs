@@ -29,7 +29,8 @@ export async function listMediaJobs(userId, projectId, env = process.env) {
   return {
     jobs,
     summary: await mediaBudgetSummary(userId, safeProjectId, env),
-    configured: Boolean(env.GOOGLE_GENERATIVE_AI_API_KEY),
+    configured: Boolean(env.GOOGLE_GENERATIVE_AI_API_KEY || env.OPENAI_API_KEY),
+    videoConfigured: Boolean(env.GOOGLE_GENERATIVE_AI_API_KEY),
   };
 }
 
@@ -41,6 +42,15 @@ export async function prepareMediaJob(userId, payload, env = process.env) {
   const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
   const recentRuns = Array.isArray(payload?.recentRuns) ? payload.recentRuns.slice(0, 3) : [];
   const direction = String(payload?.direction || "").trim().slice(0, 1500);
+  const sourceAssetId = String(payload?.sourceAssetId || "").trim().slice(0, 100);
+  if (sourceAssetId) {
+    const source = await getPool(env).query(
+      `SELECT id FROM market_agent_project_assets
+       WHERE id = $1 AND user_id = $2 AND project_id = $3 AND asset_kind = 'image' LIMIT 1`,
+      [sourceAssetId, userId, projectId],
+    );
+    if (!source.rows[0]) throw httpError(400, "The source image could not be used for this adaptation.");
+  }
   const prompt = buildMediaPrompt(kind, workspace, recentRuns, direction);
   const job = {
     id: randomUUID(),
@@ -52,23 +62,23 @@ export async function prepareMediaJob(userId, payload, env = process.env) {
     aspectRatio: kind === "image" ? "4:5" : "9:16",
     resolution: kind === "image" ? "1K" : "720p",
     durationSeconds: kind === "video" ? 6 : null,
-    estimatedCostCents: kind === "image" ? IMAGE_ESTIMATE_CENTS : VIDEO_ESTIMATE_CENTS,
+    estimatedCostCents: kind === "image" ? imageEstimateCents(env, sourceAssetId) : VIDEO_ESTIMATE_CENTS,
+    sourceAssetId,
   };
 
   const result = await getPool(env).query(
     `INSERT INTO market_agent_media_jobs
       (id, user_id, project_id, kind, title, prompt, aspect_ratio, resolution,
-       duration_seconds, estimated_cost_cents)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       duration_seconds, estimated_cost_cents, source_asset_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
     [job.id, job.userId, job.projectId, job.kind, job.title, job.prompt, job.aspectRatio,
-      job.resolution, job.durationSeconds, job.estimatedCostCents],
+      job.resolution, job.durationSeconds, job.estimatedCostCents, job.sourceAssetId],
   );
   return { job: serializeJob(result.rows[0], env), summary: await mediaBudgetSummary(userId, projectId, env) };
 }
 
 export async function approveMediaJob(userId, payload, env = process.env) {
-  if (!env.GOOGLE_GENERATIVE_AI_API_KEY) throw httpError(503, "Media creation is not configured yet.");
   const id = requiredText(payload?.id, "The media request is missing.", 100);
   const approvedBudgetCents = Number(payload?.approvedBudgetCents);
   const pool = getPool(env);
@@ -84,17 +94,25 @@ export async function approveMediaJob(userId, payload, env = process.env) {
     );
     row = result.rows[0];
     if (!row) throw httpError(404, "Media request not found.");
+    if (row.kind === "image" && !env.GOOGLE_GENERATIVE_AI_API_KEY && !env.OPENAI_API_KEY) {
+      throw httpError(503, "Connect OpenAI or Gemini under Connections before creating images.");
+    }
+    if (row.kind === "video" && !env.GOOGLE_GENERATIVE_AI_API_KEY) {
+      throw httpError(503, "Connect Gemini under Connections before creating video.");
+    }
     if (row.status !== "awaiting_budget") throw httpError(409, "This media request is no longer waiting for approval.");
     if (!Number.isInteger(approvedBudgetCents) || approvedBudgetCents !== Number(row.estimated_cost_cents)) {
       throw httpError(400, "Approve the exact maximum shown for this request.");
     }
 
     const total = await client.query(
-      `SELECT COALESCE(SUM(approved_budget_cents), 0)::int AS cents
-       FROM market_agent_media_jobs
-       WHERE user_id = $1 AND project_id = $2
-         AND approved_at >= date_trunc('month', NOW())
-         AND status <> 'cancelled'`,
+      `SELECT
+        (SELECT COALESCE(SUM(approved_budget_cents), 0) FROM market_agent_media_jobs
+          WHERE user_id = $1 AND project_id = $2 AND approved_at >= date_trunc('month', NOW()) AND status <> 'cancelled')
+        +
+        (SELECT COALESCE(SUM(approved_budget_cents), 0) FROM market_agent_asset_proposals
+          WHERE user_id = $1 AND project_id = $2 AND approved_at >= date_trunc('month', NOW()) AND status <> 'cancelled')
+        AS cents`,
       [userId, row.project_id],
     );
     const monthlyCapCents = mediaMonthlyCapCents(env);
@@ -179,9 +197,12 @@ async function executeApprovedJob(row, env) {
 }
 
 async function createImage(job, env) {
+  const sourceImage = job.source_asset_id ? await loadSourceImage(job, env) : null;
+  if (sourceImage && env.OPENAI_API_KEY) return openAIImageEdit(job, sourceImage, env);
+  if (!env.GOOGLE_GENERATIVE_AI_API_KEY && env.OPENAI_API_KEY) return openAIImage(job, env);
   return googleInteraction({
     model: "gemini-3.1-flash-image",
-    input: [{ type: "text", text: job.prompt }],
+    input: [{ type: "text", text: job.prompt }, ...(sourceImage ? [{ type: "image", data: sourceImage.bytes.toString("base64"), mime_type: sourceImage.mimeType }] : [])],
     response_format: {
       type: "image",
       mime_type: "image/png",
@@ -190,6 +211,64 @@ async function createImage(job, env) {
     },
     store: false,
   }, env);
+}
+
+async function openAIImageEdit(job, sourceImage, env) {
+  const form = new FormData();
+  form.append("model", env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-flare");
+  form.append("prompt", job.prompt);
+  form.append("size", job.aspect_ratio === "4:5" || job.aspect_ratio === "9:16" ? "1024x1536" : "1024x1024");
+  form.append("quality", "medium");
+  form.append("output_format", "png");
+  form.append("image", new Blob([sourceImage.bytes], { type: sourceImage.mimeType }), sourceImage.name);
+  const response = await fetch("https://api.openai.com/v1/images/edits", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}` },
+    body: form,
+    signal: AbortSignal.timeout(285_000),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw providerError(response.status, data);
+  const image = data.data?.[0];
+  if (!image?.b64_json) throw new Error("Adapted image output was not returned.");
+  return { steps: [{ content: [{ type: "image", data: image.b64_json, mime_type: "image/png" }] }], usage: data.usage || {} };
+}
+
+async function loadSourceImage(job, env) {
+  const result = await getPool(env).query(
+    `SELECT name, blob_path, mime_type FROM market_agent_project_assets
+     WHERE id = $1 AND user_id = $2 AND project_id = $3 AND asset_kind = 'image' LIMIT 1`,
+    [job.source_asset_id, job.user_id, job.project_id],
+  );
+  const row = result.rows[0];
+  if (!row?.blob_path) return null;
+  const blob = await get(row.blob_path, { access: "private" });
+  if (!blob || blob.statusCode !== 200 || !blob.stream) return null;
+  return { name: row.name || "source-image.png", mimeType: blob.blob.contentType || row.mime_type || "image/png", bytes: Buffer.from(await new Response(blob.stream).arrayBuffer()) };
+}
+
+async function openAIImage(job, env) {
+  const response = await fetch("https://api.openai.com/v1/images/generations", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-flare",
+      prompt: job.prompt,
+      size: job.aspect_ratio === "4:5" || job.aspect_ratio === "9:16" ? "1024x1536" : "1024x1024",
+      quality: "medium",
+      output_format: "png",
+      n: 1,
+    }),
+    signal: AbortSignal.timeout(285_000),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw providerError(response.status, data);
+  const image = data.data?.[0];
+  if (!image?.b64_json) throw new Error("Image output was not returned.");
+  return {
+    steps: [{ content: [{ type: "image", data: image.b64_json, mime_type: "image/png" }] }],
+    usage: data.usage || {},
+  };
 }
 
 async function createVideo(job, env) {
@@ -308,14 +387,28 @@ function calculateActualCost(kind, usage = {}, fallback) {
 async function mediaBudgetSummary(userId, projectId, env) {
   const result = await getPool(env).query(
     `SELECT
-       COALESCE(SUM(approved_budget_cents) FILTER (
-         WHERE approved_at >= date_trunc('month', NOW()) AND status <> 'cancelled'
-       ), 0)::int AS approved_cents,
-       COALESCE(SUM(actual_cost_cents) FILTER (
-         WHERE approved_at >= date_trunc('month', NOW()) AND status = 'complete'
-       ), 0)::int AS actual_cents
-     FROM market_agent_media_jobs
-     WHERE user_id = $1 AND project_id = $2`,
+       (
+         SELECT COALESCE(SUM(approved_budget_cents), 0)
+         FROM market_agent_media_jobs
+         WHERE user_id = $1 AND project_id = $2
+           AND approved_at >= date_trunc('month', NOW()) AND status <> 'cancelled'
+       ) + (
+         SELECT COALESCE(SUM(approved_budget_cents), 0)
+         FROM market_agent_asset_proposals
+         WHERE user_id = $1 AND project_id = $2
+           AND approved_at >= date_trunc('month', NOW()) AND status <> 'cancelled'
+       ) AS approved_cents,
+       (
+         SELECT COALESCE(SUM(actual_cost_cents), 0)
+         FROM market_agent_media_jobs
+         WHERE user_id = $1 AND project_id = $2
+           AND approved_at >= date_trunc('month', NOW()) AND status = 'complete'
+       ) + (
+         SELECT COALESCE(SUM(actual_cost_cents), 0)
+         FROM market_agent_asset_proposals
+         WHERE user_id = $1 AND project_id = $2
+           AND approved_at >= date_trunc('month', NOW()) AND status = 'complete'
+       ) AS actual_cents`,
     [userId, projectId],
   );
   return {
@@ -448,6 +541,11 @@ function assetSignature(id, pathname, expires, env) {
 function mediaMonthlyCapCents(env) {
   const value = Number(env.MEDIA_MONTHLY_BUDGET_CENTS || DEFAULT_MONTHLY_CAP_CENTS);
   return Number.isInteger(value) && value > 0 ? value : DEFAULT_MONTHLY_CAP_CENTS;
+}
+
+function imageEstimateCents(env, sourceAssetId) {
+  if (env.OPENAI_API_KEY && (sourceAssetId || !env.GOOGLE_GENERATIVE_AI_API_KEY)) return 15;
+  return IMAGE_ESTIMATE_CENTS;
 }
 
 function requiredText(value, message, maxLength) {

@@ -1,5 +1,6 @@
 import { appendRunForUser, listScheduledStates, loadStateForUser, saveStateForUser } from "../server/db.mjs";
 import { createRunRecord, runMarketingAgent } from "../server/agent.mjs";
+import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 
 export const config = { maxDuration: 300 };
 
@@ -17,12 +18,14 @@ export default async function handler(req, res) {
     const { schedule, project } = entry;
     if (schedule.lastRunAt?.slice(0, 10) === today) continue;
     try {
+      const userApiEnv = await loadUserApiEnv(entry.userId);
       const result = await runMarketingAgent({
         action: schedule.action || "research",
         prompt: schedule.prompt || "Create today's market pulse.",
         workspace: project,
         useWeb: schedule.useWeb !== false,
-      });
+        mode: "panel",
+      }, userApiEnv);
       const run = createRunRecord(result, schedule.action || "research", schedule.prompt || "Scheduled market pulse", project.id);
       await appendRunForUser(entry.userId, run);
       entry.state.schedules[project.id] = { ...schedule, lastRunAt: new Date().toISOString() };

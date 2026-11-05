@@ -41,29 +41,34 @@ export async function runMarketingAgent(payload, env = process.env) {
   const task = `${context}\n\n${deliveryState}\n\nEXECUTION STYLE\n${campaignIntensityInstructions[intensity]}\n\nTASK\n${instruction}\n\nUSER DIRECTION\n${prompt || "Use your best judgment and produce the complete deliverable."}\n\nOUTPUT RULES\nLead with status and completed work. Use short sections, compact tables or bullets, and final assets. Avoid a long strategy essay, repeated caveats, generic advice, or a multi-step to-do list for the user. End with exactly one next action.`;
 
   if (mode === "panel") {
-    const result = await runBalancedPanel(task, useWeb, env);
+    const result = await runCollaborativePanel(task, useWeb, env);
     return { ...result, intensity };
   }
 
-  const model = env.OPENAI_MODEL || env.AI_MODEL || "gpt-6.1-terra";
-  const response = await createOpenAIResponse({
+  if (env.OPENAI_API_KEY) {
+    const model = env.OPENAI_MODEL || env.AI_MODEL || "gpt-6.1-terra";
+    const response = await createOpenAIResponse({
+      env,
+      model,
+      system: operatorSystem,
+      prompt: task,
+      useWeb,
+      maxOutputTokens: 7000,
+    });
+    return { ...formatOpenAIResponse(response, model), intensity };
+  }
+
+  const response = await generateGoogleText({
     env,
-    model,
+    model: env.GOOGLE_MODEL || "gemini-3.8-flash",
     system: operatorSystem,
     prompt: task,
-    useWeb,
     maxOutputTokens: 7000,
   });
-
-  return { ...formatOpenAIResponse(response, model), intensity };
+  return { id: crypto.randomUUID(), model: "Standard analysis", output: response.text, sources: [], createdAt: new Date().toISOString(), intensity };
 }
 
 export async function runProjectConversation(payload, env = process.env) {
-  if (!env.OPENAI_API_KEY) {
-    const error = new Error("The secure analysis service is not fully configured.");
-    error.statusCode = 503;
-    throw error;
-  }
   const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
   const message = String(payload?.message || "").trim().slice(0, 12_000);
   if (!message) {
@@ -83,19 +88,43 @@ NEW USER MESSAGE
 ${message}
 
 Reply directly and naturally. Always acknowledge and comment on the user's actual input before moving forward. Remember corrections and decisions already present in the conversation, and do not ask for information the project or conversation already contains. If the user gives feedback or a preference, state briefly how it changes the work. Complete small marketing tasks in the reply when possible. Ask at most one short question, and only when a decision or private authorization truly requires the user. Never mention internal systems, model names, or providers.`;
-  const model = env.OPENAI_MODEL || env.AI_MODEL || "gpt-6.1-terra";
-  const response = await createOpenAIResponse({
-    env,
-    model,
-    system: `${operatorSystem} You are also the project's persistent conversational partner. Keep replies compact, attentive, and grounded in the saved project and conversation.`,
-    prompt,
-    useWeb: Boolean(payload?.useWeb),
-    maxOutputTokens: 2200,
-  });
+  const conversationSystem = `${operatorSystem} You are also the project's persistent conversational partner. Keep replies compact, attentive, and grounded in the saved project and conversation.`;
+  if (env.OPENAI_API_KEY) {
+    const response = await createOpenAIResponse({
+      env,
+      model: env.OPENAI_MODEL || env.AI_MODEL || "gpt-6.1-terra",
+      system: conversationSystem,
+      prompt,
+      useWeb: Boolean(payload?.useWeb),
+      maxOutputTokens: 2200,
+    });
+    return { reply: responseText(response), sources: collectOpenAISources(response), createdAt: new Date().toISOString() };
+  }
+  if (env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    const response = await generateGoogleText({ env, model: env.GOOGLE_MODEL || "gemini-3.8-flash", system: conversationSystem, prompt, maxOutputTokens: 2200 });
+    return { reply: response.text, sources: [], createdAt: new Date().toISOString() };
+  }
+  if (env.ANTHROPIC_API_KEY) {
+    const response = await generateAnthropicText({ env, model: env.ANTHROPIC_MODEL || "claude-sonnet-5-5", system: conversationSystem, prompt, maxOutputTokens: 2200 });
+    return { reply: response.text, sources: [], createdAt: new Date().toISOString() };
+  }
+  if (env.STARTER_OPENAI_API_KEY) {
+    const starterEnv = { ...env, OPENAI_API_KEY: env.STARTER_OPENAI_API_KEY };
+    const response = await createOpenAIResponse({
+      env: starterEnv,
+      model: env.STARTER_OPENAI_MODEL || "gpt-6-luna",
+      system: starterGuideSystem,
+      prompt: `USER QUESTION\n${message}\n\nReply with concise setup help only.`,
+      useWeb: false,
+      maxOutputTokens: 900,
+    });
+    return { reply: responseText(response), sources: [], createdAt: new Date().toISOString(), starter: true };
+  }
   return {
-    reply: responseText(response),
-    sources: collectOpenAISources(response),
+    reply: "To begin real work, connect either OpenAI or Gemini under Connections. OpenAI or Gemini unlocks reasoning and image creation; Claude adds an independent strategy review. Connecting all three gives the strongest balanced result.",
+    sources: [],
     createdAt: new Date().toISOString(),
+    starter: true,
   };
 }
 
@@ -108,8 +137,8 @@ function needsDeliveryAccess(action, prompt) {
 }
 
 export async function buildProductBrain(payload, env = process.env) {
-  if (!env.OPENAI_API_KEY) {
-    const error = new Error("The secure analysis service is not fully configured.");
+  if (!env.OPENAI_API_KEY && !env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    const error = new Error("Connect your private analysis APIs under Connections first.");
     error.statusCode = 503;
     throw error;
   }
@@ -152,45 +181,32 @@ ${materialText || "Visual materials are attached."}
 
 Infer only what is strongly supported. Derive the visual identity from the supplied deck pages, images, and documents: choose the most representative visible colors as six-digit hex values, describe typography, and summarize the imagery style. Consolidate duplicates and contradictions. Put uncertainties and facts that need confirmation in the notes and unknowns fields. The result is a draft for the user to review, not a claim of certainty. Never mention internal systems, providers, or model names.`;
 
-  const model = env.OPENAI_MODEL || env.AI_MODEL || "gpt-6.1-terra";
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      instructions: "You are a meticulous product-onboarding analyst. Extract a useful marketing source of truth from user materials. Preserve factual nuance, identify uncertainty, and never invent proof, customers, metrics, pricing, or capabilities.",
-      input: [{
-        role: "user",
-        content: [
-          { type: "input_text", text: prompt },
-          ...images.map((imageUrl) => ({ type: "input_image", image_url: imageUrl, detail: "high" })),
-        ],
-      }],
-      max_output_tokens: 5000,
-      ...(links.length ? { tools: [{ type: "web_search", search_context_size: "medium" }], tool_choice: "auto" } : {}),
-      text: {
-        format: {
-          type: "json_schema",
-          name: "product_brain",
-          strict: true,
-          schema: productBrainSchema(),
-        },
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    const error = new Error("The project materials could not be analyzed. Please try again.");
-    error.statusCode = response.status >= 400 && response.status < 500 ? 400 : 502;
-    throw error;
-  }
-
   let parsed;
   try {
-    parsed = JSON.parse(responseText(await response.json()));
+    if (env.OPENAI_API_KEY) {
+      const model = env.OPENAI_MODEL || env.AI_MODEL || "gpt-6.1-terra";
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          instructions: "You are a meticulous product-onboarding analyst. Extract a useful marketing source of truth from user materials. Preserve factual nuance, identify uncertainty, and never invent proof, customers, metrics, pricing, or capabilities.",
+          input: [{ role: "user", content: [{ type: "input_text", text: prompt }, ...images.map((imageUrl) => ({ type: "input_image", image_url: imageUrl, detail: "high" }))] }],
+          max_output_tokens: 5000,
+          ...(links.length ? { tools: [{ type: "web_search", search_context_size: "medium" }], tool_choice: "auto" } : {}),
+          text: { format: { type: "json_schema", name: "product_brain", strict: true, schema: productBrainSchema() } },
+        }),
+      });
+      if (!response.ok) throw providerRequestError(response.status);
+      parsed = JSON.parse(responseText(await response.json()));
+    } else {
+      parsed = await generateGoogleStructured({
+        env,
+        system: "You are a meticulous product-onboarding analyst. Extract a useful marketing source of truth from user materials. Preserve factual nuance, identify uncertainty, and never invent proof, customers, metrics, pricing, or capabilities.",
+        prompt,
+        images,
+      });
+    }
   } catch {
     const error = new Error("The project materials were read, but the product brain could not be assembled. Please try again.");
     error.statusCode = 502;
@@ -205,8 +221,8 @@ Infer only what is strongly supported. Derive the visual identity from the suppl
 }
 
 export async function refineProductBrain(payload, env = process.env) {
-  if (!env.OPENAI_API_KEY) {
-    const error = new Error("The secure analysis service is not fully configured.");
+  if (!env.OPENAI_API_KEY && !env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    const error = new Error("Connect your private analysis APIs under Connections first.");
     error.statusCode = 503;
     throw error;
   }
@@ -255,26 +271,30 @@ ${answerText || "No individual answers supplied."}
 
 ADDITIONAL CONTEXT
 ${additionalContext || "None supplied."}`;
-  const model = env.OPENAI_MODEL || env.AI_MODEL || "gpt-6.1-terra";
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      instructions: "You maintain a factual product and brand source of truth. Apply user corrections precisely, preserve nuance, and return only structured data. Never mention internal systems or model names.",
-      input: prompt,
-      max_output_tokens: 5000,
-      text: { format: { type: "json_schema", name: "product_brain", strict: true, schema: productBrainSchema() } },
-    }),
-  });
-  if (!response.ok) {
-    const error = new Error("The answers could not be applied. Please try again.");
-    error.statusCode = response.status >= 400 && response.status < 500 ? 400 : 502;
-    throw error;
-  }
-
   try {
-    const parsed = JSON.parse(responseText(await response.json()));
+    let parsed;
+    if (env.OPENAI_API_KEY) {
+      const model = env.OPENAI_MODEL || env.AI_MODEL || "gpt-6.1-terra";
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          instructions: "You maintain a factual product and brand source of truth. Apply user corrections precisely, preserve nuance, and return only structured data. Never mention internal systems or model names.",
+          input: prompt,
+          max_output_tokens: 5000,
+          text: { format: { type: "json_schema", name: "product_brain", strict: true, schema: productBrainSchema() } },
+        }),
+      });
+      if (!response.ok) throw providerRequestError(response.status);
+      parsed = JSON.parse(responseText(await response.json()));
+    } else {
+      parsed = await generateGoogleStructured({
+        env,
+        system: "You maintain a factual product and brand source of truth. Apply user corrections precisely, preserve nuance, and return only structured data. Never mention internal systems or model names.",
+        prompt,
+      });
+    }
     const normalized = normalizeBrainResult(parsed, safeWorkspace.name, safeWorkspace.website);
     normalized.unknowns = removeRepeatedQuestions(normalized.unknowns, answers.map((item) => item.question));
     return normalized;
@@ -283,6 +303,146 @@ ${additionalContext || "None supplied."}`;
     error.statusCode = 502;
     throw error;
   }
+}
+
+export async function analyzeProjectAsset(payload, env = process.env) {
+  if (!env.OPENAI_API_KEY && !env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    const error = new Error("Connect OpenAI or Gemini before analyzing project assets.");
+    error.statusCode = 503;
+    throw error;
+  }
+  const name = String(payload?.name || "Untitled asset").slice(0, 250);
+  const sourceUrl = String(payload?.sourceUrl || "").slice(0, 2000);
+  const extractedText = String(payload?.text || "").slice(0, 60_000);
+  const suppliedImages = Array.isArray(payload?.images) ? payload.images.filter((value) => typeof value === "string" && value.startsWith("data:image/")).slice(0, 8) : [];
+  let connected = { text: "", images: [], issues: [] };
+  if (/^https?:\/\//i.test(sourceUrl)) connected = await readConnectedMaterial([sourceUrl]);
+  if (sourceUrl && !connected.text && !connected.images.length && connected.issues.length) {
+    const error = new Error(connected.issues.join(" "));
+    error.statusCode = 400;
+    throw error;
+  }
+  const prompt = `Evaluate this existing marketing asset for the active project.
+
+ASSET
+Name: ${name}
+Type: ${payload?.kind || "unknown"}
+Format: ${payload?.mimeType || "unknown"}
+Source: ${sourceUrl || "Uploaded file"}
+Extraction detail: ${payload?.detail || "Not supplied"}
+
+EXTRACTED CONTENT
+${extractedText || connected.text || "No readable text. Evaluate the supplied visual frames and metadata."}
+
+PROJECT CONTEXT
+${buildContext(payload?.workspace || {})}
+
+Tag the asset by purpose, channel, format, audience, funnel stage, tone, and subject. Decide whether it should be reused unchanged, adapted, replaced, or archived. Explain the decision in plain language. If adaptation is best, specify exact changes such as copy overlays, crops, sequencing, updated claims, or format changes. Propose a PDF or presentation deck only when that deliverable would materially improve the project; do not propose one automatically.`;
+  const parsed = await generateStructuredObject({
+    env,
+    name: "asset_decision",
+    system: "You are a senior creative-operations librarian. Make decisive, evidence-based reuse decisions. Never invent performance, rights, approvals, or product facts.",
+    prompt,
+    images: [...suppliedImages, ...connected.images].slice(0, 8),
+    schema: assetDecisionSchema(),
+  });
+  return {
+    summary: String(parsed.summary || "").slice(0, 1200),
+    tags: Array.isArray(parsed.tags) ? parsed.tags.map((value) => String(value).trim()).filter(Boolean).slice(0, 18) : [],
+    recommendation: ["reuse", "adapt", "replace", "archive"].includes(parsed.recommendation) ? parsed.recommendation : "review",
+    rationale: String(parsed.rationale || "").slice(0, 2000),
+    suggestedChanges: Array.isArray(parsed.suggestedChanges) ? parsed.suggestedChanges.map((value) => String(value).trim()).filter(Boolean).slice(0, 12) : [],
+    proposedDeliverables: Array.isArray(parsed.proposedDeliverables) ? parsed.proposedDeliverables.slice(0, 2).map((item) => ({
+      kind: item?.kind === "deck" ? "deck" : "pdf",
+      title: String(item?.title || "Proposed document").slice(0, 200),
+      description: String(item?.description || "").slice(0, 1200),
+      rationale: String(item?.rationale || "").slice(0, 1200),
+    })) : [],
+  };
+}
+
+export async function generateProjectDocument(payload, env = process.env) {
+  if (!env.OPENAI_API_KEY && !env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    const error = new Error("Connect OpenAI or Gemini before creating this document.");
+    error.statusCode = 503;
+    throw error;
+  }
+  const kind = payload?.kind === "deck" ? "presentation deck" : "PDF document";
+  const prompt = `Create the final content structure for an approved ${kind}.
+
+APPROVED DELIVERABLE
+Title: ${payload?.title || "Project document"}
+Description: ${payload?.description || "Not supplied"}
+Reason: ${payload?.rationale || "Not supplied"}
+
+PROJECT CONTEXT
+${buildContext(payload?.workspace || {})}
+
+SELECTED ASSET EVIDENCE
+${JSON.stringify(payload?.assets || [], null, 2)}
+
+Return polished, presentation-ready content grounded only in the supplied project facts. For a deck, create 6–10 concise slide-like sections. For a PDF, create 4–8 readable sections. Include concrete final copy, not instructions to a designer. Never invent customers, results, pricing, or claims.`;
+  return generateStructuredObject({
+    env,
+    name: "approved_project_document",
+    system: "You create concise, client-ready marketing documents from approved source material. Return only the requested structured content.",
+    prompt,
+    schema: projectDocumentSchema(),
+  });
+}
+
+function assetDecisionSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["summary", "tags", "recommendation", "rationale", "suggestedChanges", "proposedDeliverables"],
+    properties: {
+      summary: { type: "string" },
+      tags: { type: "array", items: { type: "string" } },
+      recommendation: { type: "string", enum: ["reuse", "adapt", "replace", "archive"] },
+      rationale: { type: "string" },
+      suggestedChanges: { type: "array", items: { type: "string" } },
+      proposedDeliverables: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind", "title", "description", "rationale"],
+          properties: {
+            kind: { type: "string", enum: ["pdf", "deck"] },
+            title: { type: "string" },
+            description: { type: "string" },
+            rationale: { type: "string" },
+          },
+        },
+      },
+    },
+  };
+}
+
+function projectDocumentSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["title", "subtitle", "sections"],
+    properties: {
+      title: { type: "string" },
+      subtitle: { type: "string" },
+      sections: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["heading", "body", "bullets"],
+          properties: {
+            heading: { type: "string" },
+            body: { type: "string" },
+            bullets: { type: "array", items: { type: "string" } },
+          },
+        },
+      },
+    },
+  };
 }
 
 function productBrainSchema() {
@@ -619,11 +779,11 @@ function decodeXml(value) {
     .replace(/&#39;|&apos;/g, "'");
 }
 
-async function runBalancedPanel(task, useWeb, env) {
+async function runCollaborativePanel(task, useWeb, env) {
   let evidence = "No external web research was requested. Analyze only the supplied product facts.";
   let sources = [];
 
-  if (useWeb) {
+  if (useWeb && env.OPENAI_API_KEY) {
     const researchModel = env.OPENAI_RESEARCH_MODEL || env.OPENAI_MODEL || env.AI_RESEARCH_MODEL || "gpt-6.1-terra";
     const research = await createOpenAIResponse({
       env,
@@ -635,6 +795,8 @@ async function runBalancedPanel(task, useWeb, env) {
     });
     evidence = responseText(research);
     sources = collectOpenAISources(research);
+  } else if (useWeb) {
+    evidence = "Live source retrieval is unavailable with the currently connected services. Analyze the supplied project sources and product facts without inventing current evidence.";
   }
 
   const sharedPrompt = `${task}\n\nSHARED EVIDENCE BRIEF\n${evidence}\n\nProduce an independent execution package. Complete the research, prioritization, copy, sequences, lists, and operating details that can be delivered now. Do not delegate those tasks to the user. Explicitly identify assumptions and real external blockers. Do not mention any AI provider or model.`;
@@ -642,51 +804,59 @@ async function runBalancedPanel(task, useWeb, env) {
   const googleModel = env.GOOGLE_MODEL || "gemini-3.8-flash";
   const anthropicModel = env.ANTHROPIC_MODEL || "claude-sonnet-5-5";
 
-  const [openAIResponse, googleResponse, anthropicResponse] = await Promise.all([
-    createOpenAIResponse({
+  const analysisPromises = [];
+  if (env.OPENAI_API_KEY) analysisPromises.push(createOpenAIResponse({
       env,
       model: openAIModel,
       system: `${operatorSystem} Be rigorous about execution, prioritization, and measurable outcomes.`,
       prompt: sharedPrompt,
       useWeb: false,
       maxOutputTokens: 3200,
-    }),
-    generateGoogleText({
+    }).then((response) => ({ name: "Analysis A", text: responseText(response) })));
+  if (env.GOOGLE_GENERATIVE_AI_API_KEY) analysisPromises.push(generateGoogleText({
       env,
       model: googleModel,
       system: `${operatorSystem} Be rigorous about market context, alternative interpretations, and audience nuance.`,
       prompt: sharedPrompt,
       maxOutputTokens: 3200,
-    }),
-    generateAnthropicText({
+    }).then((response) => ({ name: "Analysis B", text: response.text })));
+  if (env.ANTHROPIC_API_KEY) analysisPromises.push(generateAnthropicText({
       env,
       model: anthropicModel,
       system: `${operatorSystem} Be rigorous about messaging quality, human impact, risks, and strategic coherence.`,
       prompt: sharedPrompt,
       maxOutputTokens: 3200,
-    }),
-  ]);
+    }).then((response) => ({ name: "Analysis C", text: response.text })));
 
-  const opinions = [
-    { name: "Analysis A", text: responseText(openAIResponse) },
-    { name: "Analysis B", text: googleResponse.text },
-    { name: "Analysis C", text: anthropicResponse.text },
-  ];
+  const opinions = await Promise.all(analysisPromises);
+  if (opinions.length === 1) {
+    return {
+      id: crypto.randomUUID(),
+      model: "Standard analysis",
+      output: opinions[0].text,
+      sources,
+      createdAt: new Date().toISOString(),
+    };
+  }
   const transcript = opinions.map((opinion) => `## ${opinion.name}\n${opinion.text}`).join("\n\n");
-  const synthesisModel = env.OPENAI_SYNTHESIS_MODEL || openAIModel;
-  const synthesis = await createOpenAIResponse({
-    env,
-    model: synthesisModel,
-    system: `Synthesize the independent work into one concise, execution-ready package rather than a consultancy memo. Preserve valid risks and reject weak claims, but complete all work that can be done now. Lead with the execution status, concrete completed work, and launch-ready assets. Never tell the user to perform work you can include yourself. Never mention AI providers, model names, or internal analysis labels.`,
-    prompt: `${task}\n\nSHARED EVIDENCE\n${evidence}\n\nINDEPENDENT WORK\n${transcript}\n\nReturn only these compact sections: Status; Completed now; Launch-ready queue; Exact messages and assets; Tracking; One next action. When delivery access is missing, say PREPARED — NOT LAUNCHED plainly and never imply execution occurred.`,
-    useWeb: false,
-    maxOutputTokens: 7500,
-  });
+  const synthesisSystem = `Synthesize the independent work into one concise, execution-ready package rather than a consultancy memo. Preserve valid risks and reject weak claims, but complete all work that can be done now. Lead with the execution status, concrete completed work, and launch-ready assets. Never tell the user to perform work you can include yourself. Never mention AI providers, model names, or internal analysis labels.`;
+  const synthesisPrompt = `${task}\n\nSHARED EVIDENCE\n${evidence}\n\nINDEPENDENT WORK\n${transcript}\n\nReturn only these compact sections: Status; Completed now; Launch-ready queue; Exact messages and assets; Tracking; One next action. When delivery access is missing, say PREPARED — NOT LAUNCHED plainly and never imply execution occurred.`;
+  let output;
+  let id = crypto.randomUUID();
+  if (env.OPENAI_API_KEY) {
+    const synthesis = await createOpenAIResponse({ env, model: env.OPENAI_SYNTHESIS_MODEL || openAIModel, system: synthesisSystem, prompt: synthesisPrompt, useWeb: false, maxOutputTokens: 7500 });
+    output = responseText(synthesis);
+    id = synthesis.id || id;
+  } else if (env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    output = (await generateGoogleText({ env, model: googleModel, system: synthesisSystem, prompt: synthesisPrompt, maxOutputTokens: 7500 })).text;
+  } else {
+    output = (await generateAnthropicText({ env, model: anthropicModel, system: synthesisSystem, prompt: synthesisPrompt, maxOutputTokens: 7500 })).text;
+  }
 
   return {
-    id: synthesis.id || crypto.randomUUID(),
-    model: "Balanced panel",
-    output: responseText(synthesis),
+    id,
+    model: opinions.length === 3 ? "Three-way strategy review" : "Collaborative review",
+    output,
     sources,
     createdAt: new Date().toISOString(),
   };
@@ -733,6 +903,53 @@ async function generateGoogleText({ env, model, system, prompt, maxOutputTokens 
   }
 }
 
+async function generateStructuredObject({ env, name, system, prompt, images = [], schema }) {
+  if (env.OPENAI_API_KEY) {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: env.OPENAI_MODEL || env.AI_MODEL || "gpt-6.1-terra",
+        instructions: system,
+        input: [{ role: "user", content: [{ type: "input_text", text: prompt }, ...images.map((imageUrl) => ({ type: "input_image", image_url: imageUrl, detail: "high" }))] }],
+        max_output_tokens: 6000,
+        text: { format: { type: "json_schema", name, strict: true, schema } },
+      }),
+    });
+    if (!response.ok) throw providerRequestError(response.status);
+    return JSON.parse(responseText(await response.json()));
+  }
+  return generateGoogleStructured({ env, system, prompt, images, schema });
+}
+
+async function generateGoogleStructured({ env, system, prompt, images = [], schema = productBrainSchema() }) {
+  const model = env.GOOGLE_MODEL || "gemini-3.8-flash";
+  const imageParts = images.map(dataUrlToGooglePart).filter(Boolean);
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    method: "POST",
+    headers: { "x-goog-api-key": env.GOOGLE_GENERATIVE_AI_API_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: "user", parts: [{ text: prompt }, ...imageParts] }],
+      generationConfig: {
+        maxOutputTokens: 5000,
+        responseMimeType: "application/json",
+        responseJsonSchema: schema,
+      },
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw providerRequestError(response.status);
+  const text = (data.candidates || []).flatMap((candidate) => candidate.content?.parts || []).map((part) => part.text || "").join("\n").trim();
+  if (!text) throw new Error("No structured response was returned.");
+  return JSON.parse(text.replace(/^```json\s*|\s*```$/g, ""));
+}
+
+function dataUrlToGooglePart(value) {
+  const match = String(value || "").match(/^data:([^;,]+);base64,(.+)$/s);
+  return match ? { inlineData: { mimeType: match[1], data: match[2] } } : null;
+}
+
 async function generateAnthropicText({ env, model, system, prompt, maxOutputTokens }) {
   try {
     const anthropic = createAnthropic({ apiKey: env.ANTHROPIC_API_KEY });
@@ -745,16 +962,23 @@ async function generateAnthropicText({ env, model, system, prompt, maxOutputToke
 }
 
 function requireProviderKeys(mode, env) {
-  const ready = Boolean(env.OPENAI_API_KEY)
-    && (mode !== "panel" || (Boolean(env.GOOGLE_GENERATIVE_AI_API_KEY) && Boolean(env.ANTHROPIC_API_KEY)));
+  const ready = Boolean(env.OPENAI_API_KEY || env.GOOGLE_GENERATIVE_AI_API_KEY);
   if (ready) return;
 
-  const error = new Error("The secure analysis service is not fully configured.");
+  const error = new Error("Connect your private analysis APIs under Connections first.");
   error.statusCode = 503;
   throw error;
 }
 
+function providerRequestError(status) {
+  const error = new Error("The connected service could not complete this request.");
+  error.statusCode = status >= 400 && status < 500 ? 400 : 502;
+  return error;
+}
+
 const operatorSystem = `You are Market Agent, an autonomous senior marketing operator—not a consultant handing work back to the user. Use only supplied product facts for product claims and cite current market evidence when available. Complete every task possible inside the current run: research, targeting, prioritization, campaign design, final copy, sequences, asset briefs, launch queues, tracking structure, and measurement rules. Never tell the user to do work you can deliver yourself. Be concise and action-first: lead with execution status, completed work, and ready-to-use assets; avoid essays, repeated caveats, and generic advice. Ask for only identity, budget, private account access, legal approval, or authorization that truly requires the user. When a connector is unavailable, label the work PREPARED — NOT LAUNCHED, prepare the exact ready-to-execute payload, and give one missing-access action. Never invent customers, prospects, quotes, metrics, or results. Never imply that content was published or messages were sent. Never mention AI providers, model names, or internal analysis roles.`;
+
+const starterGuideSystem = `You are Market Agent's low-cost setup assistant. The user has not connected private analysis APIs yet. Help only with connecting API keys and understanding capability levels. Explain that either OpenAI or Gemini is enough to unlock core reasoning and image creation; Gemini also enables video creation; Claude is an optional independent reviewer; and all three together produce the strongest collaborative strategy. Give concise, non-technical, step-by-step instructions. Direct the user to Connections in this app and never request that they paste a key into chat. Do not perform marketing work, analyze private project materials, or claim that a connection is active.`;
 
 function buildContext(workspace) {
   const sources = Array.isArray(workspace.sources) ? workspace.sources : [];

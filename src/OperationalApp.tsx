@@ -37,8 +37,9 @@ import {
 } from "lucide-react";
 import { createDefaultSchedule, createEmptyProject, loadState, saveState } from "./operational/storage";
 import { prepareLogo, prepareMaterial, type PreparedMaterial } from "./operational/materials";
-import { apiFetch } from "./auth";
-import type { AgentAction, AgentRun, AgentSchedule, AppState, ConnectionStatus, HealthState, MediaBudgetSummary, MediaJob, ProductSource, ProductWorkspace, ProjectChatMessage, RunStatus } from "./operational/types";
+import { upload } from "@vercel/blob/client";
+import { apiFetch, getAccessToken } from "./auth";
+import type { AgentAction, AgentRun, AgentSchedule, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, ConnectionStatus, HealthState, MediaBudgetSummary, MediaJob, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, RunStatus } from "./operational/types";
 
 type Page = "agent" | "brain" | "research" | "campaigns" | "content" | "integrations";
 type CampaignIntensity = "careful" | "assertive" | "aggressive";
@@ -68,6 +69,19 @@ const emptyConnections = (): ConnectionStatus => ({
   x: { configured: false, connected: false, accountId: "", accountLabel: "", scopes: [], connectedAt: null, canPublish: false },
 });
 
+const emptyApiCredentials = (): ApiCredentialStatus => ({
+  ready: false,
+  collaborationReady: false,
+  mediaReady: false,
+  videoReady: false,
+  connectedCount: 0,
+  credentials: {
+    openai: { connected: false, hint: "", connectedAt: null, updatedAt: null },
+    google: { connected: false, hint: "", connectedAt: null, updatedAt: null },
+    anthropic: { connected: false, hint: "", connectedAt: null, updatedAt: null },
+  },
+});
+
 export default function OperationalApp({ userId, userEmail, onSignOut }: { userId: string; userEmail: string; onSignOut: () => Promise<void> }) {
   const [state, setState] = useState<AppState>(() => loadState(userId));
   const [page, setPage] = useState<Page>("agent");
@@ -80,12 +94,13 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
   const [cloudError, setCloudError] = useState("");
   const [cloudSaving, setCloudSaving] = useState(false);
   const [connections, setConnections] = useState<ConnectionStatus>(() => emptyConnections());
+  const [apiCredentials, setApiCredentials] = useState<ApiCredentialStatus>(() => emptyApiCredentials());
   const [projectChatOpen, setProjectChatOpen] = useState(false);
 
   useEffect(() => {
     fetch("/api/health")
       .then((response) => response.ok ? response.json() : Promise.reject())
-      .then((data) => setHealth({ checked: true, apiOnline: true, agentConfigured: Boolean(data.agentConfigured), databaseConfigured: Boolean(data.databaseConfigured), authConfigured: Boolean(data.authConfigured), analyticsConfigured: Boolean(data.analyticsConfigured), mediaConfigured: Boolean(data.mediaConfigured), model: data.model || "", runtime: data.runtime || "" }))
+      .then((data) => setHealth({ checked: true, apiOnline: true, agentConfigured: false, databaseConfigured: Boolean(data.databaseConfigured), authConfigured: Boolean(data.authConfigured), analyticsConfigured: Boolean(data.analyticsConfigured), mediaConfigured: false, model: "", runtime: data.runtime || "" }))
       .catch(() => setHealth({ checked: true, apiOnline: false, agentConfigured: false, databaseConfigured: false, authConfigured: false, analyticsConfigured: false, mediaConfigured: false, model: "", runtime: "" }));
   }, []);
 
@@ -141,6 +156,17 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
   }, [cloudReady, state.activeProjectId]);
 
   useEffect(() => {
+    if (!cloudReady) return;
+    apiFetch("/api/api-credentials")
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Private API connections could not be checked.");
+        setApiCredentials(data as ApiCredentialStatus);
+      })
+      .catch(() => setApiCredentials(emptyApiCredentials()));
+  }, [cloudReady]);
+
+  useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const result = params.get("connection");
     if (!result) return;
@@ -159,6 +185,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
   const activeProject = state.projects.find((project) => project.id === state.activeProjectId) || state.projects[0];
   const projectRuns = state.runs.filter((run) => run.projectId === activeProject.id);
   const activeSchedule = state.schedules[activeProject.id] || createDefaultSchedule();
+  const runtimeReady = apiCredentials.ready;
 
   const updateWorkspace = (workspace: ProductWorkspace) => setState((current) => ({
     ...current,
@@ -225,20 +252,20 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
           {projectMenuOpen && <div className="op-project-menu"><div className="op-project-menu__head"><span>Projects</span><small>{state.projects.length}</small></div>{state.projects.map((project) => <button key={project.id} className={project.id === activeProject.id ? "active" : ""} onClick={() => switchProject(project.id)}><span>{projectInitials(project.name)}</span><div><strong>{project.name || "Unnamed project"}</strong><small>{project.id === activeProject.id ? "Active" : "Switch project"}</small></div>{project.id === activeProject.id && <Check size={14} />}</button>)}<button className="op-project-add" onClick={createProject}><Plus size={14} /> Create new project</button></div>}
         </div>
         <nav>{nav.map((item) => { const Icon = item.icon; const count = item.id === "research" ? projectRuns.filter((r) => ["research", "audience"].includes(r.action)).length : item.id === "campaigns" ? projectRuns.filter((r) => r.action === "campaign").length : item.id === "content" ? projectRuns.filter((r) => r.action === "social").length : 0; return <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => navigate(item.id)}><Icon size={17} /><span>{item.label}</span>{count > 0 && <em>{count}</em>}</button>; })}</nav>
-        <div className="op-sidebar__bottom"><div className={`op-api-dot ${health.agentConfigured ? "ready" : ""}`} /><div><strong>{health.agentConfigured ? "Agent ready" : "Runtime unavailable"}</strong><small>{health.agentConfigured ? "Secure analysis service" : "Check deployment"}</small></div></div>
+        <div className="op-sidebar__bottom"><div className={`op-api-dot ${runtimeReady ? "ready" : ""}`} /><div><strong>{runtimeReady ? "Agent ready" : "Connect your APIs"}</strong><small>{runtimeReady ? "Private analysis service" : "Open Connections"}</small></div></div>
       </aside>
 
       <main className="op-main">
-        <header className="op-topbar"><button className="op-mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={20} /></button><div className="op-product-state"><span className={completeness >= 60 ? "good" : ""}>{completeness}%</span><div><strong>Product brain</strong><small>{completeness >= 60 ? "Ready for grounded work" : "Needs product context"}</small></div></div><div className="op-topbar__right"><span className={`op-status ${health.agentConfigured ? "op-status--ready" : ""}`}><i />{health.agentConfigured ? "Live agent" : "Runtime unavailable"}</span><span className="op-cloud-state"><Cloud size={14} />{cloudSaving ? "Saving…" : cloudError ? "Save issue" : "Saved"}</span><button className="op-user-button" title={userEmail} onClick={() => void onSignOut()}><LogOut size={15} /> Sign out</button></div></header>
+        <header className="op-topbar"><button className="op-mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={20} /></button><div className="op-product-state"><span className={completeness >= 60 ? "good" : ""}>{completeness}%</span><div><strong>Product brain</strong><small>{completeness >= 60 ? "Ready for grounded work" : "Needs product context"}</small></div></div><div className="op-topbar__right"><span className={`op-status ${runtimeReady ? "op-status--ready" : ""}`}><i />{runtimeReady ? "Live agent" : "Connect your APIs"}</span><span className="op-cloud-state"><Cloud size={14} />{cloudSaving ? "Saving…" : cloudError ? "Save issue" : "Saved"}</span><button className="op-user-button" title={userEmail} onClick={() => void onSignOut()}><LogOut size={15} /> Sign out</button></div></header>
 
         <div className="op-page">
           {selectedRunId ? <RunDetail run={state.runs.find((run) => run.id === selectedRunId)!} connections={connections} onBack={() => setSelectedRunId(null)} onConnect={() => navigate("integrations")} onStatus={updateRunStatus} onOutput={updateRunOutput} onDelete={deleteRun} notify={notify} /> : <>
-            {page === "agent" && <AgentHome workspace={activeProject} runs={projectRuns} health={health} connections={connections} onRun={addRun} onOpen={setSelectedRunId} onNavigate={navigate} notify={notify} />}
+            {page === "agent" && <AgentHome workspace={activeProject} runs={projectRuns} health={{ ...health, agentConfigured: runtimeReady }} connections={connections} onRun={addRun} onOpen={setSelectedRunId} onNavigate={navigate} notify={notify} />}
             {page === "brain" && <ProductBrain key={activeProject.id} workspace={activeProject} onSave={updateWorkspace} notify={notify} />}
             {page === "research" && <RunLibrary title="Research" description={`Live market and audience work generated from ${activeProject.name || "this project"}'s product brain.`} empty="No research has been run for this project yet." runs={projectRuns.filter((run) => ["research", "audience"].includes(run.action))} onOpen={setSelectedRunId} onStart={() => navigate("agent")} />}
             {page === "campaigns" && <RunLibrary title="Campaigns" description="Campaign plans become real project records here—never fictional performance." empty="No campaigns have been generated for this project yet." runs={projectRuns.filter((run) => run.action === "campaign")} onOpen={setSelectedRunId} onStart={() => navigate("agent")} />}
-            {page === "content" && <ContentLibrary workspace={activeProject} runs={projectRuns.filter((run) => run.action === "social")} mediaConfigured={Boolean(health.mediaConfigured)} onOpen={setSelectedRunId} onStart={() => navigate("agent")} notify={notify} />}
-            {page === "integrations" && <OperationalIntegrations projectId={activeProject.id} health={health} connections={connections} schedule={activeSchedule} onSchedule={updateSchedule} notify={notify} />}
+            {page === "content" && <ContentLibrary userId={userId} workspace={activeProject} runs={projectRuns.filter((run) => run.action === "social")} mediaConfigured={apiCredentials.mediaReady} videoConfigured={apiCredentials.videoReady} onOpen={setSelectedRunId} onStart={() => navigate("agent")} notify={notify} />}
+            {page === "integrations" && <OperationalIntegrations projectId={activeProject.id} health={{ ...health, agentConfigured: runtimeReady, mediaConfigured: apiCredentials.mediaReady }} apiCredentials={apiCredentials} onApiCredentials={setApiCredentials} connections={connections} schedule={activeSchedule} onSchedule={updateSchedule} notify={notify} />}
           </>}
         </div>
       </main>
@@ -327,7 +354,7 @@ function AgentHome({ workspace, runs, health, connections, onRun, onOpen, onNavi
 
   const requestRun = (action: AgentAction, overridePrompt?: string) => {
     if (complete < 35) { onNavigate("brain"); notify("Add the core product facts before running the agent."); return; }
-    if (!health.agentConfigured) { onNavigate("integrations"); notify("The analysis service is not configured yet."); return; }
+    if (!health.agentConfigured) { onNavigate("integrations"); notify("Connect either OpenAI or Gemini to start real work."); return; }
     const direction = overridePrompt ?? prompt;
     if (isCampaignRequest(action, direction)) {
       setPendingCampaign({ action, direction });
@@ -346,7 +373,7 @@ function AgentHome({ workspace, runs, health, connections, onRun, onOpen, onNavi
   return <><div className="op-stack">
     <section className="op-hero"><div className="op-eyebrow"><WandSparkles size={14} /> {workspace.name || "Active project"}</div><h1>What should Market Agent<br />do for this project?</h1><p>Research the live market, turn project truth into campaigns, and create reviewable channel work. The agent completes the work it can do; publishing still requires connected accounts.</p><div className="op-command"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={`Give the agent a specific task for ${workspace.name || "this project"}…`} /><div><span className="op-command-options"><label><input type="checkbox" checked={useWeb} onChange={(event) => setUseWeb(event.target.checked)} /> <Globe2 size={14} /> Live web research</label><label title="Several independent analyses are combined into one execution package."><input type="checkbox" checked={balancedPanel} onChange={(event) => setBalancedPanel(event.target.checked)} /> <UsersRound size={14} /> Balanced review</label></span><button disabled={Boolean(running) || !prompt.trim()} onClick={() => requestRun("chat")}>{running === "chat" ? <LoaderCircle className="spin" size={16} /> : <ArrowRight size={16} />} Run task</button></div></div></section>
     <section className={`op-delivery-alert ${connectedChannels.length ? "connected" : ""}`}><span>{connectedChannels.length ? <Check size={18} /> : <Send size={18} />}</span><div><strong>{connectedChannels.length ? `${connectedChannels.join(", ")} ${connectedChannels.length === 1 ? "is" : "are"} connected` : "No delivery channels are connected"}</strong><p>{connectedChannels.length ? "The agent can prepare work for the authorized channels. Publishing still follows campaign approval and each network’s rules." : "The agent can research, select targets, and prepare final messages. It cannot email, message, or publish until an account is authorized."}</p></div><button onClick={() => onNavigate("integrations")}>{connectedChannels.length ? "Manage connections" : "Connection setup"} <ArrowRight size={14} /></button></section>
-    {!health.agentConfigured && <section className="op-alert"><CircleAlert size={19} /><div><strong>The analysis service is not connected yet.</strong><p>Complete the secure cloud configuration before running a workflow.</p></div><button onClick={() => onNavigate("integrations")}>Connection details <ArrowRight size={14} /></button></section>}
+    {!health.agentConfigured && <section className="op-alert"><CircleAlert size={19} /><div><strong>Connect one core API to start real work.</strong><p>OpenAI or Gemini unlocks reasoning and image creation. Adding all three private APIs gives the strongest strategy review.</p></div><button onClick={() => onNavigate("integrations")}>Connect APIs <ArrowRight size={14} /></button></section>}
     <section><div className="op-section-head"><div><span>Run a complete workflow</span><h2>Real work, saved to the workspace</h2></div></div><div className="op-action-grid">{(["research", "audience", "campaign", "social"] as AgentAction[]).map((action) => { const icons = { research: Globe2, audience: UsersRound, campaign: Rocket, social: MessageSquareText, chat: Bot }; const Icon = icons[action]; return <button key={action} onClick={() => requestRun(action)} disabled={Boolean(running)}><span><Icon size={19} /></span><div><strong>{actionMeta[action].title}</strong><p>{actionMeta[action].description}</p></div>{running === action ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />}</button>; })}</div></section>
     <section><div className="op-section-head"><div><span>Workspace record</span><h2>Recent work</h2></div><small>{runs.length} saved {runs.length === 1 ? "run" : "runs"}</small></div>{runs.length ? <div className="op-run-list">{runs.slice(0, 6).map((run) => <RunRow key={run.id} run={run} onOpen={onOpen} />)}</div> : <EmptyWorkspace onStart={() => onNavigate("brain")} />}</section>
   </div>{pendingCampaign && <><button className="op-intensity-scrim" aria-label="Close campaign style question" onClick={() => setPendingCampaign(null)} /><aside className="op-intensity-panel"><header><span><Rocket size={18} /></span><div><small>One campaign decision</small><strong>How aggressive should this campaign be?</strong></div><button aria-label="Close" onClick={() => setPendingCampaign(null)}><X size={17} /></button></header><div className="op-intensity-body"><p>The agent will do the research, targeting, copy, sequence, and tracking. Choose the pace and pressure.</p><button className="aggressive" onClick={() => chooseIntensity("aggressive")}><span><strong>Aggressive</strong><em>Recommended for this goal</em></span><small>Large first wave, parallel channels, direct commercial language, strong calls to action, fast follow-up.</small><ArrowRight size={16} /></button><button onClick={() => chooseIntensity("assertive")}><span><strong>Assertive</strong></span><small>Meaningful volume, decisive messaging, and fast execution with regular review points.</small><ArrowRight size={16} /></button><button onClick={() => chooseIntensity("careful")}><span><strong>Careful</strong></span><small>Smaller waves, softer calls to action, and more validation before scaling.</small><ArrowRight size={16} /></button><div className="op-intensity-note"><ShieldCheck size={15} /><span>Aggressive changes speed and tactics—not truthfulness, consent, or opt-out rules.</span></div></div></aside></>}</>;
@@ -756,17 +783,26 @@ function compactMaterialsForUpload(materials: PreparedMaterial[]) {
   });
 }
 
-function ContentLibrary({ workspace, runs, mediaConfigured, onOpen, onStart, notify }: { workspace: ProductWorkspace; runs: AgentRun[]; mediaConfigured: boolean; onOpen: (id: string) => void; onStart: () => void; notify: (message: string) => void }) {
+function ContentLibrary({ userId, workspace, runs, mediaConfigured, videoConfigured, onOpen, onStart, notify }: { userId: string; workspace: ProductWorkspace; runs: AgentRun[]; mediaConfigured: boolean; videoConfigured: boolean; onOpen: (id: string) => void; onStart: () => void; notify: (message: string) => void }) {
   const [jobs, setJobs] = useState<MediaJob[]>([]);
   const [summary, setSummary] = useState<MediaBudgetSummary>({ monthlyCapCents: 2500, approvedThisMonthCents: 0, actualThisMonthCents: 0 });
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState("");
   const [direction, setDirection] = useState("");
+  const [assets, setAssets] = useState<ProjectAsset[]>([]);
+  const [proposals, setProposals] = useState<AssetProposal[]>([]);
+  const [assetLink, setAssetLink] = useState("");
+  const [assetWorking, setAssetWorking] = useState("");
+  const assetInput = useRef<HTMLInputElement>(null);
 
   const applyMediaResponse = (data: { job?: MediaJob; jobs?: MediaJob[]; summary?: MediaBudgetSummary }) => {
     if (data.jobs) setJobs(data.jobs);
     if (data.job) setJobs((current) => [data.job!, ...current.filter((job) => job.id !== data.job!.id)]);
     if (data.summary) setSummary(data.summary);
+  };
+  const applyAssetResponse = (data: { assets?: ProjectAsset[]; proposals?: AssetProposal[] }) => {
+    if (data.assets) setAssets(data.assets);
+    if (data.proposals) setProposals(data.proposals);
   };
 
   const refresh = async (silent = false) => {
@@ -804,7 +840,136 @@ function ContentLibrary({ workspace, runs, mediaConfigured, onOpen, onStart, not
     return () => { active = false; window.clearInterval(timer); };
   }, [workspace.id]);
 
-  const prepare = async (kind: "image" | "video") => {
+  useEffect(() => {
+    let active = true;
+    apiFetch(`/api/assets?projectId=${encodeURIComponent(workspace.id)}`)
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Existing assets could not be opened.");
+        if (active) applyAssetResponse(data);
+      })
+      .catch((error) => { if (active) notify(error instanceof Error ? error.message : "Existing assets could not be opened."); });
+    return () => { active = false; };
+  }, [workspace.id]);
+
+  const uploadAssets = async (files: FileList | null) => {
+    const selected = Array.from(files || []);
+    if (!selected.length) return;
+    if (!mediaConfigured) { notify("Connect OpenAI or Gemini before adding assets for analysis."); return; }
+    setAssetWorking(`Reading 1 of ${selected.length}`);
+    try {
+      const token = await getAccessToken();
+      for (const [index, file] of selected.entries()) {
+        setAssetWorking(`Analyzing ${index + 1} of ${selected.length}`);
+        const prepared = await prepareMaterial(file);
+        const compact = compactMaterialsForUpload([prepared])[0];
+        const safeName = file.name.replace(/[^a-z0-9._-]+/gi, "-").slice(-180) || "asset";
+        const pathname = `market-agent-assets/${encodeURIComponent(userId)}/${encodeURIComponent(workspace.id)}/${Date.now()}-${safeName}`;
+        const blob = await upload(pathname, file, {
+          access: "private",
+          handleUploadUrl: "/api/asset-upload",
+          clientPayload: JSON.stringify({ projectId: workspace.id }),
+          headers: { Authorization: `Bearer ${token}` },
+          contentType: file.type || prepared.mimeType,
+          multipart: file.size > 5 * 1024 * 1024,
+        });
+        const response = await apiFetch("/api/assets", {
+          method: "POST",
+          body: JSON.stringify({
+            action: "register-upload",
+            projectId: workspace.id,
+            name: file.name,
+            kind: prepared.kind,
+            mimeType: file.type || prepared.mimeType,
+            sizeBytes: file.size,
+            blobPath: blob.pathname,
+            detail: prepared.detail,
+            text: compact.text,
+            images: compact.images,
+            workspace,
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `${file.name} could not be analyzed.`);
+        applyAssetResponse(data);
+      }
+      notify(`${selected.length} ${selected.length === 1 ? "asset was" : "assets were"} uploaded, tagged, and evaluated.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The assets could not be uploaded.");
+    } finally {
+      setAssetWorking("");
+      if (assetInput.current) assetInput.current.value = "";
+    }
+  };
+
+  const addAssetLink = async () => {
+    if (!assetLink.trim()) return;
+    if (!mediaConfigured) { notify("Connect OpenAI or Gemini before adding assets for analysis."); return; }
+    setAssetWorking("Reading linked asset");
+    try {
+      const response = await apiFetch("/api/assets", { method: "POST", body: JSON.stringify({ action: "add-link", projectId: workspace.id, sourceUrl: assetLink.trim(), workspace }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The linked asset could not be analyzed.");
+      applyAssetResponse(data);
+      setAssetLink("");
+      notify("The linked asset was tagged and evaluated.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The linked asset could not be analyzed.");
+    } finally {
+      setAssetWorking("");
+    }
+  };
+
+  const approveProposal = async (proposal: AssetProposal) => {
+    if (!window.confirm(`Approve up to ${money(proposal.estimatedCostCents)} of API usage to create “${proposal.title}”? The document will be produced immediately.`)) return;
+    setAssetWorking(proposal.id);
+    try {
+      const response = await apiFetch("/api/assets", { method: "POST", body: JSON.stringify({ action: "approve-proposal", id: proposal.id, approvedBudgetCents: proposal.estimatedCostCents, workspace }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The proposal could not be approved.");
+      applyAssetResponse(data);
+      notify(data.proposal?.status === "complete" ? "The approved document is ready." : "Document production started.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The proposal could not be approved.");
+    } finally {
+      setAssetWorking("");
+    }
+  };
+
+  const declineProposal = async (proposal: AssetProposal) => {
+    setAssetWorking(proposal.id);
+    try {
+      const response = await apiFetch("/api/assets", { method: "POST", body: JSON.stringify({ action: "cancel-proposal", id: proposal.id }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The proposal could not be declined.");
+      applyAssetResponse(data);
+      notify("Proposal declined. Nothing was created or spent.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The proposal could not be declined.");
+    } finally {
+      setAssetWorking("");
+    }
+  };
+
+  const downloadProjectFile = async (id: string, type: "asset" | "proposal", name: string) => {
+    setAssetWorking(id);
+    try {
+      const response = await apiFetch(`/api/project-asset?id=${encodeURIComponent(id)}&type=${type}`);
+      if (!response.ok) { const data = await response.json(); throw new Error(data.error || "The file could not be downloaded."); }
+      const url = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = name;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The file could not be downloaded.");
+    } finally {
+      setAssetWorking("");
+    }
+  };
+
+  const prepare = async (kind: "image" | "video", adaptation?: ProjectAsset) => {
     setWorking(`prepare-${kind}`);
     try {
       const response = await apiFetch("/api/media", {
@@ -815,14 +980,15 @@ function ContentLibrary({ workspace, runs, mediaConfigured, onOpen, onStart, not
           kind,
           workspace,
           recentRuns: runs,
-          direction,
+          direction: adaptation ? `Adapt the uploaded asset “${adaptation.name}”. ${adaptation.suggestedChanges.join(" ")} Preserve what is useful, correct the identified weaknesses, and follow the saved brand identity.` : direction,
+          sourceAssetId: adaptation?.kind === "image" ? adaptation.id : "",
         }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The creative could not be prepared.");
       applyMediaResponse(data);
       setDirection("");
-      notify(`The ${kind} brief is ready. Review the maximum cost and approve it when you want production to start.`);
+      notify(`${adaptation ? "The adapted version" : `The ${kind} brief`} is ready. Review the maximum cost and approve it when you want production to start.`);
     } catch (error) {
       notify(error instanceof Error ? error.message : "The creative could not be prepared.");
     } finally {
@@ -832,7 +998,7 @@ function ContentLibrary({ workspace, runs, mediaConfigured, onOpen, onStart, not
 
   const approve = async (job: MediaJob) => {
     const maximum = money(job.estimatedCostCents);
-    if (!window.confirm(`Approve a maximum of ${maximum} for this ${job.kind}? Production starts immediately and cannot spend above this approval.`)) return;
+    if (!window.confirm(`Approve an estimated maximum of ${maximum} for this ${job.kind}? Production starts immediately. Your API provider calculates the final charge.`)) return;
     setWorking(job.id);
     try {
       const response = await apiFetch("/api/media", {
@@ -872,20 +1038,31 @@ function ContentLibrary({ workspace, runs, mediaConfigured, onOpen, onStart, not
   const inProduction = activeJobs.filter((job) => ["approved", "running"].includes(job.status));
   const needsAttention = activeJobs.filter((job) => job.status === "failed");
   const remaining = Math.max(0, summary.monthlyCapCents - summary.approvedThisMonthCents);
+  const activeProposals = proposals.filter((proposal) => proposal.status !== "cancelled");
+  const waitingProposals = activeProposals.filter((proposal) => proposal.status === "awaiting_approval");
+  const producedProposals = activeProposals.filter((proposal) => proposal.status === "complete");
 
   return <div className="op-stack">
     <div className="op-heading"><div className="op-eyebrow">Creative production and saved assets</div><h1>Content library</h1><p>The agent builds the brief from this project's product brain and latest campaign work. You only approve the maximum spend before production starts.</p></div>
 
+    <section className="op-existing-assets"><div className="op-existing-assets__head"><div><small>EXISTING ASSET INTELLIGENCE</small><h2>Drop in everything you already have</h2><p>Upload several files at once or add a public Figma or document link. The agent reads, tags, and decides whether to reuse, adapt, replace, or archive each item.</p></div><button onClick={() => assetInput.current?.click()} disabled={!mediaConfigured || Boolean(assetWorking)}><UploadCloud size={16} />{assetWorking || "Upload assets"}</button><input ref={assetInput} type="file" multiple accept=".pdf,.pptx,.docx,.txt,.md,.csv,image/*,video/*" onChange={(event) => void uploadAssets(event.target.files)} /></div><div className="op-asset-link"><Link2 size={15} /><input value={assetLink} onChange={(event) => setAssetLink(event.target.value)} placeholder="Paste a public Figma, Slides, PDF, or asset link" /><button onClick={() => void addAssetLink()} disabled={!assetLink.trim() || Boolean(assetWorking)}>Add and analyze</button></div>{!mediaConfigured && <div className="op-asset-setup"><KeyRound size={15} /> Connect OpenAI or Gemini first so the agent can evaluate uploaded work.</div>}</section>
+
+    {assets.length > 0 && <section className="op-asset-decisions"><div className="op-section-title"><div><small>AGENT DECISIONS</small><h2>What to use, change, or retire</h2></div><em>{assets.length}</em></div><div className="op-asset-grid">{assets.map((asset) => <article key={asset.id} className={`decision-${asset.recommendation}`}><header><span>{asset.kind === "image" ? <ImageIcon size={16} /> : asset.kind === "video" ? <Video size={16} /> : asset.kind === "figma" ? <LayoutDashboard size={16} /> : <FileText size={16} />}</span><div><strong>{asset.name}</strong><small>{asset.detail || asset.kind}</small></div><em>{asset.status === "failed" ? "Needs attention" : asset.recommendation}</em></header>{asset.status === "failed" ? <p className="error">{asset.error}</p> : <><p>{asset.summary}</p><div className="op-asset-tags">{asset.tags.map((tag) => <span key={tag}>{tag}</span>)}</div><details><summary>Why this decision <ChevronDown size={13} /></summary><p>{asset.rationale}</p>{asset.suggestedChanges.length > 0 && <ul>{asset.suggestedChanges.map((change) => <li key={change}>{change}</li>)}</ul>}</details></>}{asset.status === "ready" && ["adapt", "replace"].includes(asset.recommendation) && ["image", "video"].includes(asset.kind) && <button className="op-adapt-button" onClick={() => void prepare(asset.kind === "video" && videoConfigured ? "video" : "image", asset)} disabled={!mediaConfigured || Boolean(working)}><WandSparkles size={13} /> Prepare {asset.recommendation === "adapt" ? "adapted version" : "replacement"}</button>}{asset.downloadable && <button className="op-asset-download" onClick={() => void downloadProjectFile(asset.id, "asset", asset.name)} disabled={assetWorking === asset.id}><ArrowRight size={13} />{assetWorking === asset.id ? "Downloading…" : "Download original"}</button>}{asset.sourceUrl && <a className="op-asset-download" href={asset.sourceUrl} target="_blank" rel="noreferrer"><ArrowRight size={13} /> Open source</a>}</article>)}</div></section>}
+
+    {waitingProposals.length > 0 && <section className="op-proposal-section"><div className="op-section-title"><div><small>AGENT PROPOSALS · APPROVAL REQUIRED</small><h2>New deliverables worth creating</h2></div><em>{waitingProposals.length}</em></div><div className="op-proposal-list">{waitingProposals.map((proposal) => <article key={proposal.id}><span>{proposal.kind === "deck" ? <LayoutDashboard size={19} /> : <FileText size={19} />}</span><div><small>{proposal.kind === "deck" ? "PRESENTATION DECK" : "PDF DOCUMENT"}</small><strong>{proposal.title}</strong><p>{proposal.description}</p><blockquote>{proposal.rationale}</blockquote></div><aside><em>Up to {money(proposal.estimatedCostCents)} API usage</em><button onClick={() => void approveProposal(proposal)} disabled={assetWorking === proposal.id}>{assetWorking === proposal.id ? "Creating…" : "Approve and create"}</button><button className="secondary" onClick={() => void declineProposal(proposal)} disabled={assetWorking === proposal.id}>Decline</button></aside></article>)}</div></section>}
+
+    {producedProposals.length > 0 && <section className="op-proposal-section"><div className="op-section-title"><div><small>APPROVED DELIVERABLES</small><h2>Created documents and decks</h2></div><em>{producedProposals.length}</em></div><div className="op-produced-list">{producedProposals.map((proposal) => <article key={proposal.id}><span>{proposal.kind === "deck" ? <LayoutDashboard size={18} /> : <FileText size={18} />}</span><div><strong>{proposal.title}</strong><small>{proposal.kind === "deck" ? "Presentation deck · PDF" : "PDF document"}</small></div><button onClick={() => void downloadProjectFile(proposal.id, "proposal", `${proposal.title}.pdf`)} disabled={assetWorking === proposal.id}><ArrowRight size={14} />{assetWorking === proposal.id ? "Downloading…" : "Download"}</button></article>)}</div></section>}
+
     <section className="op-media-budget">
       <div><span><ShieldCheck size={20} /></span><div><small>HARD MONTHLY CEILING</small><strong>{money(summary.monthlyCapCents)} per project</strong><p>{money(summary.actualThisMonthCents)} spent · {money(summary.approvedThisMonthCents)} approved maximum · {money(remaining)} still available</p></div></div>
       <div className="op-budget-meter"><i style={{ width: `${Math.min(100, Math.round((summary.approvedThisMonthCents / Math.max(1, summary.monthlyCapCents)) * 100))}%` }} /></div>
-      <small>Every asset needs a separate approval. The server rejects any request above its approval or this monthly ceiling.</small>
+      <small>Every asset needs a separate approval. The app will not start requests whose approved estimates exceed this ceiling; your connected provider calculates the final charge.</small>
     </section>
 
     <section className="op-media-create">
       <div className="op-media-create__head"><div><span><WandSparkles size={19} /></span><div><strong>Let the agent create the asset</strong><p>No form to complete. Add a correction only if you want one; otherwise the project context drives the creative.</p></div></div>{!mediaConfigured && <em>Setup in progress</em>}</div>
       <textarea value={direction} onChange={(event) => setDirection(event.target.value)} placeholder="Optional correction, e.g. make it energetic and cinematic. Leave blank for the agent to decide." />
-      <div className="op-media-actions"><button onClick={() => void prepare("image")} disabled={!mediaConfigured || Boolean(working)}><ImageIcon size={16} />{working === "prepare-image" ? "Preparing…" : "Prepare campaign image"}</button><button onClick={() => void prepare("video")} disabled={!mediaConfigured || Boolean(working)}><Video size={16} />{working === "prepare-video" ? "Preparing…" : "Prepare short video"}</button></div>
+      <div className="op-media-actions"><button onClick={() => void prepare("image")} disabled={!mediaConfigured || Boolean(working)}><ImageIcon size={16} />{working === "prepare-image" ? "Preparing…" : "Prepare campaign image"}</button><button onClick={() => void prepare("video")} disabled={!videoConfigured || Boolean(working)} title={videoConfigured ? "" : "Connect Gemini to create video"}><Video size={16} />{working === "prepare-video" ? "Preparing…" : videoConfigured ? "Prepare short video" : "Connect Gemini for video"}</button></div>
       <small>Preparing a brief is free. Paid generation begins only after the next approval.</small>
     </section>
 
@@ -962,8 +1139,10 @@ function sourceDisplayName(source: AgentRun["sources"][number]) {
   }
 }
 
-function OperationalIntegrations({ projectId, health, connections, schedule, onSchedule, notify }: { projectId: string; health: HealthState; connections: ConnectionStatus; schedule: AgentSchedule; onSchedule: (schedule: AgentSchedule) => void; notify: (message: string) => void }) {
+function OperationalIntegrations({ projectId, health, apiCredentials, onApiCredentials, connections, schedule, onSchedule, notify }: { projectId: string; health: HealthState; apiCredentials: ApiCredentialStatus; onApiCredentials: (status: ApiCredentialStatus) => void; connections: ConnectionStatus; schedule: AgentSchedule; onSchedule: (schedule: AgentSchedule) => void; notify: (message: string) => void }) {
   const [connecting, setConnecting] = useState("");
+  const [savingProvider, setSavingProvider] = useState<ApiProvider | "">("");
+  const [keyDrafts, setKeyDrafts] = useState<Record<ApiProvider, string>>({ openai: "", google: "", anthropic: "" });
   const connectAccount = async (provider: "google-gmail" | "linkedin" | "instagram" | "tiktok" | "x") => {
     setConnecting(provider);
     try {
@@ -976,8 +1155,45 @@ function OperationalIntegrations({ projectId, health, connections, schedule, onS
       setConnecting("");
     }
   };
+  const saveApiCredential = async (provider: ApiProvider) => {
+    const apiKey = keyDrafts[provider].trim();
+    if (!apiKey) { notify("Paste the API key first."); return; }
+    setSavingProvider(provider);
+    try {
+      const response = await apiFetch("/api/api-credentials", { method: "POST", body: JSON.stringify({ provider, apiKey }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The private API connection could not be saved.");
+      onApiCredentials(data as ApiCredentialStatus);
+      setKeyDrafts((current) => ({ ...current, [provider]: "" }));
+      notify("Private API connection saved.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The private API connection could not be saved.");
+    } finally {
+      setSavingProvider("");
+    }
+  };
+  const disconnectApiCredential = async (provider: ApiProvider) => {
+    if (!window.confirm("Disconnect this private API key? Automated work that needs it will pause.")) return;
+    setSavingProvider(provider);
+    try {
+      const response = await apiFetch(`/api/api-credentials?provider=${encodeURIComponent(provider)}`, { method: "DELETE" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The private API connection could not be removed.");
+      onApiCredentials(data as ApiCredentialStatus);
+      if (schedule.enabled) onSchedule({ ...schedule, enabled: false });
+      notify("Private API connection removed. Automatic work is paused.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The private API connection could not be removed.");
+    } finally {
+      setSavingProvider("");
+    }
+  };
+  const apiOptions: Array<{ provider: ApiProvider; name: string; account: string; detail: string; tier: string; helpUrl: string }> = [
+    { provider: "openai", name: "OpenAI API", account: "Core option", detail: "Reasoning, research, project memory, synthesis, and image creation", tier: "OpenAI account", helpUrl: "https://platform.openai.com/api-keys" },
+    { provider: "google", name: "Gemini API", account: "Core option", detail: "Reasoning, a second strategic perspective, image creation, and video creation", tier: "Google Cloud project", helpUrl: "https://console.cloud.google.com/apis/credentials" },
+    { provider: "anthropic", name: "Claude API", account: "Optional reviewer", detail: "An additional independent review of messaging, risks, and strategy", tier: "Anthropic account", helpUrl: "https://console.anthropic.com/settings/keys" },
+  ];
   const connectors = [
-    { name: "Analysis service", detail: "Independent analyses are synthesized into one balanced recommendation", credential: "Secure cloud configuration", ready: health.agentConfigured, core: true },
     { name: "Neon", detail: "Private sign-in and cross-device Postgres persistence", credential: "Database + managed auth", ready: health.databaseConfigured && health.authConfigured, core: true },
     { name: "Google Analytics", detail: "GA4 traffic, attribution, events, and conversion reporting", credential: "GA4 property + Google OAuth", ready: health.analyticsConfigured, core: false },
     { id: "google-gmail" as const, name: "Email", detail: connections.gmail.connected ? `Authorized sender: ${connections.gmail.accountEmail}` : "Approved outreach from your dedicated mailbox", credential: "Secure mailbox authorization", ready: connections.gmail.connected, configured: connections.gmail.configured, core: false },
@@ -987,7 +1203,16 @@ function OperationalIntegrations({ projectId, health, connections, schedule, onS
     { id: "x" as const, name: "X", detail: connections.x.connected ? `Authorized account: ${connections.x.accountLabel}` : "Posts, media, and performance signals", credential: "X account authorization", ready: connections.x.connected, configured: connections.x.configured, core: false },
   ];
   const readyToAuthorize = connectors.filter((connector) => connector.id && connector.configured && !connector.ready);
-  return <div className="op-stack"><div className="op-heading"><div className="op-eyebrow">Runtime and distribution</div><h1>Connections</h1><p>The agent prepares each integration. You only sign in and approve the account when its authorization button is ready.</p></div>{readyToAuthorize.length > 0 && <section className="op-connection-blocker"><CircleAlert size={21} /><div><strong>{readyToAuthorize.length} {readyToAuthorize.length === 1 ? "account is" : "accounts are"} ready for your approval</strong><p>The technical setup is complete. Choose Connect on a network below, sign in, and approve access.</p></div></section>}<section className={`op-runtime ${health.agentConfigured ? "ready" : ""}`}><span>{health.agentConfigured ? <Check size={21} /> : <CircleAlert size={21} />}</span><div><strong>{health.agentConfigured ? "Research and preparation are live" : "The analysis service is not connected"}</strong><p>{health.agentConfigured ? "The cloud service can research markets and create campaign material." : "Complete the secure production configuration before running a workflow."}</p></div></section><section className="op-schedule-card"><div><span><Bot size={18} /></span><div><strong>Daily autonomous market pulse</strong><p>Runs each morning Eastern time in the cloud, creates a new draft, and never publishes it.</p></div><label className="op-switch"><input type="checkbox" checked={schedule.enabled} onChange={(event) => onSchedule({ ...schedule, enabled: event.target.checked })} /><i /></label></div><div className="op-schedule-fields"><label><span>Workflow</span><select value={schedule.action} onChange={(event) => onSchedule({ ...schedule, action: event.target.value as AgentSchedule["action"] })}><option value="research">Market research</option><option value="audience">Audience analysis</option><option value="campaign">30-day campaign</option><option value="social">Social content pack</option></select></label><label className="wide"><span>Direction</span><textarea value={schedule.prompt} onChange={(event) => onSchedule({ ...schedule, prompt: event.target.value })} /></label></div><small>{schedule.lastRunAt ? `Last automatic run: ${new Date(schedule.lastRunAt).toLocaleString()}` : "No automatic run has happened yet."}</small></section><div className="op-connector-grid">{connectors.map((connector) => <article key={connector.name}><div><span>{connector.name.slice(0, 2)}</span><div><strong>{connector.name}</strong><small>{connector.core ? "Cloud core" : "Delivery channel"}</small></div><em className={connector.ready ? "ready" : ""}>{connector.ready ? "Connected" : connector.configured ? "Ready to approve" : "Agent setup"}</em></div><p>{connector.detail}</p><code>{connector.credential}</code>{connector.id && !connector.ready && <button className="op-connect-button" onClick={() => void connectAccount(connector.id)} disabled={!connector.configured || Boolean(connecting)}>{connector.configured ? (connecting === connector.id ? `Opening ${connector.name}…` : `Connect ${connector.name}`) : "Setup in progress"}</button>}</article>)}</div><section className="op-truth-card"><ShieldCheck size={20} /><div><strong>Nothing publishes without a real account</strong><p>The agent can prepare targets, copy, schedules, and assets now. Sending and publishing become available only after the relevant account confirms authorization and the platform grants the required permission.</p></div></section></div>;
+  return <div className="op-stack">
+    <div className="op-heading"><div className="op-eyebrow">Private services and distribution</div><h1>Connections</h1><p>Connect your own private APIs once for every project in your account. Delivery channels remain connected separately for each project.</p></div>
+    <section className={`op-runtime ${health.agentConfigured ? "ready" : ""}`}><span>{health.agentConfigured ? <Check size={21} /> : <KeyRound size={21} />}</span><div><strong>{apiCredentials.collaborationReady ? "Three-agent strategy review is ready" : health.agentConfigured ? `${apiCredentials.connectedCount} private ${apiCredentials.connectedCount === 1 ? "API is" : "APIs are"} connected` : "Connect OpenAI or Gemini to begin"}</strong><p>{apiCredentials.collaborationReady ? "All three independent agents will work together on strategy and produce a balanced final recommendation." : health.agentConfigured ? "Real work is enabled. Add the remaining APIs for stronger cross-checking and better-balanced strategy." : "One core API unlocks reasoning and image creation. Connect all three for the best strategic performance."}</p></div></section>
+    {!health.agentConfigured && <section className="op-starter-guide"><span><Sparkles size={19} /></span><div><small>STARTER ASSISTANT</small><strong>I’ll help you connect the right services.</strong><p>Start with either OpenAI or Gemini. That is enough to unlock real reasoning and image creation. Claude adds an independent reviewer. When all three are connected, three agents work together on each balanced strategy.</p></div></section>}
+    <section className="op-api-vault"><div className="op-api-vault__head"><div><small>ACCOUNT-WIDE API VAULT</small><h2>Your private analysis connections</h2><p>One core API is required. Two improve coverage. All three unlock the strongest collaborative review. Your keys are isolated to your signed-in account.</p></div><span><ShieldCheck size={17} /> Encrypted</span></div><div className="op-api-vault__grid">{apiOptions.map((option) => { const saved = apiCredentials.credentials[option.provider]; const busy = savingProvider === option.provider; return <article key={option.provider} className={saved.connected ? "connected" : ""}><div className="op-api-card__title"><span><KeyRound size={16} /></span><div><strong>{option.name}</strong><small>{option.account}</small></div><em>{saved.connected ? "Saved" : option.provider === "anthropic" ? "Optional" : "Core"}</em></div><p>{option.detail}</p><a className="op-api-help" href={option.helpUrl} target="_blank" rel="noreferrer">Create or find key in {option.tier} <ArrowRight size={11} /></a>{saved.connected ? <div className="op-api-saved"><code>Key ending ••••{saved.hint}</code><div><button className="danger" onClick={() => void disconnectApiCredential(option.provider)} disabled={busy}>{busy ? "Removing…" : "Disconnect"}</button></div></div> : null}<label><span>{saved.connected ? "Paste a new key to replace it" : "Paste API key"}</span><div><input type="password" value={keyDrafts[option.provider]} onChange={(event) => setKeyDrafts((current) => ({ ...current, [option.provider]: event.target.value }))} placeholder="Your private API key" autoComplete="off" spellCheck={false} /><button onClick={() => void saveApiCredential(option.provider)} disabled={busy || !keyDrafts[option.provider].trim()}>{busy ? "Saving…" : saved.connected ? "Replace" : "Connect"}</button></div></label></article>; })}</div><div className="op-api-how"><div><strong>OpenAI</strong><p>Open the API keys page, create a secret key, copy it once, and paste it above.</p></div><div><strong>Gemini</strong><p>In Google Cloud, enable the Gemini API, open APIs &amp; Services → Credentials, create an API key, restrict it to that API, and paste it above.</p></div><div><strong>Claude</strong><p>Open the Anthropic Console key settings, create a key, copy it, and paste it above.</p></div></div><small className="op-api-vault__note">Keys are used only on the server for this account’s requests and scheduled work. The browser never stores them, and the interface shows only the final four characters after saving.</small></section>
+    {readyToAuthorize.length > 0 && <section className="op-connection-blocker"><CircleAlert size={21} /><div><strong>{readyToAuthorize.length} {readyToAuthorize.length === 1 ? "account is" : "accounts are"} ready for your approval</strong><p>Choose Connect on a channel below, sign in, and approve access.</p></div></section>}
+    <section className="op-schedule-card"><div><span><Bot size={18} /></span><div><strong>Daily autonomous market pulse</strong><p>Runs each morning Eastern time in the cloud, creates a new draft, and never publishes it.</p></div><label className="op-switch"><input type="checkbox" checked={schedule.enabled} disabled={!apiCredentials.ready} onChange={(event) => onSchedule({ ...schedule, enabled: event.target.checked })} /><i /></label></div><div className="op-schedule-fields"><label><span>Workflow</span><select value={schedule.action} onChange={(event) => onSchedule({ ...schedule, action: event.target.value as AgentSchedule["action"] })}><option value="research">Market research</option><option value="audience">Audience analysis</option><option value="campaign">30-day campaign</option><option value="social">Social content pack</option></select></label><label className="wide"><span>Direction</span><textarea value={schedule.prompt} onChange={(event) => onSchedule({ ...schedule, prompt: event.target.value })} /></label></div><small>{!apiCredentials.ready ? "Connect OpenAI or Gemini to enable automatic work." : schedule.lastRunAt ? `Last automatic run: ${new Date(schedule.lastRunAt).toLocaleString()}` : "No automatic run has happened yet."}</small></section>
+    <div className="op-connector-grid">{connectors.map((connector) => <article key={connector.name}><div><span>{connector.name.slice(0, 2)}</span><div><strong>{connector.name}</strong><small>{connector.core ? "Cloud core" : "Delivery channel"}</small></div><em className={connector.ready ? "ready" : ""}>{connector.ready ? "Connected" : connector.configured ? "Ready to approve" : "Agent setup"}</em></div><p>{connector.detail}</p><code>{connector.credential}</code>{connector.id && !connector.ready && <button className="op-connect-button" onClick={() => void connectAccount(connector.id)} disabled={!connector.configured || Boolean(connecting)}>{connector.configured ? (connecting === connector.id ? `Opening ${connector.name}…` : `Connect ${connector.name}`) : "Setup in progress"}</button>}</article>)}</div>
+    <section className="op-truth-card"><ShieldCheck size={20} /><div><strong>Nothing publishes without a real account</strong><p>The agent can prepare targets, copy, schedules, and assets now. Sending and publishing become available only after the relevant account confirms authorization and the platform grants the required permission.</p></div></section>
+  </div>;
 }
 
 function Field({ label, value, onChange, placeholder, multiline = false, wide = false }: { label: string; value: string; onChange: (value: string) => void; placeholder: string; multiline?: boolean; wide?: boolean }) {
