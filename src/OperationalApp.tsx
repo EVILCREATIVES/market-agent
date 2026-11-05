@@ -38,7 +38,7 @@ import {
 import { createDefaultSchedule, createEmptyProject, loadState, saveState } from "./operational/storage";
 import { prepareLogo, prepareMaterial, type PreparedMaterial } from "./operational/materials";
 import { apiFetch } from "./auth";
-import type { AgentAction, AgentRun, AgentSchedule, AppState, ConnectionStatus, HealthState, ProductSource, ProductWorkspace, ProjectChatMessage, RunStatus } from "./operational/types";
+import type { AgentAction, AgentRun, AgentSchedule, AppState, ConnectionStatus, HealthState, MediaBudgetSummary, MediaJob, ProductSource, ProductWorkspace, ProjectChatMessage, RunStatus } from "./operational/types";
 
 type Page = "agent" | "brain" | "research" | "campaigns" | "content" | "integrations";
 type CampaignIntensity = "careful" | "assertive" | "aggressive";
@@ -75,7 +75,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [health, setHealth] = useState<HealthState>({ checked: false, apiOnline: false, agentConfigured: false, databaseConfigured: false, authConfigured: false, analyticsConfigured: false, model: "", runtime: "" });
+  const [health, setHealth] = useState<HealthState>({ checked: false, apiOnline: false, agentConfigured: false, databaseConfigured: false, authConfigured: false, analyticsConfigured: false, mediaConfigured: false, model: "", runtime: "" });
   const [cloudReady, setCloudReady] = useState(false);
   const [cloudError, setCloudError] = useState("");
   const [cloudSaving, setCloudSaving] = useState(false);
@@ -85,8 +85,8 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
   useEffect(() => {
     fetch("/api/health")
       .then((response) => response.ok ? response.json() : Promise.reject())
-      .then((data) => setHealth({ checked: true, apiOnline: true, agentConfigured: Boolean(data.agentConfigured), databaseConfigured: Boolean(data.databaseConfigured), authConfigured: Boolean(data.authConfigured), analyticsConfigured: Boolean(data.analyticsConfigured), model: data.model || "", runtime: data.runtime || "" }))
-      .catch(() => setHealth({ checked: true, apiOnline: false, agentConfigured: false, databaseConfigured: false, authConfigured: false, analyticsConfigured: false, model: "", runtime: "" }));
+      .then((data) => setHealth({ checked: true, apiOnline: true, agentConfigured: Boolean(data.agentConfigured), databaseConfigured: Boolean(data.databaseConfigured), authConfigured: Boolean(data.authConfigured), analyticsConfigured: Boolean(data.analyticsConfigured), mediaConfigured: Boolean(data.mediaConfigured), model: data.model || "", runtime: data.runtime || "" }))
+      .catch(() => setHealth({ checked: true, apiOnline: false, agentConfigured: false, databaseConfigured: false, authConfigured: false, analyticsConfigured: false, mediaConfigured: false, model: "", runtime: "" }));
   }, []);
 
   useEffect(() => {
@@ -237,7 +237,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
             {page === "brain" && <ProductBrain key={activeProject.id} workspace={activeProject} onSave={updateWorkspace} notify={notify} />}
             {page === "research" && <RunLibrary title="Research" description={`Live market and audience work generated from ${activeProject.name || "this project"}'s product brain.`} empty="No research has been run for this project yet." runs={projectRuns.filter((run) => ["research", "audience"].includes(run.action))} onOpen={setSelectedRunId} onStart={() => navigate("agent")} />}
             {page === "campaigns" && <RunLibrary title="Campaigns" description="Campaign plans become real project records here—never fictional performance." empty="No campaigns have been generated for this project yet." runs={projectRuns.filter((run) => run.action === "campaign")} onOpen={setSelectedRunId} onStart={() => navigate("agent")} />}
-            {page === "content" && <RunLibrary title="Content library" description="Generated social packs stay editable and require explicit approval." empty="No content has been generated for this project yet." runs={projectRuns.filter((run) => run.action === "social")} onOpen={setSelectedRunId} onStart={() => navigate("agent")} />}
+            {page === "content" && <ContentLibrary workspace={activeProject} runs={projectRuns.filter((run) => run.action === "social")} mediaConfigured={Boolean(health.mediaConfigured)} onOpen={setSelectedRunId} onStart={() => navigate("agent")} notify={notify} />}
             {page === "integrations" && <OperationalIntegrations projectId={activeProject.id} health={health} connections={connections} schedule={activeSchedule} onSchedule={updateSchedule} notify={notify} />}
           </>}
         </div>
@@ -754,6 +754,164 @@ function compactMaterialsForUpload(materials: PreparedMaterial[]) {
     }
     return { ...material, text, images };
   });
+}
+
+function ContentLibrary({ workspace, runs, mediaConfigured, onOpen, onStart, notify }: { workspace: ProductWorkspace; runs: AgentRun[]; mediaConfigured: boolean; onOpen: (id: string) => void; onStart: () => void; notify: (message: string) => void }) {
+  const [jobs, setJobs] = useState<MediaJob[]>([]);
+  const [summary, setSummary] = useState<MediaBudgetSummary>({ monthlyCapCents: 2500, approvedThisMonthCents: 0, actualThisMonthCents: 0 });
+  const [loading, setLoading] = useState(true);
+  const [working, setWorking] = useState("");
+  const [direction, setDirection] = useState("");
+
+  const applyMediaResponse = (data: { job?: MediaJob; jobs?: MediaJob[]; summary?: MediaBudgetSummary }) => {
+    if (data.jobs) setJobs(data.jobs);
+    if (data.job) setJobs((current) => [data.job!, ...current.filter((job) => job.id !== data.job!.id)]);
+    if (data.summary) setSummary(data.summary);
+  };
+
+  const refresh = async (silent = false) => {
+    if (!silent) setLoading(true);
+    try {
+      const response = await apiFetch(`/api/media?projectId=${encodeURIComponent(workspace.id)}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Media library could not be opened.");
+      applyMediaResponse(data);
+    } catch (error) {
+      if (!silent) notify(error instanceof Error ? error.message : "Media library could not be opened.");
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    apiFetch(`/api/media?projectId=${encodeURIComponent(workspace.id)}`)
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Media library could not be opened.");
+        if (active) applyMediaResponse(data);
+      })
+      .catch((error) => { if (active) notify(error instanceof Error ? error.message : "Media library could not be opened."); })
+      .finally(() => { if (active) setLoading(false); });
+    const timer = window.setInterval(() => {
+      if (!active) return;
+      apiFetch(`/api/media?projectId=${encodeURIComponent(workspace.id)}`)
+        .then(async (response) => response.ok ? response.json() : null)
+        .then((data) => { if (active && data) applyMediaResponse(data); })
+        .catch(() => undefined);
+    }, 8000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [workspace.id]);
+
+  const prepare = async (kind: "image" | "video") => {
+    setWorking(`prepare-${kind}`);
+    try {
+      const response = await apiFetch("/api/media", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "prepare",
+          projectId: workspace.id,
+          kind,
+          workspace,
+          recentRuns: runs,
+          direction,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The creative could not be prepared.");
+      applyMediaResponse(data);
+      setDirection("");
+      notify(`The ${kind} brief is ready. Review the maximum cost and approve it when you want production to start.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The creative could not be prepared.");
+    } finally {
+      setWorking("");
+    }
+  };
+
+  const approve = async (job: MediaJob) => {
+    const maximum = money(job.estimatedCostCents);
+    if (!window.confirm(`Approve a maximum of ${maximum} for this ${job.kind}? Production starts immediately and cannot spend above this approval.`)) return;
+    setWorking(job.id);
+    try {
+      const response = await apiFetch("/api/media", {
+        method: "POST",
+        body: JSON.stringify({ action: "approve", id: job.id, approvedBudgetCents: job.estimatedCostCents }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Budget approval could not be applied.");
+      applyMediaResponse(data);
+      notify(data.job?.status === "complete" ? `${job.kind === "image" ? "Image" : "Video"} created and saved.` : "Budget approved. Production has started.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Budget approval could not be applied.");
+      await refresh(true);
+    } finally {
+      setWorking("");
+    }
+  };
+
+  const cancel = async (job: MediaJob) => {
+    setWorking(job.id);
+    try {
+      const response = await apiFetch("/api/media", { method: "POST", body: JSON.stringify({ action: "cancel", id: job.id }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The request could not be cancelled.");
+      applyMediaResponse(data);
+      notify("The unapproved request was cancelled. Nothing was spent.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The request could not be cancelled.");
+    } finally {
+      setWorking("");
+    }
+  };
+
+  const activeJobs = jobs.filter((job) => job.status !== "cancelled");
+  const waiting = activeJobs.filter((job) => job.status === "awaiting_budget");
+  const completed = activeJobs.filter((job) => job.status === "complete");
+  const inProduction = activeJobs.filter((job) => ["approved", "running"].includes(job.status));
+  const needsAttention = activeJobs.filter((job) => job.status === "failed");
+  const remaining = Math.max(0, summary.monthlyCapCents - summary.approvedThisMonthCents);
+
+  return <div className="op-stack">
+    <div className="op-heading"><div className="op-eyebrow">Creative production and saved assets</div><h1>Content library</h1><p>The agent builds the brief from this project's product brain and latest campaign work. You only approve the maximum spend before production starts.</p></div>
+
+    <section className="op-media-budget">
+      <div><span><ShieldCheck size={20} /></span><div><small>HARD MONTHLY CEILING</small><strong>{money(summary.monthlyCapCents)} per project</strong><p>{money(summary.actualThisMonthCents)} spent · {money(summary.approvedThisMonthCents)} approved maximum · {money(remaining)} still available</p></div></div>
+      <div className="op-budget-meter"><i style={{ width: `${Math.min(100, Math.round((summary.approvedThisMonthCents / Math.max(1, summary.monthlyCapCents)) * 100))}%` }} /></div>
+      <small>Every asset needs a separate approval. The server rejects any request above its approval or this monthly ceiling.</small>
+    </section>
+
+    <section className="op-media-create">
+      <div className="op-media-create__head"><div><span><WandSparkles size={19} /></span><div><strong>Let the agent create the asset</strong><p>No form to complete. Add a correction only if you want one; otherwise the project context drives the creative.</p></div></div>{!mediaConfigured && <em>Setup in progress</em>}</div>
+      <textarea value={direction} onChange={(event) => setDirection(event.target.value)} placeholder="Optional correction, e.g. make it energetic and cinematic. Leave blank for the agent to decide." />
+      <div className="op-media-actions"><button onClick={() => void prepare("image")} disabled={!mediaConfigured || Boolean(working)}><ImageIcon size={16} />{working === "prepare-image" ? "Preparing…" : "Prepare campaign image"}</button><button onClick={() => void prepare("video")} disabled={!mediaConfigured || Boolean(working)}><Video size={16} />{working === "prepare-video" ? "Preparing…" : "Prepare short video"}</button></div>
+      <small>Preparing a brief is free. Paid generation begins only after the next approval.</small>
+    </section>
+
+    {waiting.length > 0 && <section className="op-media-section"><div className="op-section-title"><div><small>YOUR APPROVAL REQUIRED</small><h2>Ready for production</h2></div><em>{waiting.length}</em></div><div className="op-media-job-list">{waiting.map((job) => <MediaJobCard key={job.id} job={job} working={working === job.id} onApprove={() => void approve(job)} onCancel={() => void cancel(job)} />)}</div></section>}
+
+    {inProduction.length > 0 && <section className="op-media-section"><div className="op-section-title"><div><small>CLOUD PRODUCTION</small><h2>Creating now</h2></div><LoaderCircle className="spin" size={18} /></div><div className="op-media-job-list">{inProduction.map((job) => <MediaJobCard key={job.id} job={job} working />)}</div></section>}
+
+    {needsAttention.length > 0 && <section className="op-media-section"><div className="op-section-title"><div><small>NEEDS ATTENTION</small><h2>Production issues</h2></div><em>{needsAttention.length}</em></div><div className="op-media-job-list">{needsAttention.map((job) => <MediaJobCard key={job.id} job={job} working={false} />)}</div></section>}
+
+    <section className="op-media-section"><div className="op-section-title"><div><small>SAVED MEDIA</small><h2>Generated assets</h2></div><em>{completed.length}</em></div>{loading ? <div className="op-media-loading"><LoaderCircle className="spin" size={19} /> Opening media library…</div> : completed.length ? <div className="op-media-gallery">{completed.map((job) => <article key={job.id}>{job.kind === "video" ? <video src={job.assetUrl} controls playsInline preload="metadata" /> : <img src={job.assetUrl} alt={job.title} />}<div><span>{job.kind === "video" ? <Video size={15} /> : <ImageIcon size={15} />}</span><div><strong>{job.title}</strong><small>{job.actualCostCents == null ? `Approved up to ${money(job.approvedBudgetCents)}` : `${money(job.actualCostCents)} actual cost`} · {new Date(job.createdAt).toLocaleDateString()}</small></div><a href={job.assetUrl} target="_blank" rel="noreferrer" aria-label="Open media"><ArrowRight size={15} /></a></div></article>)}</div> : <div className="op-empty op-empty--media"><span><ImageIcon size={22} /></span><h2>No generated media yet.</h2><p>The agent can prepare the first image or video brief above without spending anything.</p></div>}</section>
+
+    <section className="op-media-section"><div className="op-section-title"><div><small>WRITING AND CHANNEL PACKS</small><h2>Social content</h2></div><em>{runs.length}</em></div>{runs.length ? <div className="op-run-list">{runs.map((run) => <RunRow key={run.id} run={run} onOpen={onOpen} />)}</div> : <div className="op-empty op-empty--compact"><span><FileText size={22} /></span><h2>No social content pack yet.</h2><p>Run the agent to create channel copy and a publishing queue.</p><button onClick={onStart}><Sparkles size={15} /> Open agent</button></div>}</section>
+  </div>;
+}
+
+function MediaJobCard({ job, working, onApprove, onCancel }: { job: MediaJob; working: boolean; onApprove?: () => void; onCancel?: () => void }) {
+  return <article className={`op-media-job op-media-job--${job.status}`}><div className="op-media-job__icon">{job.kind === "video" ? <Video size={19} /> : <ImageIcon size={19} />}</div><div className="op-media-job__body"><div><strong>{job.title}</strong><em>{mediaStatusLabel(job.status)}</em></div><p>{job.kind === "video" ? `${job.durationSeconds}-second vertical video with audio` : "Campaign-ready vertical image"} · {job.resolution} · {job.aspectRatio}</p><details><summary>See the agent's creative brief</summary><p>{job.prompt}</p></details>{job.error && <small className="error">{job.error}</small>}</div><div className="op-media-job__cost"><small>MAXIMUM</small><strong>{money(job.estimatedCostCents)}</strong>{job.status === "awaiting_budget" && <><button onClick={onApprove} disabled={working}>{working ? "Starting…" : `Approve ${money(job.estimatedCostCents)} max`}</button><button className="secondary" onClick={onCancel} disabled={working}>Cancel</button></>}{["approved", "running"].includes(job.status) && <span><LoaderCircle className="spin" size={14} /> Creating</span>}</div></article>;
+}
+
+function mediaStatusLabel(status: MediaJob["status"]) {
+  const labels: Record<MediaJob["status"], string> = { awaiting_budget: "Waiting for budget", approved: "Approved", running: "In production", complete: "Complete", failed: "Needs attention", cancelled: "Cancelled" };
+  return labels[status];
+}
+
+function money(cents: number) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(cents / 100);
 }
 
 function RunLibrary({ title, description, empty, runs, onOpen, onStart }: { title: string; description: string; empty: string; runs: AgentRun[]; onOpen: (id: string) => void; onStart: () => void }) {

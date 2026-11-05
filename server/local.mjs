@@ -2,6 +2,7 @@ import http from "node:http";
 import { buildProductBrain, createRunRecord, refineProductBrain, runMarketingAgent } from "./agent.mjs";
 import { requireUser } from "./auth.mjs";
 import { appendRunForUser, enforceRunBudget, loadStateForUser, saveStateForUser } from "./db.mjs";
+import { approveMediaJob, cancelMediaJob, listMediaJobs, prepareMediaJob } from "./media.mjs";
 
 const port = Number(process.env.PORT || 8787);
 
@@ -36,6 +37,7 @@ const server = http.createServer(async (req, res) => {
       databaseConfigured: Boolean(process.env.DATABASE_URL),
       authConfigured: Boolean(process.env.NEON_AUTH_BASE_URL),
       analyticsConfigured: Boolean(process.env.GA_PROPERTY_ID),
+      mediaConfigured: providers.gemini,
       model: "Balanced analysis",
       runtime: "Secure cloud runtime",
       persistence: "cloud-postgres",
@@ -82,6 +84,29 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, await refineProductBrain(await readJson(req)));
     } catch (error) {
       return json(res, error.statusCode || 500, { error: error.message || "The product brain could not be updated." });
+    }
+  }
+
+  if (req.method === "GET" && req.url?.startsWith("/api/media")) {
+    try {
+      const { userId } = await requireUser(req);
+      const url = new URL(req.url, `http://127.0.0.1:${port}`);
+      return json(res, 200, await listMediaJobs(userId, url.searchParams.get("projectId")));
+    } catch (error) {
+      return json(res, error.statusCode || 500, { error: error.message || "Media request failed." });
+    }
+  }
+
+  if (req.method === "POST" && req.url === "/api/media") {
+    try {
+      const { userId } = await requireUser(req);
+      const payload = await readJson(req);
+      if (payload.action === "prepare") return json(res, 200, await prepareMediaJob(userId, payload));
+      if (payload.action === "approve") return json(res, 200, await approveMediaJob(userId, payload));
+      if (payload.action === "cancel") return json(res, 200, await cancelMediaJob(userId, payload));
+      return json(res, 400, { error: "Unknown media action." });
+    } catch (error) {
+      return json(res, error.statusCode || 500, { error: error.message || "Media request failed." });
     }
   }
 

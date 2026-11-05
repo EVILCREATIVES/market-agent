@@ -93,8 +93,39 @@ export interface HealthState {
   databaseConfigured: boolean;
   authConfigured: boolean;
   analyticsConfigured: boolean;
+  mediaConfigured?: boolean;
   model: string;
   runtime: string;
+}
+
+export type MediaJobStatus = "awaiting_budget" | "approved" | "running" | "complete" | "failed" | "cancelled";
+
+export interface MediaJob {
+  id: string;
+  projectId: string;
+  kind: "image" | "video";
+  title: string;
+  prompt: string;
+  status: MediaJobStatus;
+  aspectRatio: string;
+  resolution: string;
+  durationSeconds: number | null;
+  estimatedCostCents: number;
+  approvedBudgetCents: number;
+  actualCostCents: number | null;
+  currency: "USD";
+  assetUrl: string;
+  mimeType: string;
+  error: string;
+  approvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MediaBudgetSummary {
+  monthlyCapCents: number;
+  approvedThisMonthCents: number;
+  actualThisMonthCents: number;
 }
 
 export interface ConnectionStatus {
