@@ -13,15 +13,15 @@ const SOCIAL_SCOPES = {
 
 let socialTableReady = false;
 
-export async function getSocialConnectionStatus(userId, env = process.env) {
+export async function getSocialConnectionStatus(userId, projectId = "project-default", env = process.env) {
   const status = emptySocialStatus(env);
   if (!env.DATABASE_URL) return status;
   await ensureSocialTable(env);
   const result = await getPool(env).query(
     `SELECT provider, account_id, account_label, account_email, scopes, status, connected_at, updated_at
        FROM market_agent_connections
-      WHERE user_id = $1 AND provider = ANY($2::text[])`,
-    [userId, SOCIAL_PROVIDERS],
+      WHERE user_id = $1 AND project_id = $2 AND provider = ANY($3::text[])`,
+    [userId, projectId, SOCIAL_PROVIDERS],
   );
   for (const row of result.rows) {
     if (row.status !== "connected" || !SOCIAL_PROVIDERS.includes(row.provider)) continue;
@@ -39,12 +39,12 @@ export async function getSocialConnectionStatus(userId, env = process.env) {
   return status;
 }
 
-export async function createSocialAuthorizationUrl({ provider, userId, origin }, env = process.env) {
+export async function createSocialAuthorizationUrl({ provider, userId, projectId, origin }, env = process.env) {
   if (!SOCIAL_PROVIDERS.includes(provider)) throw connectionError("That social connection is not supported.", 400);
   requireSocialConnector(provider, env);
   const redirectUri = `${normalizeOrigin(origin)}/api/social-callback`;
   const codeVerifier = provider === "x" ? randomBytes(48).toString("base64url") : "";
-  const state = await createConnectionState({ userId, provider, redirectUri, codeVerifier }, env);
+  const state = await createConnectionState({ userId, projectId, provider, redirectUri, codeVerifier }, env);
 
   if (provider === "linkedin") {
     return authorizationUrl("https://www.linkedin.com/oauth/v2/authorization", {
@@ -95,16 +95,16 @@ export async function finishSocialAuthorization({ code, state }, env = process.e
   if (!SOCIAL_PROVIDERS.includes(request.provider)) throw connectionError("The connection request is invalid.", 400);
   requireSocialConnector(request.provider, env);
   const result = await finishProvider(request.provider, code, request, env);
-  await storeConnection({ userId: request.userId, provider: request.provider, ...result }, env);
-  return { provider: request.provider, userId: request.userId, accountLabel: result.accountLabel };
+  await storeConnection({ userId: request.userId, projectId: request.projectId, provider: request.provider, ...result }, env);
+  return { provider: request.provider, userId: request.userId, projectId: request.projectId, accountLabel: result.accountLabel };
 }
 
-export async function disconnectSocialConnection(userId, provider, env = process.env) {
+export async function disconnectSocialConnection(userId, projectId, provider, env = process.env) {
   if (!SOCIAL_PROVIDERS.includes(provider)) throw connectionError("That social connection is not supported.", 400);
   await ensureSocialTable(env);
   await getPool(env).query(
-    "DELETE FROM market_agent_connections WHERE user_id = $1 AND provider = $2",
-    [userId, provider],
+    "DELETE FROM market_agent_connections WHERE user_id = $1 AND project_id = $2 AND provider = $3",
+    [userId, projectId || "project-default", provider],
   );
 }
 
@@ -230,9 +230,10 @@ async function finishX(code, request, env) {
   };
 }
 
-async function createConnectionState({ userId, provider, redirectUri, codeVerifier }, env) {
+async function createConnectionState({ userId, projectId, provider, redirectUri, codeVerifier }, env) {
   return new EncryptJWT({
     u: String(userId),
+    j: String(projectId || "project-default"),
     p: provider,
     r: redirectUri,
     v: codeVerifier || undefined,
@@ -253,6 +254,7 @@ async function readConnectionState(state, env) {
   }
   const request = {
     userId: String(payload.u || ""),
+    projectId: String(payload.j || "project-default"),
     provider: String(payload.p || ""),
     redirectUri: String(payload.r || ""),
     codeVerifier: String(payload.v || ""),
@@ -279,13 +281,13 @@ async function fetchJson(url, options, errorMessage) {
   return data;
 }
 
-async function storeConnection({ userId, provider, accountId, accountLabel, accountEmail, scopes, credentials }, env) {
+async function storeConnection({ userId, projectId, provider, accountId, accountLabel, accountEmail, scopes, credentials }, env) {
   await ensureSocialTable(env);
   await getPool(env).query(
     `INSERT INTO market_agent_connections
-      (user_id, provider, account_id, account_label, account_email, encrypted_credentials, scopes, status, connected_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::text[], 'connected', NOW(), NOW())
-     ON CONFLICT (user_id, provider) DO UPDATE SET
+      (user_id, project_id, provider, account_id, account_label, account_email, encrypted_credentials, scopes, status, connected_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], 'connected', NOW(), NOW())
+     ON CONFLICT (user_id, project_id, provider) DO UPDATE SET
        account_id = EXCLUDED.account_id,
        account_label = EXCLUDED.account_label,
        account_email = EXCLUDED.account_email,
@@ -294,7 +296,7 @@ async function storeConnection({ userId, provider, accountId, accountLabel, acco
        status = 'connected',
        connected_at = NOW(),
        updated_at = NOW()`,
-    [userId, provider, accountId || "", accountLabel || "", accountEmail || "", encryptCredentials(credentials, env), scopes || []],
+    [userId, projectId || "project-default", provider, accountId || "", accountLabel || "", accountEmail || "", encryptCredentials(credentials, env), scopes || []],
   );
 }
 
@@ -303,6 +305,7 @@ async function ensureSocialTable(env) {
   await getPool(env).query(`
     CREATE TABLE IF NOT EXISTS market_agent_connections (
       user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT 'project-default',
       provider TEXT NOT NULL,
       account_id TEXT NOT NULL DEFAULT '',
       account_label TEXT NOT NULL DEFAULT '',
@@ -313,10 +316,14 @@ async function ensureSocialTable(env) {
       connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (user_id, provider)
+      UNIQUE (user_id, project_id, provider)
     );
+    ALTER TABLE market_agent_connections ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT 'project-default';
     ALTER TABLE market_agent_connections ADD COLUMN IF NOT EXISTS account_id TEXT NOT NULL DEFAULT '';
     ALTER TABLE market_agent_connections ADD COLUMN IF NOT EXISTS account_label TEXT NOT NULL DEFAULT '';
+    ALTER TABLE market_agent_connections DROP CONSTRAINT IF EXISTS market_agent_connections_pkey;
+    CREATE UNIQUE INDEX IF NOT EXISTS market_agent_connections_user_project_provider_uidx
+      ON market_agent_connections (user_id, project_id, provider);
   `);
   socialTableReady = true;
 }

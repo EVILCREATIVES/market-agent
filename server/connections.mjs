@@ -11,17 +11,17 @@ const GOOGLE_SCOPES = [
 
 let connectionsTableReady = false;
 
-export async function getConnectionStatus(userId, env = process.env) {
+export async function getConnectionStatus(userId, projectId = "project-default", env = process.env) {
   const configured = googleConnectorConfigured(env);
-  const social = await getSocialConnectionStatus(userId, env);
+  const social = await getSocialConnectionStatus(userId, projectId, env);
   if (!env.DATABASE_URL) return { ...emptyStatus(configured), ...social };
   await ensureConnectionsTable(env);
   const result = await getPool(env).query(
     `SELECT account_email, scopes, status, connected_at, updated_at
        FROM market_agent_connections
-      WHERE user_id = $1 AND provider = 'google-gmail'
+      WHERE user_id = $1 AND project_id = $2 AND provider = 'google-gmail'
       LIMIT 1`,
-    [userId],
+    [userId, projectId],
   );
   const row = result.rows[0];
   if (!row || row.status !== "connected") return { ...emptyStatus(configured), ...social };
@@ -38,11 +38,12 @@ export async function getConnectionStatus(userId, env = process.env) {
   };
 }
 
-export async function createGoogleAuthorizationUrl({ userId, appEmail, origin }, env = process.env) {
+export async function createGoogleAuthorizationUrl({ userId, projectId, appEmail, origin }, env = process.env) {
   requireGoogleConnector(env);
   const redirectUri = `${normalizeOrigin(origin)}/api/google-callback`;
   const state = await new EncryptJWT({
     userId,
+    projectId: String(projectId || "project-default"),
     appEmail: String(appEmail || "").slice(0, 320),
     redirectUri,
     nonce: randomBytes(18).toString("base64url"),
@@ -77,6 +78,7 @@ export async function finishGoogleAuthorization({ code, state }, env = process.e
     throw connectionError("The mailbox connection request expired. Start the connection again.", 400);
   }
   const userId = String(payload.userId || "");
+  const projectId = String(payload.projectId || "project-default");
   const redirectUri = String(payload.redirectUri || "");
   if (!userId || !/^https?:\/\//i.test(redirectUri)) throw connectionError("The mailbox connection request is invalid.", 400);
 
@@ -108,7 +110,7 @@ export async function finishGoogleAuthorization({ code, state }, env = process.e
   }
 
   await ensureConnectionsTable(env);
-  const existing = await readEncryptedCredentials(userId, env);
+  const existing = await readEncryptedCredentials(userId, projectId, env);
   const credentials = {
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token || existing?.refreshToken || "",
@@ -119,25 +121,25 @@ export async function finishGoogleAuthorization({ code, state }, env = process.e
 
   await getPool(env).query(
     `INSERT INTO market_agent_connections
-      (user_id, provider, account_email, encrypted_credentials, scopes, status, connected_at, updated_at)
-     VALUES ($1, 'google-gmail', $2, $3, $4::text[], 'connected', NOW(), NOW())
-     ON CONFLICT (user_id, provider) DO UPDATE SET
+      (user_id, project_id, provider, account_email, encrypted_credentials, scopes, status, connected_at, updated_at)
+     VALUES ($1, $2, 'google-gmail', $3, $4, $5::text[], 'connected', NOW(), NOW())
+     ON CONFLICT (user_id, project_id, provider) DO UPDATE SET
        account_email = EXCLUDED.account_email,
        encrypted_credentials = EXCLUDED.encrypted_credentials,
        scopes = EXCLUDED.scopes,
        status = 'connected',
        connected_at = NOW(),
        updated_at = NOW()`,
-    [userId, String(profile.email).toLowerCase(), encryptCredentials(credentials, env), grantedScopes],
+    [userId, projectId, String(profile.email).toLowerCase(), encryptCredentials(credentials, env), grantedScopes],
   );
-  return { userId, accountEmail: String(profile.email).toLowerCase(), redirectUri };
+  return { userId, projectId, accountEmail: String(profile.email).toLowerCase(), redirectUri };
 }
 
-export async function disconnectGoogleMailbox(userId, env = process.env) {
+export async function disconnectGoogleMailbox(userId, projectId = "project-default", env = process.env) {
   await ensureConnectionsTable(env);
   await getPool(env).query(
-    "DELETE FROM market_agent_connections WHERE user_id = $1 AND provider = 'google-gmail'",
-    [userId],
+    "DELETE FROM market_agent_connections WHERE user_id = $1 AND project_id = $2 AND provider = 'google-gmail'",
+    [userId, projectId],
   );
 }
 
@@ -158,6 +160,7 @@ async function ensureConnectionsTable(env) {
   await getPool(env).query(`
     CREATE TABLE IF NOT EXISTS market_agent_connections (
       user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT 'project-default',
       provider TEXT NOT NULL,
       account_email TEXT NOT NULL DEFAULT '',
       encrypted_credentials TEXT NOT NULL,
@@ -166,17 +169,21 @@ async function ensureConnectionsTable(env) {
       connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (user_id, provider)
-    )
+      UNIQUE (user_id, project_id, provider)
+    );
+    ALTER TABLE market_agent_connections ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT 'project-default';
+    ALTER TABLE market_agent_connections DROP CONSTRAINT IF EXISTS market_agent_connections_pkey;
+    CREATE UNIQUE INDEX IF NOT EXISTS market_agent_connections_user_project_provider_uidx
+      ON market_agent_connections (user_id, project_id, provider);
   `);
   connectionsTableReady = true;
 }
 
-async function readEncryptedCredentials(userId, env) {
+async function readEncryptedCredentials(userId, projectId, env) {
   await ensureConnectionsTable(env);
   const result = await getPool(env).query(
-    "SELECT encrypted_credentials FROM market_agent_connections WHERE user_id = $1 AND provider = 'google-gmail' LIMIT 1",
-    [userId],
+    "SELECT encrypted_credentials FROM market_agent_connections WHERE user_id = $1 AND project_id = $2 AND provider = 'google-gmail' LIMIT 1",
+    [userId, projectId],
   );
   if (!result.rows[0]?.encrypted_credentials) return null;
   try {

@@ -10,6 +10,7 @@ CREATE INDEX IF NOT EXISTS market_agent_states_updated_at_idx
 
 CREATE TABLE IF NOT EXISTS market_agent_connections (
   user_id TEXT NOT NULL,
+  project_id TEXT NOT NULL DEFAULT 'project-default',
   provider TEXT NOT NULL,
   account_id TEXT NOT NULL DEFAULT '',
   account_label TEXT NOT NULL DEFAULT '',
@@ -20,7 +21,7 @@ CREATE TABLE IF NOT EXISTS market_agent_connections (
   connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (user_id, provider)
+  PRIMARY KEY (user_id, project_id, provider)
 );
 
 CREATE INDEX IF NOT EXISTS market_agent_connections_updated_at_idx

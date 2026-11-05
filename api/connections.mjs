@@ -17,18 +17,20 @@ export default async function handler(req, res) {
   }
   try {
     const { userId, email } = await requireUser(req);
-    if (req.method === "GET") return res.status(200).json(await getConnectionStatus(userId));
+    const projectId = String(req.query?.projectId || req.body?.projectId || "project-default").trim().slice(0, 200);
+    if (!projectId) return res.status(400).json({ error: "Choose a project before connecting an account." });
+    if (req.method === "GET") return res.status(200).json(await getConnectionStatus(userId, projectId));
     if (req.method === "DELETE") {
       const provider = String(req.query?.provider || req.body?.provider || "google-gmail");
-      if (provider === "google-gmail") await disconnectGoogleMailbox(userId);
-      else await disconnectSocialConnection(userId, provider);
-      return res.status(200).json({ ok: true, ...(await getConnectionStatus(userId)) });
+      if (provider === "google-gmail") await disconnectGoogleMailbox(userId, projectId);
+      else await disconnectSocialConnection(userId, projectId, provider);
+      return res.status(200).json({ ok: true, ...(await getConnectionStatus(userId, projectId)) });
     }
     const provider = String(req.body?.provider || "google-gmail");
     const origin = requestOrigin(req);
     const authorizationUrl = SOCIAL_PROVIDERS.includes(provider)
-      ? await createSocialAuthorizationUrl({ provider, userId, origin })
-      : await createGoogleAuthorizationUrl({ userId, appEmail: email, origin });
+      ? await createSocialAuthorizationUrl({ provider, userId, projectId, origin })
+      : await createGoogleAuthorizationUrl({ userId, projectId, appEmail: email, origin });
     return res.status(200).json({ authorizationUrl });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message || "Account connection failed." });

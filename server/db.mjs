@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { attachDatabasePool } from "@vercel/functions";
@@ -102,10 +102,13 @@ export async function listScheduledStates(env = process.env) {
 }
 
 export async function runMigrations(env = process.env) {
-  const migrationPath = fileURLToPath(new URL("./migrations/001_initial.sql", import.meta.url));
-  const sql = await readFile(migrationPath, "utf8");
+  const migrationDirectory = fileURLToPath(new URL("./migrations/", import.meta.url));
+  const files = (await readdir(migrationDirectory)).filter((name) => name.endsWith(".sql")).sort();
   const migrationEnv = { ...env, DATABASE_URL: env.DATABASE_URL_UNPOOLED || env.DATABASE_URL };
-  await getPool(migrationEnv).query(sql);
+  for (const file of files) {
+    const sql = await readFile(`${migrationDirectory}/${file}`, "utf8");
+    await getPool(migrationEnv).query(sql);
+  }
 }
 
 function normalizeState(value) {
@@ -153,6 +156,7 @@ function defaultProject(name = "New project", id = "project-default") {
     questionAnswers: {},
     additionalContextDraft: "",
     sourceWarnings: [],
+    chatMessages: [],
     updatedAt: new Date().toISOString(),
   };
 }
@@ -182,6 +186,7 @@ function normalizeProject(value, index) {
     questionAnswers: project.questionAnswers && typeof project.questionAnswers === "object" ? project.questionAnswers : {},
     additionalContextDraft: typeof project.additionalContextDraft === "string" ? project.additionalContextDraft : "",
     sourceWarnings: Array.isArray(project.sourceWarnings) ? project.sourceWarnings : [],
+    chatMessages: Array.isArray(project.chatMessages) ? project.chatMessages.slice(-80) : [],
   };
 }
 

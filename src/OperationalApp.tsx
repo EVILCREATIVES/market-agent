@@ -130,14 +130,15 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
 
   useEffect(() => {
     if (!cloudReady) return;
-    apiFetch("/api/connections")
+    setConnections(emptyConnections());
+    apiFetch(`/api/connections?projectId=${encodeURIComponent(state.activeProjectId)}`)
       .then(async (response) => {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Connections could not be checked.");
         setConnections(data as ConnectionStatus);
       })
       .catch(() => setConnections(emptyConnections()));
-  }, [cloudReady]);
+  }, [cloudReady, state.activeProjectId]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -237,7 +238,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
             {page === "research" && <RunLibrary title="Research" description={`Live market and audience work generated from ${activeProject.name || "this project"}'s product brain.`} empty="No research has been run for this project yet." runs={projectRuns.filter((run) => ["research", "audience"].includes(run.action))} onOpen={setSelectedRunId} onStart={() => navigate("agent")} />}
             {page === "campaigns" && <RunLibrary title="Campaigns" description="Campaign plans become real project records here—never fictional performance." empty="No campaigns have been generated for this project yet." runs={projectRuns.filter((run) => run.action === "campaign")} onOpen={setSelectedRunId} onStart={() => navigate("agent")} />}
             {page === "content" && <RunLibrary title="Content library" description="Generated social packs stay editable and require explicit approval." empty="No content has been generated for this project yet." runs={projectRuns.filter((run) => run.action === "social")} onOpen={setSelectedRunId} onStart={() => navigate("agent")} />}
-            {page === "integrations" && <OperationalIntegrations health={health} connections={connections} schedule={activeSchedule} onSchedule={updateSchedule} notify={notify} />}
+            {page === "integrations" && <OperationalIntegrations projectId={activeProject.id} health={health} connections={connections} schedule={activeSchedule} onSchedule={updateSchedule} notify={notify} />}
           </>}
         </div>
       </main>
@@ -803,12 +804,12 @@ function sourceDisplayName(source: AgentRun["sources"][number]) {
   }
 }
 
-function OperationalIntegrations({ health, connections, schedule, onSchedule, notify }: { health: HealthState; connections: ConnectionStatus; schedule: AgentSchedule; onSchedule: (schedule: AgentSchedule) => void; notify: (message: string) => void }) {
+function OperationalIntegrations({ projectId, health, connections, schedule, onSchedule, notify }: { projectId: string; health: HealthState; connections: ConnectionStatus; schedule: AgentSchedule; onSchedule: (schedule: AgentSchedule) => void; notify: (message: string) => void }) {
   const [connecting, setConnecting] = useState("");
   const connectAccount = async (provider: "google-gmail" | "linkedin" | "instagram" | "tiktok" | "x") => {
     setConnecting(provider);
     try {
-      const response = await apiFetch("/api/connections", { method: "POST", body: JSON.stringify({ provider }) });
+      const response = await apiFetch("/api/connections", { method: "POST", body: JSON.stringify({ provider, projectId }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Account connection could not start.");
       window.location.assign(data.authorizationUrl);
