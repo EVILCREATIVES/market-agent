@@ -94,12 +94,24 @@ async function createAndAnalyzeAsset(userId, asset, env) {
        WHERE id = $1 AND user_id = $2 RETURNING *`,
       [id, userId, decision.tags, decision.summary, decision.recommendation, decision.rationale, decision.suggestedChanges],
     );
+    const related = await getPool(env).query(
+      `SELECT id FROM market_agent_project_assets
+       WHERE user_id = $1 AND project_id = $2 AND status = 'ready'
+       ORDER BY created_at DESC LIMIT 30`,
+      [userId, asset.projectId],
+    );
+    const relatedAssetIds = Array.from(new Set([id, ...related.rows.map((row) => row.id)]));
     for (const proposal of decision.proposedDeliverables) {
       await getPool(env).query(
         `INSERT INTO market_agent_asset_proposals
           (id, user_id, project_id, kind, title, description, rationale, source_asset_ids)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::text[])`,
-        [randomUUID(), userId, asset.projectId, proposal.kind, proposal.title, proposal.description, proposal.rationale, [id]],
+         SELECT $1,$2,$3,$4,$5,$6,$7,$8::text[]
+         WHERE NOT EXISTS (
+           SELECT 1 FROM market_agent_asset_proposals
+           WHERE user_id = $2 AND project_id = $3 AND kind = $4
+             AND LOWER(title) = LOWER($5) AND status IN ('awaiting_approval', 'running', 'complete')
+         )`,
+        [randomUUID(), userId, asset.projectId, proposal.kind, proposal.title, proposal.description, proposal.rationale, relatedAssetIds],
       );
     }
     return { asset: serializeAsset(updated.rows[0]), ...(await listProjectAssets(userId, asset.projectId, env)) };
