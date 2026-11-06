@@ -163,8 +163,9 @@ export async function buildProductBrain(payload, env = process.env) {
     .slice(0, 170_000);
   const images = materials
     .flatMap((material) => Array.isArray(material?.images) ? material.images : [])
-    .filter((value) => typeof value === "string" && value.startsWith("data:image/"))
+    .filter(isSupportedAnalysisImage)
     .concat(connectedMaterial.images)
+    .filter(isSupportedAnalysisImage)
     .slice(0, 18);
 
   if (!materialText.trim() && !images.length && !links.length) {
@@ -183,51 +184,32 @@ ${materialText || "Visual materials are attached."}
 
 Infer only what is strongly supported. Derive the visual identity from the supplied website, CSS, deck pages, images, and documents: choose the most representative visible colors as six-digit hex values, identify typography, recognize the logo, and summarize the imagery style. Consolidate duplicates and contradictions. Do not ask the user for colors, hex values, logo, typefaces, or visual style when those are visible or detected in a supplied source. Make the best evidence-based extraction and place any uncertainty in brand notes instead of unknowns. Put only genuinely unavailable business facts in unknowns. The result is a draft for the user to review, not a claim of certainty. Never mention internal systems, providers, or model names.`;
 
-  let parsed;
   try {
-    if (env.OPENAI_API_KEY) {
-      const model = env.OPENAI_MODEL || env.AI_MODEL || "gpt-6.1-terra";
-      const response = await fetch("https://api.openai.com/v1/responses", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          instructions: "You are a meticulous product-onboarding analyst. Extract a useful marketing source of truth from user materials. Preserve factual nuance, identify uncertainty, and never invent proof, customers, metrics, pricing, or capabilities.",
-          input: [{ role: "user", content: [{ type: "input_text", text: prompt }, ...images.map((imageUrl) => ({ type: "input_image", image_url: imageUrl, detail: "high" }))] }],
-          max_output_tokens: 5000,
-          ...(links.length ? { tools: [{ type: "web_search", search_context_size: "medium" }], tool_choice: "auto" } : {}),
-          text: { format: { type: "json_schema", name: "product_brain", strict: true, schema: productBrainSchema() } },
-        }),
-      });
-      if (!response.ok) throw providerRequestError(response.status);
-      parsed = JSON.parse(responseText(await response.json()));
-    } else {
-      parsed = await generateGoogleStructured({
-        env,
-        system: "You are a meticulous product-onboarding analyst. Extract a useful marketing source of truth from user materials. Preserve factual nuance, identify uncertainty, and never invent proof, customers, metrics, pricing, or capabilities.",
-        prompt,
-        images,
-      });
+    const parsed = await generateProductBrainStructured({
+      env,
+      system: "You are a meticulous product-onboarding analyst. Extract a useful marketing source of truth from user materials. Preserve factual nuance, identify uncertainty, and never invent proof, customers, metrics, pricing, or capabilities.",
+      prompt,
+      images,
+      useWeb: links.length > 0,
+    });
+    const normalized = normalizeBrainResult(parsed, projectName, links[0] || "");
+    if (connectedMaterial.logoDataUrl) {
+      normalized.brain.brand.logoDataUrl = connectedMaterial.logoDataUrl;
+      normalized.brain.brand.logoName = connectedMaterial.logoName || "Logo extracted from website";
     }
+    const sourceContainsVisualEvidence = images.length > 0 || connectedMaterial.brandEvidence;
+    if (sourceContainsVisualEvidence) {
+      normalized.unknowns = normalized.unknowns.filter((question) => !isSourceAnswerableBrandQuestion(question));
+    }
+    if (connectedMaterial.issues.length) {
+      normalized.unknowns = normalized.unknowns.filter((question) => !/what (content|visual identity).*(deck|figma)|what.*(deck|figma).*(contain|show)|describe.*(deck|figma)/i.test(question));
+    }
+    return { projectId, ...normalized, sourceWarnings: connectedMaterial.issues };
   } catch {
     const error = new Error("The project materials were read, but the product brain could not be assembled. Please try again.");
     error.statusCode = 502;
     throw error;
   }
-
-  const normalized = normalizeBrainResult(parsed, projectName, links[0] || "");
-  if (connectedMaterial.logoDataUrl) {
-    normalized.brain.brand.logoDataUrl = connectedMaterial.logoDataUrl;
-    normalized.brain.brand.logoName = connectedMaterial.logoName || "Logo extracted from website";
-  }
-  const sourceContainsVisualEvidence = images.length > 0 || connectedMaterial.brandEvidence;
-  if (sourceContainsVisualEvidence) {
-    normalized.unknowns = normalized.unknowns.filter((question) => !isSourceAnswerableBrandQuestion(question));
-  }
-  if (connectedMaterial.issues.length) {
-    normalized.unknowns = normalized.unknowns.filter((question) => !/what (content|visual identity).*(deck|figma)|what.*(deck|figma).*(contain|show)|describe.*(deck|figma)/i.test(question));
-  }
-  return { projectId, ...normalized, sourceWarnings: connectedMaterial.issues };
 }
 
 export async function refineProductBrain(payload, env = process.env) {
@@ -282,29 +264,11 @@ ${answerText || "No individual answers supplied."}
 ADDITIONAL CONTEXT
 ${additionalContext || "None supplied."}`;
   try {
-    let parsed;
-    if (env.OPENAI_API_KEY) {
-      const model = env.OPENAI_MODEL || env.AI_MODEL || "gpt-6.1-terra";
-      const response = await fetch("https://api.openai.com/v1/responses", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          instructions: "You maintain a factual product and brand source of truth. Apply user corrections precisely, preserve nuance, and return only structured data. Never mention internal systems or model names.",
-          input: prompt,
-          max_output_tokens: 5000,
-          text: { format: { type: "json_schema", name: "product_brain", strict: true, schema: productBrainSchema() } },
-        }),
-      });
-      if (!response.ok) throw providerRequestError(response.status);
-      parsed = JSON.parse(responseText(await response.json()));
-    } else {
-      parsed = await generateGoogleStructured({
-        env,
-        system: "You maintain a factual product and brand source of truth. Apply user corrections precisely, preserve nuance, and return only structured data. Never mention internal systems or model names.",
-        prompt,
-      });
-    }
+    const parsed = await generateProductBrainStructured({
+      env,
+      system: "You maintain a factual product and brand source of truth. Apply user corrections precisely, preserve nuance, and return only structured data. Never mention internal systems or model names.",
+      prompt,
+    });
     const normalized = normalizeBrainResult(parsed, safeWorkspace.name, safeWorkspace.website);
     normalized.unknowns = removeRepeatedQuestions(normalized.unknowns, answers.map((item) => item.question));
     if (safeWorkspace.sources.length) normalized.unknowns = normalized.unknowns.filter((question) => !isSourceAnswerableBrandQuestion(question));
@@ -709,7 +673,7 @@ async function readPublicWebsite(url) {
     const logoCandidates = websiteImageCandidates(html, url);
     let logoDataUrl = "";
     let logoName = "";
-    for (const candidate of logoCandidates.filter((candidate) => candidate.logoScore > 0).slice(0, 6)) {
+    for (const candidate of logoCandidates.filter((candidate) => candidate.logoScore >= 6).slice(0, 6)) {
       const image = await readWebsiteImage(candidate.url);
       if (!image || image.dataUrl.length > 1_200_000) continue;
       logoDataUrl = image.dataUrl;
@@ -717,11 +681,11 @@ async function readPublicWebsite(url) {
       break;
     }
     const images = [];
-    if (logoDataUrl && !logoDataUrl.startsWith("data:image/svg+xml")) images.push(logoDataUrl);
+    if (isSupportedAnalysisImage(logoDataUrl)) images.push(logoDataUrl);
     for (const candidate of logoCandidates.slice(0, 8)) {
-      if (images.length >= 4 || candidate.logoScore > 0) continue;
+      if (images.length >= 4 || candidate.logoScore !== 0) continue;
       const image = await readWebsiteImage(candidate.url);
-      if (image && !image.dataUrl.startsWith("data:image/svg+xml") && !images.includes(image.dataUrl)) images.push(image.dataUrl);
+      if (image && isSupportedAnalysisImage(image.dataUrl) && !images.includes(image.dataUrl)) images.push(image.dataUrl);
     }
     const signalText = [
       `CONNECTED PUBLIC WEBSITE`,
@@ -769,7 +733,8 @@ function websiteImageCandidates(html, baseUrl) {
   for (const match of html.matchAll(/<link\b[^>]*>/gi)) {
     const tag = match[0];
     const rel = readTagAttribute(tag, "rel");
-    if (/\b(icon|apple-touch-icon|mask-icon)\b/i.test(rel)) add(readTagAttribute(tag, "href"), "Website icon", 3);
+    if (/\bmask-icon\b/i.test(rel)) add(readTagAttribute(tag, "href"), "Website brand mark", 6);
+    else if (/\b(icon|apple-touch-icon)\b/i.test(rel)) add(readTagAttribute(tag, "href"), "Website icon", -1);
   }
   add(readMeta(html, "og:image"), "Website preview image", 0);
   add(readMeta(html, "twitter:image"), "Website preview image", 0);
@@ -895,6 +860,10 @@ function filenameFromUrl(url, fallback) {
 function mimeTypeFromFilename(name) {
   const extension = String(name || "").split(".").pop()?.toLowerCase();
   return ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", svg: "image/svg+xml" })[extension] || "application/octet-stream";
+}
+
+function isSupportedAnalysisImage(value) {
+  return /^data:image\/(?:png|jpe?g|webp|gif);base64,/i.test(String(value || ""));
 }
 
 async function readPublicFigmaDeck(link) {
@@ -1191,6 +1160,39 @@ async function createOpenAIResponse({ env, model, system, prompt, useWeb, maxOut
   return body;
 }
 
+async function generateProductBrainStructured({ env, system, prompt, images = [], useWeb = false }) {
+  const supportedImages = images.filter(isSupportedAnalysisImage);
+  let lastError;
+  if (env.OPENAI_API_KEY) {
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: env.OPENAI_MODEL || env.AI_MODEL || "gpt-6.1-terra",
+          instructions: system,
+          input: [{ role: "user", content: [{ type: "input_text", text: prompt }, ...supportedImages.map((imageUrl) => ({ type: "input_image", image_url: imageUrl, detail: "high" }))] }],
+          max_output_tokens: 5000,
+          ...(useWeb ? { tools: [{ type: "web_search", search_context_size: "medium" }], tool_choice: "auto" } : {}),
+          text: { format: { type: "json_schema", name: "product_brain", strict: true, schema: productBrainSchema() } },
+        }),
+      });
+      if (!response.ok) throw providerRequestError(response.status);
+      return JSON.parse(responseText(await response.json()));
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    try {
+      return await generateGoogleStructured({ env, system, prompt, images: supportedImages });
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("No analysis service is connected.");
+}
+
 async function generateGoogleText({ env, model, system, prompt, maxOutputTokens }) {
   try {
     const google = createGoogleGenerativeAI({ apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY });
@@ -1203,6 +1205,7 @@ async function generateGoogleText({ env, model, system, prompt, maxOutputTokens 
 }
 
 async function generateStructuredObject({ env, name, system, prompt, images = [], schema }) {
+  const supportedImages = images.filter(isSupportedAnalysisImage);
   if (env.OPENAI_API_KEY) {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -1210,7 +1213,7 @@ async function generateStructuredObject({ env, name, system, prompt, images = []
       body: JSON.stringify({
         model: env.OPENAI_MODEL || env.AI_MODEL || "gpt-6.1-terra",
         instructions: system,
-        input: [{ role: "user", content: [{ type: "input_text", text: prompt }, ...images.map((imageUrl) => ({ type: "input_image", image_url: imageUrl, detail: "high" }))] }],
+        input: [{ role: "user", content: [{ type: "input_text", text: prompt }, ...supportedImages.map((imageUrl) => ({ type: "input_image", image_url: imageUrl, detail: "high" }))] }],
         max_output_tokens: 6000,
         text: { format: { type: "json_schema", name, strict: true, schema } },
       }),
@@ -1218,7 +1221,7 @@ async function generateStructuredObject({ env, name, system, prompt, images = []
     if (!response.ok) throw providerRequestError(response.status);
     return JSON.parse(responseText(await response.json()));
   }
-  return generateGoogleStructured({ env, system, prompt, images, schema });
+  return generateGoogleStructured({ env, system, prompt, images: supportedImages, schema });
 }
 
 async function generateGoogleStructured({ env, system, prompt, images = [], schema = productBrainSchema() }) {
