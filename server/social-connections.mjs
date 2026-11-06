@@ -1,4 +1,4 @@
-import { createCipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { EncryptJWT, jwtDecrypt } from "jose";
 import { getPool } from "./db.mjs";
 
@@ -108,6 +108,22 @@ export async function disconnectSocialConnection(userId, projectId, provider, en
   );
 }
 
+export async function publishSocialPost(userId, projectId, provider, payload, env = process.env) {
+  if (!SOCIAL_PROVIDERS.includes(provider)) throw connectionError("Choose a supported social channel.", 400);
+  const row = await readSocialConnection(userId, projectId, provider, env);
+  if (!row || row.status !== "connected") throw connectionError(`Connect ${providerLabel(provider)} before publishing.`, 409);
+  const scopes = Array.isArray(row.scopes) ? row.scopes : [];
+  if (!providerCanPublish(provider, scopes)) throw connectionError(`Reconnect ${providerLabel(provider)} and approve publishing access.`, 403);
+  const credentials = decryptCredentials(row.encrypted_credentials, env);
+  const accessToken = await validSocialAccessToken(userId, projectId, provider, credentials, env);
+  const text = String(payload?.text || "").trim();
+  if (!text) throw connectionError("The approved post has no copy.", 400);
+  if (provider === "linkedin") return publishLinkedIn(row, accessToken, text, env);
+  if (provider === "instagram") return publishInstagram(row, accessToken, { ...payload, text }, env);
+  if (provider === "tiktok") return publishTikTok(row, accessToken, { ...payload, text });
+  return publishX(row, accessToken, text);
+}
+
 export function socialConnectorConfigured(provider, env = process.env) {
   const secure = Boolean(env.CONNECTION_ENCRYPTION_KEY);
   if (provider === "linkedin") return Boolean(secure && env.LINKEDIN_CLIENT_ID && env.LINKEDIN_CLIENT_SECRET);
@@ -139,7 +155,7 @@ async function finishLinkedIn(code, request, env) {
     accountId: String(profile.sub || ""),
     accountLabel: String(profile.name || profile.email || "LinkedIn account"),
     accountEmail: String(profile.email || "").toLowerCase(),
-    scopes: splitScopes(tokens.scope).length ? splitScopes(tokens.scope) : SOCIAL_SCOPES.linkedin,
+    scopes: splitScopes(tokens.scope),
     credentials: tokenCredentials(tokens),
   };
 }
@@ -169,12 +185,18 @@ async function finishInstagram(code, request, env) {
   }
 
   const profile = await fetchJson(`https://graph.instagram.com/me?fields=user_id,username,name,account_type,profile_picture_url&access_token=${encodeURIComponent(accessToken)}`, {}, "Instagram could not read the authorized profile.");
+  const grantedScopes = new Set(splitScopes(tokens.scope));
+  const permissionResponse = await fetch(`https://graph.instagram.com/me/permissions?access_token=${encodeURIComponent(accessToken)}`);
+  const permissions = await permissionResponse.json().catch(() => ({}));
+  if (permissionResponse.ok) {
+    for (const item of permissions.data || []) if (item?.status === "granted" && item?.permission) grantedScopes.add(String(item.permission));
+  }
   const username = String(profile.username || "");
   return {
     accountId: String(profile.user_id || profile.id || tokens.user_id || ""),
     accountLabel: username ? `@${username}` : String(profile.name || "Instagram account"),
     accountEmail: "",
-    scopes: SOCIAL_SCOPES.instagram,
+    scopes: [...grantedScopes],
     credentials: { accessToken, refreshToken: "", expiresAt: Date.now() + expiresIn * 1000, tokenType: "Bearer" },
   };
 }
@@ -282,6 +304,7 @@ async function fetchJson(url, options, errorMessage) {
 }
 
 async function storeConnection({ userId, projectId, provider, accountId, accountLabel, accountEmail, scopes, credentials }, env) {
+  if (!String(accountId || "").trim()) throw connectionError(`${providerLabel(provider)} did not return an account identifier. Reconnect the account.`, 400);
   await ensureSocialTable(env);
   await getPool(env).query(
     `INSERT INTO market_agent_connections
@@ -298,6 +321,168 @@ async function storeConnection({ userId, projectId, provider, accountId, account
        updated_at = NOW()`,
     [userId, projectId || "project-default", provider, accountId || "", accountLabel || "", accountEmail || "", encryptCredentials(credentials, env), scopes || []],
   );
+}
+
+async function readSocialConnection(userId, projectId, provider, env) {
+  await ensureSocialTable(env);
+  const result = await getPool(env).query(
+    `SELECT account_id, account_label, account_email, encrypted_credentials, scopes, status
+       FROM market_agent_connections
+      WHERE user_id = $1 AND project_id = $2 AND provider = $3 LIMIT 1`,
+    [userId, projectId, provider],
+  );
+  return result.rows[0] || null;
+}
+
+async function validSocialAccessToken(userId, projectId, provider, credentials, env) {
+  const expiryBuffer = provider === "instagram" ? 7 * 24 * 60 * 60 * 1000 : 60_000;
+  if (credentials?.accessToken && Number(credentials.expiresAt || 0) > Date.now() + expiryBuffer) return credentials.accessToken;
+  let refreshed;
+  if (provider === "tiktok" && credentials?.refreshToken) {
+    refreshed = await exchangeFormToken("https://open.tiktokapis.com/v2/oauth/token/", {
+      client_key: env.TIKTOK_CLIENT_KEY,
+      client_secret: env.TIKTOK_CLIENT_SECRET,
+      grant_type: "refresh_token",
+      refresh_token: credentials.refreshToken,
+    }, "TikTok");
+  } else if (provider === "x" && credentials?.refreshToken) {
+    const response = await fetch("https://api.x.com/2/oauth2/token", {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${env.X_CLIENT_ID}:${env.X_CLIENT_SECRET}`).toString("base64")}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: credentials.refreshToken }),
+    });
+    refreshed = await response.json().catch(() => ({}));
+    if (!response.ok || !refreshed.access_token) throw connectionError("X access expired. Reconnect it.", 401);
+  } else if (provider === "instagram" && credentials?.accessToken && Number(credentials.expiresAt || 0) > Date.now()) {
+    const url = new URL("https://graph.instagram.com/refresh_access_token");
+    url.search = new URLSearchParams({ grant_type: "ig_refresh_token", access_token: credentials.accessToken }).toString();
+    const response = await fetch(url);
+    refreshed = await response.json().catch(() => ({}));
+    if (!response.ok || !refreshed.access_token) throw connectionError("Instagram access expired. Reconnect it.", 401);
+  } else {
+    throw connectionError(`${providerLabel(provider)} access expired. Reconnect it.`, 401);
+  }
+  credentials.accessToken = refreshed.access_token;
+  credentials.refreshToken = refreshed.refresh_token || credentials.refreshToken || "";
+  credentials.expiresAt = Date.now() + Number(refreshed.expires_in || 3600) * 1000;
+  await getPool(env).query(
+    "UPDATE market_agent_connections SET encrypted_credentials = $4, updated_at = NOW() WHERE user_id = $1 AND project_id = $2 AND provider = $3",
+    [userId, projectId, provider, encryptCredentials(credentials, env)],
+  );
+  return credentials.accessToken;
+}
+
+async function publishLinkedIn(row, accessToken, text, env) {
+  if (text.length > 3000) throw connectionError("LinkedIn copy exceeds 3,000 characters.", 400);
+  const response = await fetch("https://api.linkedin.com/rest/posts", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      "X-Restli-Protocol-Version": "2.0.0",
+      "Linkedin-Version": env.LINKEDIN_VERSION || "202609",
+    },
+    body: JSON.stringify({
+      author: `urn:li:person:${row.account_id}`,
+      commentary: text,
+      visibility: "PUBLIC",
+      distribution: { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] },
+      lifecycleState: "PUBLISHED",
+      isReshareDisabledByAuthor: false,
+    }),
+  });
+  const body = await response.text();
+  if (!response.ok) throw connectionError(providerError("LinkedIn", parseProviderBody(body)), response.status === 401 ? 401 : 502);
+  const externalId = response.headers.get("x-restli-id") || parseProviderBody(body)?.id || "";
+  return { provider: "linkedin", externalId: String(externalId), accountLabel: row.account_label, publishedAt: new Date().toISOString() };
+}
+
+async function publishX(row, accessToken, text) {
+  if ([...text].length > 280) throw connectionError("X copy exceeds 280 characters.", 400);
+  const response = await fetch("https://api.x.com/2/tweets", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.data?.id) throw connectionError(providerError("X", data), response.status === 401 ? 401 : 502);
+  return { provider: "x", externalId: String(data.data.id), accountLabel: row.account_label, publishedAt: new Date().toISOString() };
+}
+
+async function publishInstagram(row, accessToken, payload, env) {
+  const mediaUrl = validMediaUrl(payload.mediaUrl);
+  if (!mediaUrl) throw connectionError("Instagram publishing requires an approved public image or video URL.", 400);
+  const version = env.INSTAGRAM_GRAPH_VERSION || "v24.0";
+  const mediaKind = payload.mediaKind === "video" ? "video" : "image";
+  const fields = mediaKind === "video"
+    ? { media_type: "REELS", video_url: mediaUrl, caption: payload.text, share_to_feed: "true", access_token: accessToken }
+    : { image_url: mediaUrl, caption: payload.text, access_token: accessToken };
+  const createResponse = await fetch(`https://graph.instagram.com/${version}/${encodeURIComponent(row.account_id)}/media`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(fields),
+  });
+  const container = await createResponse.json().catch(() => ({}));
+  if (!createResponse.ok || !container.id) throw connectionError(providerError("Instagram", container), createResponse.status === 401 ? 401 : 502);
+  if (mediaKind === "video") {
+    let ready = false;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const statusResponse = await fetch(`https://graph.instagram.com/${version}/${encodeURIComponent(container.id)}?fields=status_code,status&access_token=${encodeURIComponent(accessToken)}`);
+      const status = await statusResponse.json().catch(() => ({}));
+      if (status.status_code === "FINISHED") { ready = true; break; }
+      if (status.status_code === "ERROR" || status.status_code === "EXPIRED") throw connectionError(providerError("Instagram", status), 502);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    if (!ready) throw connectionError("Instagram is still processing the video. Try publishing again in a moment.", 409);
+  }
+  const publishResponse = await fetch(`https://graph.instagram.com/${version}/${encodeURIComponent(row.account_id)}/media_publish`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ creation_id: String(container.id), access_token: accessToken }),
+  });
+  const published = await publishResponse.json().catch(() => ({}));
+  if (!publishResponse.ok || !published.id) throw connectionError(providerError("Instagram", published), publishResponse.status === 401 ? 401 : 502);
+  return { provider: "instagram", externalId: String(published.id), accountLabel: row.account_label, publishedAt: new Date().toISOString() };
+}
+
+async function publishTikTok(row, accessToken, payload) {
+  const mediaUrl = validMediaUrl(payload.mediaUrl);
+  if (!mediaUrl) throw connectionError("TikTok publishing requires an approved public image or video URL from a verified domain.", 400);
+  const creatorResponse = await fetch("https://open.tiktokapis.com/v2/post/publish/creator_info/query/", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json; charset=UTF-8" },
+  });
+  const creator = await creatorResponse.json().catch(() => ({}));
+  if (!creatorResponse.ok || (creator.error?.code && creator.error.code !== "ok")) throw connectionError(providerError("TikTok", creator), creatorResponse.status === 401 ? 401 : 502);
+  const privacyOptions = Array.isArray(creator.data?.privacy_level_options) ? creator.data.privacy_level_options : ["SELF_ONLY"];
+  const requestedPrivacy = String(payload.privacyLevel || "SELF_ONLY");
+  const privacyLevel = privacyOptions.includes(requestedPrivacy) ? requestedPrivacy : privacyOptions.includes("SELF_ONLY") ? "SELF_ONLY" : privacyOptions[0];
+  const mediaKind = payload.mediaKind === "image" ? "image" : "video";
+  const endpoint = mediaKind === "image"
+    ? "https://open.tiktokapis.com/v2/post/publish/content/init/"
+    : "https://open.tiktokapis.com/v2/post/publish/video/init/";
+  const body = mediaKind === "image"
+    ? {
+        post_info: { title: payload.text.slice(0, 90), description: payload.text.slice(0, 2200), disable_comment: Boolean(creator.data?.comment_disabled), privacy_level: privacyLevel, auto_add_music: true, brand_organic_toggle: true, brand_content_toggle: false },
+        source_info: { source: "PULL_FROM_URL", photo_cover_index: 0, photo_images: [mediaUrl] },
+        post_mode: "DIRECT_POST",
+        media_type: "PHOTO",
+      }
+    : {
+        post_info: { title: payload.text.slice(0, 2200), privacy_level: privacyLevel, disable_duet: Boolean(creator.data?.duet_disabled), disable_comment: Boolean(creator.data?.comment_disabled), disable_stitch: Boolean(creator.data?.stitch_disabled), is_aigc: Boolean(payload.aiGenerated), brand_organic_toggle: true, brand_content_toggle: false },
+        source_info: { source: "PULL_FROM_URL", video_url: mediaUrl },
+      };
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json; charset=UTF-8" },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || (data.error?.code && data.error.code !== "ok") || !data.data?.publish_id) throw connectionError(providerError("TikTok", data), response.status === 401 ? 401 : 502);
+  return { provider: "tiktok", externalId: String(data.data.publish_id), accountLabel: row.account_label, status: "processing", publishedAt: new Date().toISOString() };
 }
 
 async function ensureSocialTable(env) {
@@ -367,6 +552,15 @@ function encryptCredentials(credentials, env) {
   return [iv, cipher.getAuthTag(), encrypted].map((value) => value.toString("base64url")).join(".");
 }
 
+function decryptCredentials(value, env) {
+  const [ivValue, tagValue, encryptedValue] = String(value || "").split(".");
+  if (!ivValue || !tagValue || !encryptedValue) throw new Error("Invalid encrypted credentials");
+  const decipher = createDecipheriv("aes-256-gcm", connectionKey(env), Buffer.from(ivValue, "base64url"));
+  decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
+  const decrypted = Buffer.concat([decipher.update(Buffer.from(encryptedValue, "base64url")), decipher.final()]);
+  return JSON.parse(decrypted.toString("utf8"));
+}
+
 function connectionKey(env) {
   const secret = String(env.CONNECTION_ENCRYPTION_KEY || "");
   if (secret.length < 32) throw connectionError("Secure connection storage is not configured.", 503);
@@ -393,6 +587,17 @@ function splitScopes(value) {
 function providerError(providerName, data) {
   const detail = data.error_description || data.error?.message || data.message || data.error;
   return detail ? `${providerName} could not finish the connection: ${String(detail)}` : `${providerName} could not finish the connection.`;
+}
+
+function parseProviderBody(value) {
+  try { return JSON.parse(String(value || "{}")); } catch { return { message: String(value || "").slice(0, 500) }; }
+}
+
+function validMediaUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "https:" && !url.username && !url.password ? url.toString() : "";
+  } catch { return ""; }
 }
 
 function providerLabel(provider) {

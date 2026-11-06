@@ -15,10 +15,13 @@ It starts empty on purpose. There are no fictional prospects, campaigns, replies
 - Independent OpenAI, Gemini, and Claude analysis with a final balanced synthesis
 - Market research, audience analysis, campaign, social-pack, and custom workflows
 - Saved and editable drafts with approval states and source links
+- Per-project Google Analytics connection with verified live GA4 reports
+- Per-project Gmail, LinkedIn, Instagram, TikTok, and X authorization
+- A server-backed delivery queue with an explicit approval before every real send or publish action
 - Optional daily cloud automation that creates a draft without publishing it
 - Gitless Vercel deployment; the owner computer does not need to stay on
 
-Direct social publishing remains off until the relevant social accounts are connected and authorized.
+Direct delivery is available only after the relevant account is connected, the required platform permission is present, the saved work is approved, and the user approves the individual queue item.
 
 ## Local development
 
@@ -50,6 +53,18 @@ The application calls each AI provider directly. Add all three keys as encrypted
 - `GOOGLE_GENERATIVE_AI_API_KEY` — Gemini's independent panel analysis
 - `ANTHROPIC_API_KEY` — Claude's independent panel analysis
 - `OPENAI_MODEL`, `GOOGLE_MODEL`, and `ANTHROPIC_MODEL` — optional model overrides
+- `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `CONNECTION_ENCRYPTION_KEY` — Gmail and Google Analytics OAuth plus encrypted token storage
+- `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` — LinkedIn OAuth and posting
+- `INSTAGRAM_APP_ID` and `INSTAGRAM_APP_SECRET` — Instagram professional-account OAuth and publishing
+- `TIKTOK_CLIENT_KEY` and `TIKTOK_CLIENT_SECRET` — TikTok Login Kit and Content Posting API
+- `X_CLIENT_ID` and `X_CLIENT_SECRET` — X OAuth 2.0 posting
+
+The Google Cloud project must enable Gmail API, Google Analytics Admin API, and Google Analytics Data API. Add these production redirect URIs to the Google OAuth client:
+
+- `https://market-agent-lime-gamma.vercel.app/api/google-callback`
+- `https://market-agent-lime-gamma.vercel.app/api/google-analytics-callback`
+
+Each social developer app must likewise register `https://market-agent-lime-gamma.vercel.app/api/social-callback` and obtain its required publishing scope.
 
 ## Social publishing boundary
 
@@ -60,7 +75,7 @@ Content generation works. Direct publishing requires separate authorization and 
 - TikTok: OAuth, `video.publish`, and Content Posting API audit
 - X: developer app, funded API access, and user OAuth
 
-Publishing should remain behind explicit approval and a complete audit trail.
+Publishing is behind explicit per-item approval and a database audit record. A developer app without the platform's required product approval may authorize successfully but will not be shown as operational without its write scope.
 
 ## Architecture
 

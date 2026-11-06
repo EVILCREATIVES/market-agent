@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { EncryptJWT, jwtDecrypt } from "jose";
 import { getPool } from "./db.mjs";
 import { getSocialConnectionStatus } from "./social-connections.mjs";
+import { getAnalyticsConnectionStatus } from "./analytics.mjs";
 
 const GOOGLE_SCOPES = [
   "openid",
@@ -13,8 +14,11 @@ let connectionsTableReady = false;
 
 export async function getConnectionStatus(userId, projectId = "project-default", env = process.env) {
   const configured = googleConnectorConfigured(env);
-  const social = await getSocialConnectionStatus(userId, projectId, env);
-  if (!env.DATABASE_URL) return { ...emptyStatus(configured), ...social };
+  const [social, analytics] = await Promise.all([
+    getSocialConnectionStatus(userId, projectId, env),
+    getAnalyticsConnectionStatus(userId, projectId, env),
+  ]);
+  if (!env.DATABASE_URL) return { ...emptyStatus(configured), analytics, ...social };
   await ensureConnectionsTable(env);
   const result = await getPool(env).query(
     `SELECT account_email, scopes, status, connected_at, updated_at
@@ -24,7 +28,7 @@ export async function getConnectionStatus(userId, projectId = "project-default",
     [userId, projectId],
   );
   const row = result.rows[0];
-  if (!row || row.status !== "connected") return { ...emptyStatus(configured), ...social };
+  if (!row || row.status !== "connected") return { ...emptyStatus(configured), analytics, ...social };
   return {
     gmail: {
       configured,
@@ -34,6 +38,7 @@ export async function getConnectionStatus(userId, projectId = "project-default",
       connectedAt: row.connected_at || row.updated_at || null,
       canSend: Array.isArray(row.scopes) && row.scopes.includes("https://www.googleapis.com/auth/gmail.send"),
     },
+    analytics,
     ...social,
   };
 }
@@ -143,6 +148,41 @@ export async function disconnectGoogleMailbox(userId, projectId = "project-defau
   );
 }
 
+export async function sendGmailMessage(userId, projectId, message, env = process.env) {
+  const to = normalizeEmailList(message?.to, 50);
+  const cc = normalizeEmailList(message?.cc, 25);
+  const bcc = normalizeEmailList(message?.bcc, 25);
+  const subject = cleanHeader(message?.subject, 300);
+  const body = String(message?.body || "").trim().slice(0, 100_000);
+  if (!to.length) throw connectionError("The approved email needs at least one valid recipient.", 400);
+  if (!subject || !body) throw connectionError("The approved email needs a subject and message.", 400);
+  const row = await readGoogleConnection(userId, projectId, env);
+  if (!row || row.status !== "connected") throw connectionError("Connect the project mailbox before sending email.", 409);
+  if (!Array.isArray(row.scopes) || !row.scopes.includes("https://www.googleapis.com/auth/gmail.send")) throw connectionError("Reconnect the mailbox and approve sending access.", 403);
+  const credentials = decryptCredentials(row.encrypted_credentials, env);
+  const accessToken = await validGoogleAccessToken(userId, projectId, credentials, env);
+  const mime = [
+    `From: ${cleanHeader(row.account_email, 320)}`,
+    `To: ${to.join(", ")}`,
+    ...(cc.length ? [`Cc: ${cc.join(", ")}`] : []),
+    ...(bcc.length ? [`Bcc: ${bcc.join(", ")}`] : []),
+    `Subject: ${subject}`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    body.replace(/\r?\n/g, "\r\n"),
+  ].join("\r\n");
+  const response = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ raw: Buffer.from(mime, "utf8").toString("base64url") }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.id) throw connectionError(providerMessage(data, "Gmail could not send the approved email."), response.status === 401 ? 401 : 502);
+  return { provider: "google-gmail", externalId: String(data.id), threadId: String(data.threadId || ""), accountLabel: row.account_email, sentAt: new Date().toISOString() };
+}
+
 export function requestOrigin(req, env = process.env) {
   if (env.APP_BASE_URL) return normalizeOrigin(env.APP_BASE_URL);
   const host = String(req.headers?.["x-forwarded-host"] || req.headers?.host || "").split(",")[0].trim();
@@ -193,6 +233,39 @@ async function readEncryptedCredentials(userId, projectId, env) {
   }
 }
 
+async function readGoogleConnection(userId, projectId, env) {
+  await ensureConnectionsTable(env);
+  const result = await getPool(env).query(
+    "SELECT account_email, encrypted_credentials, scopes, status FROM market_agent_connections WHERE user_id = $1 AND project_id = $2 AND provider = 'google-gmail' LIMIT 1",
+    [userId, projectId],
+  );
+  return result.rows[0] || null;
+}
+
+async function validGoogleAccessToken(userId, projectId, credentials, env) {
+  if (credentials?.accessToken && Number(credentials.expiresAt || 0) > Date.now() + 60_000) return credentials.accessToken;
+  if (!credentials?.refreshToken) throw connectionError("Mailbox access expired. Reconnect it.", 401);
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: env.GOOGLE_OAUTH_CLIENT_ID,
+      client_secret: env.GOOGLE_OAUTH_CLIENT_SECRET,
+      refresh_token: credentials.refreshToken,
+      grant_type: "refresh_token",
+    }),
+  });
+  const tokens = await response.json().catch(() => ({}));
+  if (!response.ok || !tokens.access_token) throw connectionError("Mailbox access expired. Reconnect it.", 401);
+  credentials.accessToken = tokens.access_token;
+  credentials.expiresAt = Date.now() + Number(tokens.expires_in || 3600) * 1000;
+  await getPool(env).query(
+    "UPDATE market_agent_connections SET encrypted_credentials = $3, updated_at = NOW() WHERE user_id = $1 AND project_id = $2 AND provider = 'google-gmail'",
+    [userId, projectId, encryptCredentials(credentials, env)],
+  );
+  return credentials.accessToken;
+}
+
 function encryptCredentials(credentials, env) {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", connectionKey(env), iv);
@@ -207,6 +280,26 @@ function decryptCredentials(value, env) {
   decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
   const decrypted = Buffer.concat([decipher.update(Buffer.from(encryptedValue, "base64url")), decipher.final()]);
   return JSON.parse(decrypted.toString("utf8"));
+}
+
+function normalizeEmailList(value, maximum) {
+  const values = Array.isArray(value) ? value : String(value || "").split(/[;,\n]+/);
+  const emails = [];
+  for (const item of values) {
+    const email = String(item || "").trim().toLowerCase();
+    if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email) || emails.includes(email)) continue;
+    emails.push(email);
+    if (emails.length >= maximum) break;
+  }
+  return emails;
+}
+
+function cleanHeader(value, maximum) {
+  return String(value || "").replace(/[\r\n]+/g, " ").trim().slice(0, maximum);
+}
+
+function providerMessage(data, fallback) {
+  return String(data?.error?.message || data?.error_description || data?.message || fallback).slice(0, 800);
 }
 
 function connectionKey(env) {

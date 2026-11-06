@@ -213,6 +213,7 @@ export interface AssetProposal {
 }
 
 export interface ConnectionStatus {
+  analytics: AnalyticsConnectionStatus;
   gmail: {
     configured: boolean;
     connected: boolean;
@@ -227,6 +228,18 @@ export interface ConnectionStatus {
   x: SocialConnectionStatus;
 }
 
+export interface AnalyticsConnectionStatus {
+  configured: boolean;
+  authorized: boolean;
+  connected: boolean;
+  accountEmail: string;
+  propertyId: string;
+  propertyName: string;
+  properties: Array<{ id: string; name: string; account: string }>;
+  connectedAt: string | null;
+  canRead: boolean;
+}
+
 export interface SocialConnectionStatus {
   configured: boolean;
   connected: boolean;
@@ -235,4 +248,41 @@ export interface SocialConnectionStatus {
   scopes: string[];
   connectedAt: string | null;
   canPublish: boolean;
+}
+
+export type DeliveryJobStatus = "awaiting_approval" | "running" | "submitted" | "complete" | "failed" | "cancelled";
+
+export interface DeliveryJob {
+  id: string;
+  projectId: string;
+  runId: string;
+  channel: "gmail" | "linkedin" | "instagram" | "tiktok" | "x";
+  payload: {
+    recipient: string;
+    subject: string;
+    text: string;
+    mediaUrl: string;
+    mediaKind: "" | "image" | "video";
+    privacyLevel: string;
+    aiGenerated: boolean;
+    rationale: string;
+  };
+  status: DeliveryJobStatus;
+  externalId: string;
+  result: Record<string, unknown>;
+  error: string;
+  approvedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AnalyticsReport {
+  propertyId: string;
+  propertyName: string;
+  range: string;
+  totals: Record<string, number>;
+  timeline: Array<Record<string, string | number>>;
+  channels: Array<Record<string, string | number>>;
+  fetchedAt: string;
 }

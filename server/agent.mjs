@@ -30,15 +30,18 @@ const actionTitles = {
 };
 
 export async function runMarketingAgent(payload, env = process.env) {
-  const { action = "chat", prompt = "", workspace = {}, useWeb = true, mode = "single" } = payload ?? {};
+  const { action = "chat", prompt = "", workspace = {}, useWeb = true, mode = "single", connections = {} } = payload ?? {};
   const intensity = normalizeCampaignIntensity(payload?.intensity);
   requireProviderKeys(mode, env);
 
   const instruction = actionInstructions[action] ?? actionInstructions.chat;
   const context = buildContext(workspace);
   const deliveryNeeded = needsDeliveryAccess(action, prompt);
+  const operationalChannels = deliveryChannels(connections);
   const deliveryState = deliveryNeeded
-    ? `CURRENT DELIVERY ACCESS\nNo email, messaging, or social publishing account is connected. You may research and prepare launch-ready work, but you cannot truthfully claim that anything was sent or published. Label the result "PREPARED — NOT LAUNCHED" and make the only user-facing next action "Connect a delivery channel."`
+    ? operationalChannels.length
+      ? `CURRENT DELIVERY ACCESS\nOperational channels: ${operationalChannels.join(", ")}. Prepare final channel-ready work for an approval queue. Do not claim anything was sent or published during this analysis run; execution requires the user's explicit approval on each queued item.`
+      : `CURRENT DELIVERY ACCESS\nNo operational email or social publishing channel is connected. You may research and prepare launch-ready work, but you cannot truthfully claim that anything was sent or published. Label the result "PREPARED — NOT LAUNCHED" and make the only user-facing next action "Connect a delivery channel."`
     : "";
   const task = `${context}\n\n${deliveryState}\n\nEXECUTION STYLE\n${campaignIntensityInstructions[intensity]}\n\nTASK\n${instruction}\n\nUSER DIRECTION\n${prompt || "Use your best judgment and produce the complete deliverable."}\n\nOUTPUT RULES\nLead with status and completed work. Use short sections, compact tables or bullets, and final assets. Avoid a long strategy essay, repeated caveats, generic advice, or a multi-step to-do list for the user. End with exactly one next action.`;
 
@@ -68,6 +71,45 @@ export async function runMarketingAgent(payload, env = process.env) {
     maxOutputTokens: 7000,
   });
   return { id: crypto.randomUUID(), model: "Standard analysis", output: response.text, sources: [], createdAt: new Date().toISOString(), intensity };
+}
+
+export async function generateDeliveryPlan(payload, env = process.env) {
+  if (!env.OPENAI_API_KEY && !env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    const error = new Error("Connect OpenAI or Gemini before preparing the delivery queue.");
+    error.statusCode = 503;
+    throw error;
+  }
+  const run = payload?.run && typeof payload.run === "object" ? payload.run : {};
+  const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
+  const channels = Array.isArray(payload?.channels) ? payload.channels.filter((channel) => ["gmail", "linkedin", "instagram", "tiktok", "x"].includes(channel)) : [];
+  const reusableMedia = Array.isArray(workspace.sourceMedia)
+    ? workspace.sourceMedia.filter((item) => item?.url && /^https:\/\//i.test(item.url)).slice(0, 30).map((item) => ({ kind: item.kind, name: item.name, url: item.url, role: item.role, recommendation: item.recommendation }))
+    : [];
+  const prompt = `Turn this approved marketing run into a minimal execution queue for the operational channels.
+
+PROJECT
+${buildContext(workspace)}
+
+APPROVED RUN
+Title: ${String(run.title || "Approved marketing work").slice(0, 500)}
+Original direction: ${String(run.prompt || "").slice(0, 4000)}
+Final approved output:
+${String(run.output || "").slice(0, 50_000)}
+
+OPERATIONAL CHANNELS
+${channels.join(", ") || "None"}
+
+PUBLIC REUSABLE MEDIA
+${JSON.stringify(reusableMedia, null, 2)}
+
+Create only items that are immediately executable. For social channels, select the strongest final post already supported by the approved run and adapt it to the channel. For Gmail, create an item only when the approved run contains at least one explicit, valid recipient email address; never invent recipients. Instagram requires a public image or video URL. TikTok requires a public image or video URL and should default to SELF_ONLY for the approval preview. Do not invent media URLs, claims, recipients, or product facts. Return an empty list when nothing can be executed safely.`;
+  return generateStructuredObject({
+    env,
+    name: "approved_delivery_queue",
+    system: "You prepare exact, minimal delivery payloads from already approved marketing work. Never send anything, invent recipients, or invent media. Return only structured data.",
+    prompt,
+    schema: deliveryPlanSchema(),
+  });
 }
 
 export async function runProjectConversation(payload, env = process.env) {
@@ -132,6 +174,13 @@ Reply directly and naturally. Always acknowledge and comment on the user's actua
 
 function normalizeCampaignIntensity(value) {
   return ["careful", "assertive", "aggressive"].includes(value) ? value : "assertive";
+}
+
+function deliveryChannels(connections) {
+  const channels = [];
+  if (connections?.gmail?.connected && connections.gmail.canSend) channels.push("Email");
+  for (const provider of ["linkedin", "instagram", "tiktok", "x"]) if (connections?.[provider]?.connected && connections[provider].canPublish) channels.push(provider === "x" ? "X" : provider[0].toUpperCase() + provider.slice(1));
+  return channels;
 }
 
 function needsDeliveryAccess(action, prompt) {
@@ -447,6 +496,36 @@ function projectDocumentSchema() {
             heading: { type: "string" },
             body: { type: "string" },
             bullets: { type: "array", items: { type: "string" } },
+          },
+        },
+      },
+    },
+  };
+}
+
+function deliveryPlanSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["items"],
+    properties: {
+      items: {
+        type: "array",
+        maxItems: 12,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["channel", "recipient", "subject", "text", "mediaUrl", "mediaKind", "privacyLevel", "aiGenerated", "rationale"],
+          properties: {
+            channel: { type: "string", enum: ["gmail", "linkedin", "instagram", "tiktok", "x"] },
+            recipient: { type: "string" },
+            subject: { type: "string" },
+            text: { type: "string" },
+            mediaUrl: { type: "string" },
+            mediaKind: { type: "string", enum: ["", "image", "video"] },
+            privacyLevel: { type: "string" },
+            aiGenerated: { type: "boolean" },
+            rationale: { type: "string" },
           },
         },
       },

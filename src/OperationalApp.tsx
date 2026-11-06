@@ -4,6 +4,7 @@ import {
   ArrowRight,
   Bot,
   BrainCircuit,
+  ChartColumn,
   Check,
   ChevronDown,
   Cloud,
@@ -39,9 +40,9 @@ import { createDefaultSchedule, createEmptyProject, loadState, saveState } from 
 import { prepareLogo, prepareMaterial, type PreparedMaterial } from "./operational/materials";
 import { upload } from "@vercel/blob/client";
 import { apiFetch, getAccessToken } from "./auth";
-import type { AgentAction, AgentRun, AgentSchedule, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, ConnectionStatus, HealthState, MediaBudgetSummary, MediaJob, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, RunStatus, SourceMediaAsset } from "./operational/types";
+import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, ConnectionStatus, DeliveryJob, HealthState, MediaBudgetSummary, MediaJob, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, RunStatus, SourceMediaAsset } from "./operational/types";
 
-type Page = "agent" | "brain" | "research" | "campaigns" | "content" | "integrations";
+type Page = "agent" | "brain" | "research" | "campaigns" | "content" | "analytics" | "integrations";
 type CampaignIntensity = "careful" | "assertive" | "aggressive";
 
 const nav = [
@@ -50,6 +51,7 @@ const nav = [
   { id: "research" as const, label: "Research", icon: Search },
   { id: "campaigns" as const, label: "Campaigns", icon: Rocket },
   { id: "content" as const, label: "Content library", icon: Library },
+  { id: "analytics" as const, label: "Analytics", icon: ChartColumn },
   { id: "integrations" as const, label: "Integrations", icon: Settings2 },
 ];
 
@@ -62,6 +64,7 @@ const actionMeta: Record<AgentAction, { title: string; description: string }> = 
 };
 
 const emptyConnections = (): ConnectionStatus => ({
+  analytics: { configured: false, authorized: false, connected: false, accountEmail: "", propertyId: "", propertyName: "", properties: [], connectedAt: null, canRead: false },
   gmail: { configured: false, connected: false, accountEmail: "", scopes: [], connectedAt: null, canSend: false },
   linkedin: { configured: false, connected: false, accountId: "", accountLabel: "", scopes: [], connectedAt: null, canPublish: false },
   instagram: { configured: false, connected: false, accountId: "", accountLabel: "", scopes: [], connectedAt: null, canPublish: false },
@@ -96,6 +99,14 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
   const [connections, setConnections] = useState<ConnectionStatus>(() => emptyConnections());
   const [apiCredentials, setApiCredentials] = useState<ApiCredentialStatus>(() => emptyApiCredentials());
   const [projectChatOpen, setProjectChatOpen] = useState(false);
+
+  const refreshConnections = async (projectId = state.activeProjectId) => {
+    const response = await apiFetch(`/api/connections?projectId=${encodeURIComponent(projectId)}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Connections could not be checked.");
+    setConnections(data as ConnectionStatus);
+    return data as ConnectionStatus;
+  };
 
   useEffect(() => {
     fetch("/api/health")
@@ -146,12 +157,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
   useEffect(() => {
     if (!cloudReady) return;
     setConnections(emptyConnections());
-    apiFetch(`/api/connections?projectId=${encodeURIComponent(state.activeProjectId)}`)
-      .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "Connections could not be checked.");
-        setConnections(data as ConnectionStatus);
-      })
+    refreshConnections(state.activeProjectId)
       .catch(() => setConnections(emptyConnections()));
   }, [cloudReady, state.activeProjectId]);
 
@@ -171,9 +177,9 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
     const result = params.get("connection");
     if (!result) return;
     setPage("integrations");
-    const labels: Record<string, string> = { gmail: "Mailbox", linkedin: "LinkedIn", instagram: "Instagram", tiktok: "TikTok", x: "X" };
+    const labels: Record<string, string> = { gmail: "Mailbox", analytics: "Google Analytics", linkedin: "LinkedIn", instagram: "Instagram", tiktok: "TikTok", x: "X" };
     const provider = result.replace(/-success$/, "");
-    setToast(result.endsWith("-success") ? `${labels[provider] || "Account"} connected securely.` : params.get("reason") || "Account connection failed.");
+    setToast(result === "analytics-select" ? "Google Analytics authorized. Choose the property for this project." : result === "analytics-success" || result === "gmail-success" ? `${labels[provider] || "Account"} connected and verified.` : result.endsWith("-success") ? `${labels[provider] || "Account"} authorization completed. Publishing permission is shown below.` : params.get("reason") || "Account connection failed.");
     window.history.replaceState({}, "", window.location.pathname);
   }, []);
 
@@ -265,7 +271,8 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
             {page === "research" && <RunLibrary title="Research" description={`Live market and audience work generated from ${activeProject.name || "this project"}'s product brain.`} empty="No research has been run for this project yet." runs={projectRuns.filter((run) => ["research", "audience"].includes(run.action))} onOpen={setSelectedRunId} onStart={() => navigate("agent")} />}
             {page === "campaigns" && <RunLibrary title="Campaigns" description="Campaign plans become real project records here—never fictional performance." empty="No campaigns have been generated for this project yet." runs={projectRuns.filter((run) => run.action === "campaign")} onOpen={setSelectedRunId} onStart={() => navigate("agent")} />}
             {page === "content" && <ContentLibrary userId={userId} workspace={activeProject} runs={projectRuns.filter((run) => run.action === "social")} mediaConfigured={apiCredentials.mediaReady} videoConfigured={apiCredentials.videoReady} onOpen={setSelectedRunId} onStart={() => navigate("agent")} notify={notify} />}
-            {page === "integrations" && <OperationalIntegrations projectId={activeProject.id} userEmail={userEmail} health={{ ...health, agentConfigured: runtimeReady, mediaConfigured: apiCredentials.mediaReady }} apiCredentials={apiCredentials} onApiCredentials={setApiCredentials} connections={connections} schedule={activeSchedule} onSchedule={updateSchedule} notify={notify} />}
+            {page === "analytics" && <AnalyticsDashboard projectId={activeProject.id} connection={connections.analytics} onConnect={() => navigate("integrations")} />}
+            {page === "integrations" && <OperationalIntegrations projectId={activeProject.id} userEmail={userEmail} health={{ ...health, agentConfigured: runtimeReady, mediaConfigured: apiCredentials.mediaReady }} apiCredentials={apiCredentials} onApiCredentials={setApiCredentials} connections={connections} onConnections={setConnections} schedule={activeSchedule} onSchedule={updateSchedule} notify={notify} />}
           </>}
         </div>
       </main>
@@ -332,11 +339,11 @@ function AgentHome({ workspace, runs, health, connections, onRun, onOpen, onNavi
   const [pendingCampaign, setPendingCampaign] = useState<{ action: AgentAction; direction: string } | null>(null);
   const complete = workspaceCompleteness(workspace);
   const connectedChannels = [
-    connections.gmail.connected && "Email",
-    connections.linkedin.connected && "LinkedIn",
-    connections.instagram.connected && "Instagram",
-    connections.tiktok.connected && "TikTok",
-    connections.x.connected && "X",
+    connections.gmail.canSend && "Email",
+    connections.linkedin.canPublish && "LinkedIn",
+    connections.instagram.canPublish && "Instagram",
+    connections.tiktok.canPublish && "TikTok",
+    connections.x.canPublish && "X",
   ].filter(Boolean) as string[];
 
   const executeRun = async (action: AgentAction, direction: string, intensity: CampaignIntensity) => {
@@ -1183,6 +1190,63 @@ function money(cents: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(cents / 100);
 }
 
+function AnalyticsDashboard({ projectId, connection, onConnect }: { projectId: string; connection: ConnectionStatus["analytics"]; onConnect: () => void }) {
+  const [range, setRange] = useState("28daysAgo");
+  const [report, setReport] = useState<AnalyticsReport | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!connection.canRead) { setReport(null); return; }
+    let active = true;
+    setLoading(true);
+    setError("");
+    apiFetch(`/api/analytics?projectId=${encodeURIComponent(projectId)}&range=${encodeURIComponent(range)}`)
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Google Analytics could not be read.");
+        if (active) setReport(data as AnalyticsReport);
+      })
+      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "Google Analytics could not be read."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [connection.canRead, projectId, range]);
+
+  if (!connection.canRead) return <div className="op-stack">
+    <div className="op-heading"><div className="op-eyebrow">Measured results</div><h1>Analytics</h1><p>Real traffic, acquisition, events, and key events from this project’s own Analytics property.</p></div>
+    <div className="op-analytics-empty"><span><ChartColumn size={24} /></span><h2>{connection.authorized ? "Choose the property for this project" : "Connect Google Analytics"}</h2><p>{connection.authorized ? "The Google account is authorized, but the project still needs an Analytics property. Choose it in Connections; the app verifies a real report before marking it operational." : "Authorize the Google account that can read this project’s property. The dashboard will use live Data API reports, not manually entered numbers."}</p><button onClick={onConnect}>{connection.authorized ? "Choose property" : "Open Connections"} <ArrowRight size={14} /></button></div>
+  </div>;
+
+  const totals = report?.totals || {};
+  const metrics = [
+    { key: "activeUsers", label: "Active users" },
+    { key: "sessions", label: "Sessions" },
+    { key: "newUsers", label: "New users" },
+    { key: "eventCount", label: "Events" },
+    { key: "keyEvents", label: "Key events" },
+  ];
+  const maxSessions = Math.max(1, ...(report?.timeline || []).map((row) => Number(row.sessions || 0)));
+  return <div className="op-stack">
+    <div className="op-analytics-heading"><div className="op-heading"><div className="op-eyebrow">Measured results</div><h1>Analytics</h1><p>{connection.propertyName} · Property {connection.propertyId}</p></div><label><span>REPORTING WINDOW</span><select value={range} onChange={(event) => setRange(event.target.value)}><option value="7daysAgo">Last 7 days</option><option value="28daysAgo">Last 28 days</option><option value="30daysAgo">Last 30 days</option><option value="60daysAgo">Last 60 days</option><option value="90daysAgo">Last 90 days</option></select></label></div>
+    {error && <div className="op-analytics-error"><CircleAlert size={17} />{error}<button onClick={onConnect}>Manage connection</button></div>}
+    {loading && !report ? <div className="op-analytics-loading"><LoaderCircle className="spin" size={22} /> Reading the live property…</div> : report && <>
+      <section className="op-analytics-metrics">{metrics.map((metric) => <article key={metric.key}><small>{metric.label}</small><strong>{formatMetric(totals[metric.key])}</strong></article>)}</section>
+      <section className="op-analytics-chart"><header><div><small>DAILY TRAFFIC</small><h2>Sessions over time</h2></div><span>{loading ? "Refreshing…" : `Updated ${new Date(report.fetchedAt).toLocaleString()}`}</span></header><div>{report.timeline.map((row, index) => <i key={`${row.date}-${index}`} style={{ height: `${Math.max(3, (Number(row.sessions || 0) / maxSessions) * 100)}%` }} title={`${analyticsDate(String(row.date || ""))}: ${formatMetric(row.sessions)} sessions`} />)}</div><footer><span>{analyticsDate(String(report.timeline[0]?.date || ""))}</span><span>{analyticsDate(String(report.timeline.at(-1)?.date || ""))}</span></footer></section>
+      <section className="op-analytics-table"><header><div><small>ACQUISITION</small><h2>Channels</h2></div></header><div className="op-analytics-table__head"><span>Channel</span><span>Sessions</span><span>Users</span><span>Key events</span></div>{report.channels.length ? report.channels.map((row, index) => <div key={`${row.sessionDefaultChannelGroup}-${index}`}><strong>{String(row.sessionDefaultChannelGroup || "Unassigned")}</strong><span>{formatMetric(row.sessions)}</span><span>{formatMetric(row.activeUsers)}</span><span>{formatMetric(row.keyEvents)}</span></div>) : <p>No channel rows were returned for this period.</p>}</section>
+    </>}
+  </div>;
+}
+
+function formatMetric(value: string | number | undefined) {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(Number(value || 0));
+}
+
+function analyticsDate(value: string) {
+  if (!/^\d{8}$/.test(value)) return "";
+  const date = new Date(`${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}T00:00:00`);
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 function RunLibrary({ title, description, empty, runs, onOpen, onStart }: { title: string; description: string; empty: string; runs: AgentRun[]; onOpen: (id: string) => void; onStart: () => void }) {
   return <div className="op-stack"><div className="op-heading"><div className="op-eyebrow">Saved workspace records</div><h1>{title}</h1><p>{description}</p></div>{runs.length ? <div className="op-run-list">{runs.map((run) => <RunRow key={run.id} run={run} onOpen={onOpen} />)}</div> : <div className="op-empty"><span><FileText size={23} /></span><h2>{empty}</h2><p>Run the agent to create the first real record.</p><button onClick={onStart}><Sparkles size={15} /> Open agent</button></div>}</div>;
 }
@@ -1194,13 +1258,56 @@ function RunRow({ run, onOpen }: { run: AgentRun; onOpen: (id: string) => void }
 function RunDetail({ run, connections, onBack, onConnect, onStatus, onOutput, onDelete, notify }: { run: AgentRun; connections: ConnectionStatus; onBack: () => void; onConnect: () => void; onStatus: (id: string, status: RunStatus) => void; onOutput: (id: string, output: string) => void; onDelete: (id: string) => void; notify: (message: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [output, setOutput] = useState(run.output);
+  const [deliveryJobs, setDeliveryJobs] = useState<DeliveryJob[]>([]);
+  const [deliveryWorking, setDeliveryWorking] = useState("");
+  const operationalChannels = [connections.gmail.canSend && "Email", connections.linkedin.canPublish && "LinkedIn", connections.instagram.canPublish && "Instagram", connections.tiktok.canPublish && "TikTok", connections.x.canPublish && "X"].filter(Boolean) as string[];
+  useEffect(() => {
+    apiFetch(`/api/delivery?projectId=${encodeURIComponent(run.projectId)}&runId=${encodeURIComponent(run.id)}`)
+      .then(async (response) => { const data = await response.json(); if (response.ok) setDeliveryJobs(Array.isArray(data.jobs) ? data.jobs : []); })
+      .catch(() => undefined);
+  }, [run.id, run.projectId]);
+  const prepareDelivery = async () => {
+    setDeliveryWorking("prepare");
+    try {
+      const response = await apiFetch("/api/delivery", { method: "POST", body: JSON.stringify({ action: "prepare", projectId: run.projectId, runId: run.id }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The approval queue could not be prepared.");
+      setDeliveryJobs(Array.isArray(data.jobs) ? data.jobs : []);
+      notify(data.jobs?.length ? "Approval queue prepared. Nothing has been sent." : "No executable item was found. Recipients and public media are never invented.");
+    } catch (error) { notify(error instanceof Error ? error.message : "The approval queue could not be prepared."); }
+    finally { setDeliveryWorking(""); }
+  };
+  const executeDelivery = async (job: DeliveryJob) => {
+    const action = job.channel === "gmail" ? `send this email to ${job.payload.recipient}` : `publish this post to ${deliveryChannelLabel(job.channel)}`;
+    if (!window.confirm(`Approve and ${action}? This will perform the real external action now.`)) return;
+    setDeliveryWorking(job.id);
+    try {
+      const response = await apiFetch("/api/delivery", { method: "POST", body: JSON.stringify({ action: "execute", projectId: run.projectId, id: job.id }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The external action failed.");
+      setDeliveryJobs((current) => current.map((item) => item.id === data.job.id ? data.job : item));
+      notify(data.job.status === "complete" || data.job.status === "submitted" ? `${deliveryChannelLabel(job.channel)} accepted the action.` : data.job.error || "The external action failed.");
+    } catch (error) { notify(error instanceof Error ? error.message : "The external action failed."); }
+    finally { setDeliveryWorking(""); }
+  };
+  const cancelDelivery = async (job: DeliveryJob) => {
+    setDeliveryWorking(job.id);
+    try {
+      const response = await apiFetch("/api/delivery", { method: "POST", body: JSON.stringify({ action: "cancel", projectId: run.projectId, id: job.id }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The delivery item could not be cancelled.");
+      setDeliveryJobs((current) => current.map((item) => item.id === data.job.id ? data.job : item));
+    } catch (error) { notify(error instanceof Error ? error.message : "The delivery item could not be cancelled."); }
+    finally { setDeliveryWorking(""); }
+  };
   const saveEdit = () => { onOutput(run.id, output); setEditing(false); notify("Changes saved."); };
   const distributionRun = run.action === "campaign" || run.action === "social" || run.action === "chat";
   return <div className="op-stack">
     <button className="op-back" onClick={onBack}><ArrowLeft size={15} /> Back to workspace</button>
     <section className="op-run-detail">
       <header><div><div className="op-eyebrow">{actionMeta[run.action].title} · {new Date(run.createdAt).toLocaleString()}</div><h1>{run.title}</h1><p>{run.prompt || actionMeta[run.action].description}</p></div><div><span className={`op-review-state ${run.status === "Approved" ? "approved" : ""}`}>{run.status === "Approved" && <Check size={13} />}{run.status}</span><button className="op-more" onClick={() => { if (window.confirm("Delete this saved agent run?")) onDelete(run.id); }}><Trash2 size={16} /></button></div></header>
-      {distributionRun && <div className={`op-execution-state ${connections.gmail.connected ? "connected" : ""}`}><span>{connections.gmail.connected ? <Check size={19} /> : <Send size={19} />}</span><div><small>EXECUTION STATUS</small><strong>{connections.gmail.connected ? "Mailbox connected — campaign not launched" : "Prepared — not launched"}</strong><p>{connections.gmail.connected ? `Email can be sent from ${connections.gmail.accountEmail} after this campaign has an approved recipient queue. Nothing has been sent yet.` : "Research and campaign material are saved. No email, messaging, or social account is connected, so nothing was sent or published."}</p></div><button onClick={onConnect}>{connections.gmail.connected ? "Manage connections" : "Connection setup"} <ArrowRight size={14} /></button></div>}
+      {distributionRun && <div className={`op-execution-state ${operationalChannels.length ? "connected" : ""}`}><span>{operationalChannels.length ? <Check size={19} /> : <Send size={19} />}</span><div><small>EXECUTION STATUS</small><strong>{operationalChannels.length ? `${operationalChannels.join(", ")} operational — nothing sent yet` : "Prepared — not launched"}</strong><p>{operationalChannels.length ? "Approve the saved work, then let the agent create the exact send/publish queue. Each external action still requires your confirmation." : "No operational delivery channel is connected, so nothing can be sent or published."}</p></div><button onClick={onConnect}>{operationalChannels.length ? "Manage connections" : "Connection setup"} <ArrowRight size={14} /></button></div>}
+      {distributionRun && operationalChannels.length > 0 && <section className="op-delivery-queue"><div className="op-section-title"><div><small>REAL EXTERNAL ACTIONS</small><h2>Approval queue</h2><p>The agent prepares these from the approved run. Nothing leaves the app until you approve an individual item.</p></div>{run.status === "Approved" && deliveryJobs.length === 0 && <button onClick={() => void prepareDelivery()} disabled={deliveryWorking === "prepare"}>{deliveryWorking === "prepare" ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}{deliveryWorking === "prepare" ? "Preparing…" : "Prepare actions"}</button>}</div>{run.status !== "Approved" && <div className="op-delivery-empty"><CircleAlert size={16} /> Mark this work approved before creating external actions.</div>}{deliveryJobs.length > 0 && <div className="op-delivery-list">{deliveryJobs.map((job) => <article key={job.id} className={`status-${job.status}`}><header><strong>{deliveryChannelLabel(job.channel)}</strong><em>{deliveryStatusLabel(job.status)}</em></header>{job.payload.recipient && <small>TO · {job.payload.recipient}</small>}{job.channel === "tiktok" && <small>VISIBILITY · {job.payload.privacyLevel === "SELF_ONLY" ? "Private — only me" : job.payload.privacyLevel}</small>}{job.payload.subject && <h3>{job.payload.subject}</h3>}<p>{job.payload.text}</p>{job.payload.mediaUrl && <a href={job.payload.mediaUrl} target="_blank" rel="noreferrer">Approved {job.payload.mediaKind} <ArrowRight size={11} /></a>}<blockquote>{job.payload.rationale}</blockquote>{job.error && <div className="op-delivery-error">{job.error}</div>}{job.externalId && <code>Platform receipt: {job.externalId}</code>}{job.status === "awaiting_approval" && <footer><button onClick={() => void executeDelivery(job)} disabled={Boolean(deliveryWorking)}>{deliveryWorking === job.id ? <LoaderCircle className="spin" size={13} /> : <Send size={13} />}Approve &amp; {job.channel === "gmail" ? "send" : "publish"}</button><button className="secondary" onClick={() => void cancelDelivery(job)} disabled={Boolean(deliveryWorking)}>Cancel</button></footer>}</article>)}</div>}</section>}
       <div className="op-detail-grid">
         <article className="op-output-card">{editing ? <textarea value={output} onChange={(e) => setOutput(e.target.value)} /> : <MarkdownLite value={run.output} hideAction={distributionRun} />}</article>
         <aside>
@@ -1211,6 +1318,14 @@ function RunDetail({ run, connections, onBack, onConnect, onStatus, onOutput, on
       </div>
     </section>
   </div>;
+}
+
+function deliveryChannelLabel(channel: DeliveryJob["channel"]) {
+  return channel === "gmail" ? "Email" : channel === "x" ? "X" : channel[0].toUpperCase() + channel.slice(1);
+}
+
+function deliveryStatusLabel(status: DeliveryJob["status"]) {
+  return ({ awaiting_approval: "Waiting for approval", running: "Sending", submitted: "Submitted", complete: "Complete", failed: "Failed", cancelled: "Cancelled" } as const)[status];
 }
 
 function RunSources({ sources }: { sources: AgentRun["sources"] }) {
@@ -1231,11 +1346,16 @@ function sourceDisplayName(source: AgentRun["sources"][number]) {
   }
 }
 
-function OperationalIntegrations({ projectId, userEmail, health, apiCredentials, onApiCredentials, connections, schedule, onSchedule, notify }: { projectId: string; userEmail: string; health: HealthState; apiCredentials: ApiCredentialStatus; onApiCredentials: (status: ApiCredentialStatus) => void; connections: ConnectionStatus; schedule: AgentSchedule; onSchedule: (schedule: AgentSchedule) => void; notify: (message: string) => void }) {
+function OperationalIntegrations({ projectId, userEmail, health, apiCredentials, onApiCredentials, connections, onConnections, schedule, onSchedule, notify }: { projectId: string; userEmail: string; health: HealthState; apiCredentials: ApiCredentialStatus; onApiCredentials: (status: ApiCredentialStatus) => void; connections: ConnectionStatus; onConnections: (status: ConnectionStatus) => void; schedule: AgentSchedule; onSchedule: (schedule: AgentSchedule) => void; notify: (message: string) => void }) {
   const [connecting, setConnecting] = useState("");
   const [savingProvider, setSavingProvider] = useState<ApiProvider | "">("");
   const [keyDrafts, setKeyDrafts] = useState<Record<ApiProvider, string>>({ openai: "", google: "", anthropic: "" });
-  const connectAccount = async (provider: "google-gmail" | "linkedin" | "instagram" | "tiktok" | "x") => {
+  const [analyticsProperty, setAnalyticsProperty] = useState("");
+  type ConnectionProvider = "google-analytics" | "google-gmail" | "linkedin" | "instagram" | "tiktok" | "x";
+  useEffect(() => {
+    setAnalyticsProperty(connections.analytics.propertyId || connections.analytics.properties[0]?.id || "");
+  }, [connections.analytics.propertyId, connections.analytics.properties]);
+  const connectAccount = async (provider: ConnectionProvider) => {
     setConnecting(provider);
     try {
       const response = await apiFetch("/api/connections", { method: "POST", body: JSON.stringify({ provider, projectId }) });
@@ -1246,6 +1366,30 @@ function OperationalIntegrations({ projectId, userEmail, health, apiCredentials,
       notify(error instanceof Error ? error.message : "Account connection could not start.");
       setConnecting("");
     }
+  };
+  const chooseAnalyticsProperty = async () => {
+    if (!analyticsProperty) { notify("Choose an Analytics property first."); return; }
+    setConnecting("google-analytics");
+    try {
+      const response = await apiFetch("/api/connections", { method: "POST", body: JSON.stringify({ provider: "google-analytics", projectId, propertyId: analyticsProperty }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The Analytics property could not be verified.");
+      onConnections(data as ConnectionStatus);
+      notify("Analytics property verified. Live reporting is operational.");
+    } catch (error) { notify(error instanceof Error ? error.message : "The Analytics property could not be verified."); }
+    finally { setConnecting(""); }
+  };
+  const disconnectAccount = async (provider: ConnectionProvider, label: string) => {
+    if (!window.confirm(`Disconnect ${label} from this project?`)) return;
+    setConnecting(provider);
+    try {
+      const response = await apiFetch(`/api/connections?projectId=${encodeURIComponent(projectId)}&provider=${encodeURIComponent(provider)}`, { method: "DELETE" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `${label} could not be disconnected.`);
+      onConnections(data as ConnectionStatus);
+      notify(`${label} disconnected from this project.`);
+    } catch (error) { notify(error instanceof Error ? error.message : `${label} could not be disconnected.`); }
+    finally { setConnecting(""); }
   };
   const saveApiCredential = async (provider: ApiProvider) => {
     const apiKey = keyDrafts[provider].trim();
@@ -1299,14 +1443,14 @@ function OperationalIntegrations({ projectId, userEmail, health, apiCredentials,
     { provider: "google", name: "Gemini API", account: "Core option", detail: "Reasoning, a second strategic perspective, image creation, and video creation", tier: "Google Cloud project", helpUrl: "https://console.cloud.google.com/apis/credentials" },
     { provider: "anthropic", name: "Claude API", account: "Optional reviewer", detail: "An additional independent review of messaging, risks, and strategy", tier: "Anthropic account", helpUrl: "https://console.anthropic.com/settings/keys" },
   ];
-  const connectors = [
-    { name: "Neon", detail: "Private sign-in and cross-device Postgres persistence", credential: "Database + managed auth", ready: health.databaseConfigured && health.authConfigured, core: true },
-    { name: "Google Analytics", detail: "GA4 traffic, attribution, events, and conversion reporting", credential: "GA4 property + Google OAuth", ready: health.analyticsConfigured, core: false },
-    { id: "google-gmail" as const, name: "Email", detail: connections.gmail.connected ? `Authorized sender: ${connections.gmail.accountEmail}` : "Approved outreach from your dedicated mailbox", credential: "Secure mailbox authorization", ready: connections.gmail.connected, configured: connections.gmail.configured, core: false },
-    { id: "linkedin" as const, name: "LinkedIn", detail: connections.linkedin.connected ? `Authorized account: ${connections.linkedin.accountLabel}` : "Personal publishing first; company-page access follows platform approval", credential: "LinkedIn publishing authorization", ready: connections.linkedin.connected, configured: connections.linkedin.configured, core: false },
-    { id: "instagram" as const, name: "Instagram", detail: connections.instagram.connected ? `Authorized account: ${connections.instagram.accountLabel}` : "Professional-account posts, Reels, and insights", credential: "Instagram professional authorization", ready: connections.instagram.connected, configured: connections.instagram.configured, core: false },
-    { id: "tiktok" as const, name: "TikTok", detail: connections.tiktok.connected ? `Authorized account: ${connections.tiktok.accountLabel}` : "Videos and photo posts; public publishing follows platform review", credential: "TikTok content-publishing authorization", ready: connections.tiktok.connected, configured: connections.tiktok.configured, core: false },
-    { id: "x" as const, name: "X", detail: connections.x.connected ? `Authorized account: ${connections.x.accountLabel}` : "Posts, media, and performance signals", credential: "X account authorization", ready: connections.x.connected, configured: connections.x.configured, core: false },
+  const connectors: Array<{ id?: ConnectionProvider; name: string; detail: string; credential: string; ready: boolean; configured: boolean; core: boolean; authorized?: boolean; connected?: boolean }> = [
+    { name: "Neon", detail: "Private sign-in and cross-device Postgres persistence", credential: "Database + managed auth", ready: health.databaseConfigured && health.authConfigured, configured: health.databaseConfigured && health.authConfigured, core: true },
+    { id: "google-analytics", name: "Google Analytics", detail: connections.analytics.canRead ? `Live property: ${connections.analytics.propertyName}` : connections.analytics.authorized ? `Authorized account: ${connections.analytics.accountEmail}` : "Live traffic, acquisition, events, and key-event reporting", credential: "Read-only Analytics authorization", ready: connections.analytics.canRead, configured: connections.analytics.configured, authorized: connections.analytics.authorized, connected: connections.analytics.connected, core: false },
+    { id: "google-gmail", name: "Email", detail: connections.gmail.connected ? `Authorized sender: ${connections.gmail.accountEmail}` : "Approved outreach from your dedicated mailbox", credential: "Send-only mailbox authorization", ready: connections.gmail.canSend, configured: connections.gmail.configured, connected: connections.gmail.connected, core: false },
+    { id: "linkedin", name: "LinkedIn", detail: connections.linkedin.connected ? `Authorized account: ${connections.linkedin.accountLabel}` : "Personal publishing first; company-page access follows platform approval", credential: "LinkedIn publishing authorization", ready: connections.linkedin.canPublish, configured: connections.linkedin.configured, connected: connections.linkedin.connected, core: false },
+    { id: "instagram", name: "Instagram", detail: connections.instagram.connected ? `Authorized account: ${connections.instagram.accountLabel}` : "Professional-account posts and Reels", credential: "Instagram publishing authorization", ready: connections.instagram.canPublish, configured: connections.instagram.configured, connected: connections.instagram.connected, core: false },
+    { id: "tiktok", name: "TikTok", detail: connections.tiktok.connected ? `Authorized account: ${connections.tiktok.accountLabel}` : "Videos and photo posts; public publishing follows platform review", credential: "TikTok direct-post authorization", ready: connections.tiktok.canPublish, configured: connections.tiktok.configured, connected: connections.tiktok.connected, core: false },
+    { id: "x", name: "X", detail: connections.x.connected ? `Authorized account: ${connections.x.accountLabel}` : "Text posts from the approved action queue", credential: "X write authorization", ready: connections.x.canPublish, configured: connections.x.configured, connected: connections.x.connected, core: false },
   ];
   const readyToAuthorize = connectors.filter((connector) => connector.id && connector.configured && !connector.ready);
   return <div className="op-stack">
@@ -1317,7 +1461,7 @@ function OperationalIntegrations({ projectId, userEmail, health, apiCredentials,
     <section className="op-api-vault"><div className="op-api-vault__head"><div><small>ACCOUNT-WIDE API VAULT</small><h2>Your private analysis connections</h2><p>One core API is required. Two improve coverage. All three unlock the strongest collaborative review. Your keys are isolated to your signed-in account.</p></div><span><ShieldCheck size={17} /> Encrypted</span></div><div className="op-api-vault__grid">{apiOptions.map((option) => { const saved = apiCredentials.credentials[option.provider]; const busy = savingProvider === option.provider; return <article key={option.provider} className={saved.connected ? "connected" : ""}><div className="op-api-card__title"><span><KeyRound size={16} /></span><div><strong>{option.name}</strong><small>{option.account}</small></div><em>{saved.connected ? "Saved" : option.provider === "anthropic" ? "Optional" : "Core"}</em></div><p>{option.detail}</p><a className="op-api-help" href={option.helpUrl} target="_blank" rel="noreferrer">Create or find key in {option.tier} <ArrowRight size={11} /></a>{saved.connected ? <div className="op-api-saved"><code>Key ending ••••{saved.hint}</code><div><button className="danger" onClick={() => void disconnectApiCredential(option.provider)} disabled={busy}>{busy ? "Removing…" : "Disconnect"}</button></div></div> : null}<label><span>{saved.connected ? "Paste a new key to replace it" : "Paste API key"}</span><div><input type="password" value={keyDrafts[option.provider]} onChange={(event) => setKeyDrafts((current) => ({ ...current, [option.provider]: event.target.value }))} placeholder="Your private API key" autoComplete="off" spellCheck={false} /><button onClick={() => void saveApiCredential(option.provider)} disabled={busy || !keyDrafts[option.provider].trim()}>{busy ? "Saving…" : saved.connected ? "Replace" : "Connect"}</button></div></label></article>; })}</div><div className="op-api-how"><div><strong>OpenAI</strong><p>Open the API keys page, create a secret key, copy it once, and paste it above.</p></div><div><strong>Gemini</strong><p>In Google Cloud, enable the Gemini API, open APIs &amp; Services → Credentials, create an API key, restrict it to that API, and paste it above.</p></div><div><strong>Claude</strong><p>Open the Anthropic Console key settings, create a key, copy it, and paste it above.</p></div></div><small className="op-api-vault__note">Keys are used only on the server for this account’s requests and scheduled work. The browser never stores them, and the interface shows only the final four characters after saving.</small></section>
     {readyToAuthorize.length > 0 && <section className="op-connection-blocker"><CircleAlert size={21} /><div><strong>{readyToAuthorize.length} {readyToAuthorize.length === 1 ? "account is" : "accounts are"} ready for your approval</strong><p>Choose Connect on a channel below, sign in, and approve access.</p></div></section>}
     <section className="op-schedule-card"><div><span><Bot size={18} /></span><div><strong>Daily autonomous market pulse</strong><p>Runs each morning Eastern time in the cloud, creates a new draft, and never publishes it.</p></div><label className="op-switch"><input type="checkbox" checked={schedule.enabled} disabled={!apiCredentials.ready} onChange={(event) => onSchedule({ ...schedule, enabled: event.target.checked })} /><i /></label></div><div className="op-schedule-fields"><label><span>Workflow</span><select value={schedule.action} onChange={(event) => onSchedule({ ...schedule, action: event.target.value as AgentSchedule["action"] })}><option value="research">Market research</option><option value="audience">Audience analysis</option><option value="campaign">30-day campaign</option><option value="social">Social content pack</option></select></label><label className="wide"><span>Direction</span><textarea value={schedule.prompt} onChange={(event) => onSchedule({ ...schedule, prompt: event.target.value })} /></label></div><small>{!apiCredentials.ready ? "Connect OpenAI or Gemini to enable automatic work." : schedule.lastRunAt ? `Last automatic run: ${new Date(schedule.lastRunAt).toLocaleString()}` : "No automatic run has happened yet."}</small></section>
-    <div className="op-connector-grid">{connectors.map((connector) => <article key={connector.name}><div><span>{connector.name.slice(0, 2)}</span><div><strong>{connector.name}</strong><small>{connector.core ? "Cloud core" : "Delivery channel"}</small></div><em className={connector.ready ? "ready" : ""}>{connector.ready ? "Connected" : connector.configured ? "Ready to approve" : "Agent setup"}</em></div><p>{connector.detail}</p><code>{connector.credential}</code>{connector.id && !connector.ready && <button className="op-connect-button" onClick={() => void connectAccount(connector.id)} disabled={!connector.configured || Boolean(connecting)}>{connector.configured ? (connecting === connector.id ? `Opening ${connector.name}…` : `Connect ${connector.name}`) : "Setup in progress"}</button>}</article>)}</div>
+    <div className="op-connector-grid">{connectors.map((connector) => <article key={connector.name}><div><span>{connector.name.slice(0, 2)}</span><div><strong>{connector.name}</strong><small>{connector.core ? "Cloud core" : connector.id === "google-analytics" ? "Measurement" : "Delivery channel"}</small></div><em className={connector.ready ? "ready" : ""}>{connector.ready ? "Operational" : connector.authorized ? "Choose property" : connector.connected ? "Permission missing" : connector.configured ? "Ready to connect" : "Developer setup required"}</em></div><p>{connector.detail}</p><code>{connector.credential}</code>{connector.id === "google-analytics" && connector.authorized && !connector.ready && connections.analytics.properties.length > 0 && <div className="op-property-picker"><select value={analyticsProperty} onChange={(event) => setAnalyticsProperty(event.target.value)}>{connections.analytics.properties.map((property) => <option key={property.id} value={property.id}>{property.account ? `${property.account} · ` : ""}{property.name} ({property.id})</option>)}</select><button onClick={() => void chooseAnalyticsProperty()} disabled={!analyticsProperty || Boolean(connecting)}>{connecting === "google-analytics" ? "Verifying…" : "Use this property"}</button></div>}{connector.id && !connector.ready && !(connector.id === "google-analytics" && connector.authorized) && <button className="op-connect-button" onClick={() => void connectAccount(connector.id!)} disabled={!connector.configured || Boolean(connecting)}>{connector.configured ? (connecting === connector.id ? `Opening ${connector.name}…` : connector.connected ? `Reconnect ${connector.name}` : `Connect ${connector.name}`) : "Developer setup required"}</button>}{connector.id && connector.ready && <button className="op-disconnect-button" onClick={() => void disconnectAccount(connector.id!, connector.name)} disabled={Boolean(connecting)}>{connecting === connector.id ? "Disconnecting…" : "Disconnect"}</button>}</article>)}</div>
     <section className="op-truth-card"><ShieldCheck size={20} /><div><strong>Nothing publishes without a real account</strong><p>The agent can prepare targets, copy, schedules, and assets now. Sending and publishing become available only after the relevant account confirms authorization and the platform grants the required permission.</p></div></section>
   </div>;
 }

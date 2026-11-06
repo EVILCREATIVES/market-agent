@@ -10,6 +10,11 @@ import {
   disconnectSocialConnection,
   SOCIAL_PROVIDERS,
 } from "../server/social-connections.mjs";
+import {
+  createAnalyticsAuthorizationUrl,
+  disconnectAnalytics,
+  selectAnalyticsProperty,
+} from "../server/analytics.mjs";
 
 export default async function handler(req, res) {
   if (!["GET", "POST", "DELETE"].includes(req.method)) {
@@ -23,14 +28,21 @@ export default async function handler(req, res) {
     if (req.method === "DELETE") {
       const provider = String(req.query?.provider || req.body?.provider || "google-gmail");
       if (provider === "google-gmail") await disconnectGoogleMailbox(userId, projectId);
+      else if (provider === "google-analytics") await disconnectAnalytics(userId, projectId);
       else await disconnectSocialConnection(userId, projectId, provider);
       return res.status(200).json({ ok: true, ...(await getConnectionStatus(userId, projectId)) });
     }
     const provider = String(req.body?.provider || "google-gmail");
+    if (provider === "google-analytics" && req.body?.propertyId) {
+      await selectAnalyticsProperty(userId, projectId, req.body.propertyId);
+      return res.status(200).json({ ok: true, ...(await getConnectionStatus(userId, projectId)) });
+    }
     const origin = requestOrigin(req);
-    const authorizationUrl = SOCIAL_PROVIDERS.includes(provider)
-      ? await createSocialAuthorizationUrl({ provider, userId, projectId, origin })
-      : await createGoogleAuthorizationUrl({ userId, projectId, appEmail: email, origin });
+    const authorizationUrl = provider === "google-analytics"
+      ? await createAnalyticsAuthorizationUrl({ userId, projectId, origin })
+      : SOCIAL_PROVIDERS.includes(provider)
+        ? await createSocialAuthorizationUrl({ provider, userId, projectId, origin })
+        : await createGoogleAuthorizationUrl({ userId, projectId, appEmail: email, origin });
     return res.status(200).json({ authorizationUrl });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message || "Account connection failed." });
