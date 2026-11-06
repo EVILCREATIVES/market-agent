@@ -34,6 +34,7 @@ export function createEmptyProject(name: string = "New project", id: string = cr
     questionAnswers: {},
     additionalContextDraft: "",
     sourceWarnings: [],
+    protectedFields: [],
     chatMessages: [],
     updatedAt: new Date().toISOString(),
   };
@@ -113,6 +114,7 @@ function normalizeProject(project: Partial<ProductWorkspace>, index: number): Pr
     sourceGuidance: typeof project.sourceGuidance === "string" ? project.sourceGuidance : "",
     additionalContextDraft: typeof project.additionalContextDraft === "string" ? project.additionalContextDraft : "",
     sourceWarnings: Array.isArray(project.sourceWarnings) ? project.sourceWarnings : [],
+    protectedFields: Array.isArray(project.protectedFields) ? project.protectedFields.map(String).slice(0, 30) : [],
     chatMessages: Array.isArray(project.chatMessages) ? project.chatMessages.slice(-80) : [],
   };
 }

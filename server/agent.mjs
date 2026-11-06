@@ -183,6 +183,9 @@ ${existingWorkspace ? JSON.stringify(existingWorkspace.brain, null, 2) : "No exi
 CONFIRMED USER ANSWERS
 ${existingWorkspace?.confirmedAnswers.length ? existingWorkspace.confirmedAnswers.map((item, index) => `${index + 1}. ${item.question}\nANSWER: ${item.answer}`).join("\n\n") : "No confirmed answers supplied."}
 
+PROTECTED USER CORRECTIONS
+${existingWorkspace?.protectedFields.length ? existingWorkspace.protectedFields.join(", ") : "No individually protected fields."}
+
 SOURCE PRECEDENCE
 ${sourcePriorityInstruction(existingWorkspace?.sourcePriority)}
 
@@ -195,7 +198,7 @@ ${links.length ? links.map((link) => `- ${link}`).join("\n") : "No links supplie
 EXTRACTED MATERIAL
 ${materialText || "Visual materials are attached."}
 
-Preserve useful saved facts unless stronger source evidence corrects them. Confirmed user answers are authoritative: carry them into the updated product brain and never replace them with a weaker inference or ask for them again. Infer only what is strongly supported. Derive the visual identity from the supplied website, CSS, deck pages, images, and documents: choose the most representative visible colors as six-digit hex values, identify typography, recognize the logo, and summarize the imagery style. Consolidate duplicates and contradictions. Do not ask the user for colors, hex values, logo, typefaces, or visual style when those are visible or detected in a supplied source. Make the best evidence-based extraction and place any uncertainty in brand notes instead of unknowns. Put only genuinely unavailable business facts in unknowns. The result is a draft for the user to review, not a claim of certainty. Never mention internal systems, providers, or model names.`;
+Preserve useful saved facts unless stronger source evidence corrects them. Confirmed user answers are authoritative: carry them into the updated product brain and never replace them with a weaker inference or ask for them again. Fields listed as protected user corrections must retain their exact saved meaning. If new source evidence materially conflicts with a protected field, keep the saved value and add one concise confirmation question describing the conflict; never silently overwrite it. Infer only what is strongly supported. Derive the visual identity from the supplied website, CSS, deck pages, images, and documents: choose the most representative visible colors as six-digit hex values, identify typography, recognize the logo, and summarize the imagery style. Consolidate duplicates and contradictions. Do not ask the user for colors, hex values, logo, typefaces, or visual style when those are visible or detected in a supplied source. Make the best evidence-based extraction and place any uncertainty in brand notes instead of unknowns. Put only genuinely unavailable business facts in unknowns. The result is a draft for the user to review, not a claim of certainty. Never mention internal systems, providers, or model names.`;
 
   try {
     const parsed = await generateProductBrainStructured({
@@ -206,6 +209,7 @@ Preserve useful saved facts unless stronger source evidence corrects them. Confi
       useWeb: links.length > 0,
     });
     const normalized = normalizeBrainResult(parsed, projectName, links[0] || existingWorkspace?.brain.website || "");
+    if (existingWorkspace?.protectedFields.length) applyProtectedBrainFields(normalized.brain, existingWorkspace.brain, existingWorkspace.protectedFields);
     if (existingWorkspace?.confirmedQuestions.length) {
       normalized.unknowns = removeRepeatedQuestions(normalized.unknowns, existingWorkspace.confirmedQuestions);
     }
@@ -527,6 +531,7 @@ function productBrainContext(value) {
     },
     confirmedAnswers: answers,
     confirmedQuestions: answers.map((item) => item.question),
+    protectedFields: Array.isArray(value.protectedFields) ? value.protectedFields.map((field) => clean(field, 100)).filter(Boolean).slice(0, 30) : [],
     sourcePriority: ["best-evidence", "website", "deck"].includes(value.sourcePriority) ? value.sourcePriority : "best-evidence",
     sourceGuidance: clean(value.sourceGuidance, 6000),
   };
@@ -536,6 +541,19 @@ function sourcePriorityInstruction(value) {
   if (value === "website") return "When sources conflict, prefer the public website for brand, style, product facts, and current messaging. Use decks as supporting context and note material contradictions.";
   if (value === "deck") return "When sources conflict, prefer decks, documents, and uploaded materials as the intended brand and product direction. Use the website as supporting public context and note material contradictions.";
   return "Compare all sources and use the strongest, most explicit, and most recent evidence. Prefer a source only when its authority or recency is clear; record meaningful contradictions in notes instead of asking the user to restate extractable information.";
+}
+
+function applyProtectedBrainFields(next, saved, protectedFields) {
+  const allowed = new Set(["name", "website", "description", "audience", "valueProposition", "voice", "guardrails", "notes", "brand.primaryColor", "brand.secondaryColor", "brand.accentColor", "brand.typography", "brand.imageryStyle", "brand.notes"]);
+  for (const path of protectedFields) {
+    if (!allowed.has(path)) continue;
+    if (path.startsWith("brand.")) {
+      const key = path.slice(6);
+      if (typeof saved?.brand?.[key] === "string") next.brand[key] = saved.brand[key];
+    } else if (typeof saved?.[path] === "string") {
+      next[path] = saved[path];
+    }
+  }
 }
 
 const questionStopWords = new Set(["about", "again", "also", "and", "are", "can", "confirm", "could", "does", "for", "from", "have", "how", "into", "is", "its", "now", "please", "should", "that", "the", "their", "them", "there", "these", "this", "today", "what", "when", "where", "which", "who", "why", "with", "would", "you", "your"]);

@@ -56,6 +56,7 @@ export interface ProductWorkspace {
   questionAnswers: Record<string, string>;
   additionalContextDraft: string;
   sourceWarnings: string[];
+  protectedFields: string[];
   chatMessages: ProjectChatMessage[];
   updatedAt: string;
 }

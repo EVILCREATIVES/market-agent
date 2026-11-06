@@ -630,7 +630,8 @@ function ProductBrain({ workspace, onSave, notify }: { workspace: ProductWorkspa
   };
 
   const save = () => {
-    const updated = { ...form, sources: links.map((url) => ({ id: crypto.randomUUID(), label: connectedSourceLabel(url), url })), updatedAt: new Date().toISOString() };
+    const protectedFields = Array.from(new Set([...(form.protectedFields || []), ...changedBrainFields(workspace, form)]));
+    const updated = { ...form, protectedFields, sources: links.map((url) => ({ id: crypto.randomUUID(), label: connectedSourceLabel(url), url })), updatedAt: new Date().toISOString() };
     onSave(updated);
     setForm(updated);
     notify("Corrections saved to the cloud.");
@@ -711,7 +712,7 @@ function ProductBrain({ workspace, onSave, notify }: { workspace: ProductWorkspa
           </div>
         </section>
         <div className="op-form-grid"><Field label="Project or product name" value={form.name} onChange={(value) => change("name", value)} placeholder="Project name" /><Field label="Website" value={form.website} onChange={(value) => change("website", value)} placeholder="https://…" /><Field wide label="What does the project do?" value={form.description} onChange={(value) => change("description", value)} placeholder="The agent will draft this from your material" multiline /><Field wide label="Primary audience" value={form.audience} onChange={(value) => change("audience", value)} placeholder="The agent will identify the audience" multiline /><Field wide label="Value proposition" value={form.valueProposition} onChange={(value) => change("valueProposition", value)} placeholder="The agent will synthesize the positioning" multiline /><Field label="Brand voice" value={form.voice} onChange={(value) => change("voice", value)} placeholder="Inferred from your material" multiline /><Field label="Claims and guardrails" value={form.guardrails} onChange={(value) => change("guardrails", value)} placeholder="Approved proof and prohibited claims" multiline /><Field wide label="Uncertainties and additional notes" value={form.notes} onChange={(value) => change("notes", value)} placeholder="Items to verify or add" multiline /></div>
-        <div className="op-form-actions"><span>Last saved {new Date(workspace.updatedAt).toLocaleString()}</span><button onClick={save}><Save size={15} /> Save corrections</button></div>
+        <div className="op-form-actions"><span>Last saved {new Date(workspace.updatedAt).toLocaleString()} · Saved corrections are protected from source updates.</span><button onClick={save}><Save size={15} /> Save corrections</button></div>
       </div>}
     </section>
 
@@ -797,6 +798,20 @@ function filterSourceBackedBrandQuestions(questions: string[], workspace: Produc
       || /\b(colou?r|hex|palette)\b.*\b(primary|secondary|accent|brand|approved)\b/.test(question)
       || /\b(logos?|typefaces?|typography|fonts?|visual[\s-]+identity|imagery[\s-]+styles?|photography[\s-]+styles?|brand[\s-]+guidelines?)\b/.test(question));
   });
+}
+
+const PROTECTABLE_BRAIN_FIELDS = [
+  "name", "website", "description", "audience", "valueProposition", "voice", "guardrails", "notes",
+  "brand.primaryColor", "brand.secondaryColor", "brand.accentColor", "brand.typography", "brand.imageryStyle", "brand.notes",
+] as const;
+
+function changedBrainFields(before: ProductWorkspace, after: ProductWorkspace) {
+  return PROTECTABLE_BRAIN_FIELDS.filter((path) => brainFieldValue(before, path) !== brainFieldValue(after, path));
+}
+
+function brainFieldValue(workspace: ProductWorkspace, path: typeof PROTECTABLE_BRAIN_FIELDS[number]) {
+  if (path.startsWith("brand.")) return String(workspace.brand?.[path.slice(6) as keyof ProductWorkspace["brand"]] || "").trim();
+  return String(workspace[path as keyof ProductWorkspace] || "").trim();
 }
 
 function firstUnhandledQuestionIndex(questions: string[], answers: Record<string, string>) {
