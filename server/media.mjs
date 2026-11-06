@@ -436,9 +436,11 @@ Value proposition: ${clean(workspace.valueProposition, "communicate the product'
 Voice: ${clean(workspace.voice, "clear, confident, and human")}
 
 VISUAL IDENTITY
-Primary color: ${clean(brand.primaryColor, "#222222")}
-Secondary color: ${clean(brand.secondaryColor, "#f4f1e8")}
-Accent color: ${clean(brand.accentColor, "#4d9a75")}
+Primary brand hue: ${clean(brand.primaryColor, "not established")}
+Secondary brand hue: ${clean(brand.secondaryColor, "not established")}
+Accent brand hue: ${clean(brand.accentColor, "not established")}
+Light neutral/background: ${clean(brand.neutralLightColor, "#ffffff")}
+Dark neutral/text: ${clean(brand.neutralDarkColor, "#222222")}
 Typography direction: ${clean(brand.typography, "clean editorial typography")}
 Imagery style: ${visualDirection}
 Brand notes: ${clean(brand.notes, "none")}

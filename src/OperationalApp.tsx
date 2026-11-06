@@ -704,9 +704,15 @@ function ProductBrain({ workspace, onSave, notify }: { workspace: ProductWorkspa
               {form.brand.logoDataUrl && <div><span>{form.brand.logoName || "Project logo"}</span><button onClick={() => setForm((current) => ({ ...current, brand: { ...current.brand, logoDataUrl: "", logoName: "" } }))}>Remove</button></div>}
             </div>
             <div className="op-color-editor">
-              <label><span>Primary</span><div><input type="color" value={colorInputValue(form.brand.primaryColor, "#222222")} onChange={(event) => changeBrand("primaryColor", event.target.value)} /><input value={form.brand.primaryColor} onChange={(event) => changeBrand("primaryColor", event.target.value)} /></div></label>
-              <label><span>Secondary</span><div><input type="color" value={colorInputValue(form.brand.secondaryColor, "#f4f1e8")} onChange={(event) => changeBrand("secondaryColor", event.target.value)} /><input value={form.brand.secondaryColor} onChange={(event) => changeBrand("secondaryColor", event.target.value)} /></div></label>
-              <label><span>Accent</span><div><input type="color" value={colorInputValue(form.brand.accentColor, "#4d9a75")} onChange={(event) => changeBrand("accentColor", event.target.value)} /><input value={form.brand.accentColor} onChange={(event) => changeBrand("accentColor", event.target.value)} /></div></label>
+              <strong>Brand hues</strong>
+              <small>Chromatic identity colors—not backgrounds or text.</small>
+              <BrandColorField label="Primary" value={form.brand.primaryColor} onChange={(value) => changeBrand("primaryColor", value)} />
+              <BrandColorField label="Secondary" value={form.brand.secondaryColor} onChange={(value) => changeBrand("secondaryColor", value)} />
+              <BrandColorField label="Accent" value={form.brand.accentColor} onChange={(value) => changeBrand("accentColor", value)} />
+              <strong className="neutral-title">Neutrals</strong>
+              <small>Background and typography values.</small>
+              <BrandColorField label="Light" value={form.brand.neutralLightColor} fallback="#ffffff" onChange={(value) => changeBrand("neutralLightColor", value)} />
+              <BrandColorField label="Dark" value={form.brand.neutralDarkColor} fallback="#222222" onChange={(value) => changeBrand("neutralDarkColor", value)} />
             </div>
             <div className="op-brand-fields"><Field label="Typography" value={form.brand.typography} onChange={(value) => changeBrand("typography", value)} placeholder="Typefaces and hierarchy" multiline /><Field label="Imagery style" value={form.brand.imageryStyle} onChange={(value) => changeBrand("imageryStyle", value)} placeholder="Photography, illustration, composition" multiline /><Field wide label="Visual identity notes" value={form.brand.notes} onChange={(value) => changeBrand("notes", value)} placeholder="Logo rules, spacing, motifs, usage guidance" multiline /></div>
           </div>
@@ -802,7 +808,7 @@ function filterSourceBackedBrandQuestions(questions: string[], workspace: Produc
 
 const PROTECTABLE_BRAIN_FIELDS = [
   "name", "website", "description", "audience", "valueProposition", "voice", "guardrails", "notes",
-  "brand.primaryColor", "brand.secondaryColor", "brand.accentColor", "brand.typography", "brand.imageryStyle", "brand.notes",
+  "brand.primaryColor", "brand.secondaryColor", "brand.accentColor", "brand.neutralLightColor", "brand.neutralDarkColor", "brand.typography", "brand.imageryStyle", "brand.notes",
 ] as const;
 
 function changedBrainFields(before: ProductWorkspace, after: ProductWorkspace) {
@@ -821,6 +827,11 @@ function firstUnhandledQuestionIndex(questions: string[], answers: Record<string
 
 function colorInputValue(value: string, fallback: string) {
   return /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
+}
+
+function BrandColorField({ label, value, onChange, fallback = "#7856ff" }: { label: string; value: string; onChange: (value: string) => void; fallback?: string }) {
+  const valid = /^#[0-9a-f]{6}$/i.test(value);
+  return <label><span>{label}</span><div>{valid ? <input type="color" value={colorInputValue(value, fallback)} onChange={(event) => onChange(event.target.value)} /> : <span className="op-empty-color">—</span>}<input value={value} onChange={(event) => onChange(event.target.value)} placeholder="Not detected" /></div></label>;
 }
 
 function compactMaterialsForUpload(materials: PreparedMaterial[]) {

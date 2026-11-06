@@ -30,6 +30,8 @@ export interface BrandIdentity {
   primaryColor: string;
   secondaryColor: string;
   accentColor: string;
+  neutralLightColor: string;
+  neutralDarkColor: string;
   typography: string;
   imageryStyle: string;
   notes: string;

@@ -198,7 +198,7 @@ ${links.length ? links.map((link) => `- ${link}`).join("\n") : "No links supplie
 EXTRACTED MATERIAL
 ${materialText || "Visual materials are attached."}
 
-Preserve useful saved facts unless stronger source evidence corrects them. Confirmed user answers are authoritative: carry them into the updated product brain and never replace them with a weaker inference or ask for them again. Fields listed as protected user corrections must retain their exact saved meaning. If new source evidence materially conflicts with a protected field, keep the saved value and add one concise confirmation question describing the conflict; never silently overwrite it. Infer only what is strongly supported. Derive the visual identity from the supplied website, CSS, deck pages, images, and documents: choose the most representative visible colors as six-digit hex values, identify typography, recognize the logo, and summarize the imagery style. Consolidate duplicates and contradictions. Do not ask the user for colors, hex values, logo, typefaces, or visual style when those are visible or detected in a supplied source. Make the best evidence-based extraction and place any uncertainty in brand notes instead of unknowns. Put only genuinely unavailable business facts in unknowns. The result is a draft for the user to review, not a claim of certainty. Never mention internal systems, providers, or model names.`;
+Preserve useful saved facts unless stronger source evidence corrects them. Confirmed user answers are authoritative: carry them into the updated product brain and never replace them with a weaker inference or ask for them again. Fields listed as protected user corrections must retain their exact saved meaning. If new source evidence materially conflicts with a protected field, keep the saved value and add one concise confirmation question describing the conflict; never silently overwrite it. Infer only what is strongly supported. Derive the visual identity from the supplied website, CSS, deck pages, images, and documents. Assign primaryColor, secondaryColor, and accentColor only to chromatic brand hues—never black, white, or gray. Store background/text neutrals separately as neutralLightColor and neutralDarkColor. Choose representative visible six-digit hex values, identify typography, recognize the logo, and summarize the imagery style. Consolidate duplicates and contradictions. Do not ask the user for colors, hex values, logo, typefaces, or visual style when those are visible or detected in a supplied source. Make the best evidence-based extraction and place any uncertainty in brand notes instead of unknowns. Put only genuinely unavailable business facts in unknowns. The result is a draft for the user to review, not a claim of certainty. Never mention internal systems, providers, or model names.`;
 
   try {
     const parsed = await generateProductBrainStructured({
@@ -209,6 +209,7 @@ Preserve useful saved facts unless stronger source evidence corrects them. Confi
       useWeb: links.length > 0,
     });
     const normalized = normalizeBrainResult(parsed, projectName, links[0] || existingWorkspace?.brain.website || "");
+    normalizeBrandPalette(normalized.brain.brand, connectedMaterial.colors);
     if (existingWorkspace?.protectedFields.length) applyProtectedBrainFields(normalized.brain, existingWorkspace.brain, existingWorkspace.protectedFields);
     if (existingWorkspace?.confirmedQuestions.length) {
       normalized.unknowns = removeRepeatedQuestions(normalized.unknowns, existingWorkspace.confirmedQuestions);
@@ -263,9 +264,11 @@ export async function refineProductBrain(payload, env = process.env) {
     guardrails: workspace.guardrails || "",
     notes: workspace.notes || "",
     brand: {
-      primaryColor: workspace.brand?.primaryColor || "#222222",
-      secondaryColor: workspace.brand?.secondaryColor || "#f4f1e8",
-      accentColor: workspace.brand?.accentColor || "#4d9a75",
+      primaryColor: workspace.brand?.primaryColor || "#7856ff",
+      secondaryColor: workspace.brand?.secondaryColor || "#4d9a75",
+      accentColor: workspace.brand?.accentColor || "#f2a65a",
+      neutralLightColor: workspace.brand?.neutralLightColor || "#ffffff",
+      neutralDarkColor: workspace.brand?.neutralDarkColor || "#222222",
       typography: workspace.brand?.typography || "",
       imageryStyle: workspace.brand?.imageryStyle || "",
       notes: workspace.brand?.notes || "",
@@ -290,6 +293,7 @@ ${additionalContext || "None supplied."}`;
       prompt,
     });
     const normalized = normalizeBrainResult(parsed, safeWorkspace.name, safeWorkspace.website);
+    normalizeBrandPalette(normalized.brain.brand, []);
     normalized.unknowns = removeRepeatedQuestions(normalized.unknowns, answers.map((item) => item.question));
     if (safeWorkspace.sources.length) normalized.unknowns = normalized.unknowns.filter((question) => !isSourceAnswerableBrandQuestion(question));
     return normalized;
@@ -460,11 +464,13 @@ function productBrainSchema() {
           primaryColor: { type: "string" },
           secondaryColor: { type: "string" },
           accentColor: { type: "string" },
+          neutralLightColor: { type: "string" },
+          neutralDarkColor: { type: "string" },
           typography: { type: "string" },
           imageryStyle: { type: "string" },
           notes: { type: "string" },
         },
-        required: ["primaryColor", "secondaryColor", "accentColor", "typography", "imageryStyle", "notes"],
+        required: ["primaryColor", "secondaryColor", "accentColor", "neutralLightColor", "neutralDarkColor", "typography", "imageryStyle", "notes"],
       },
       reviewSummary: { type: "string" },
       unknowns: { type: "array", items: { type: "string" } },
@@ -488,9 +494,11 @@ function normalizeBrainResult(parsed, fallbackName, fallbackWebsite) {
       guardrails: stringField(parsed?.guardrails),
       notes: stringField(parsed?.notes),
       brand: {
-        primaryColor: colorField(brand.primaryColor, "#222222"),
-        secondaryColor: colorField(brand.secondaryColor, "#f4f1e8"),
-        accentColor: colorField(brand.accentColor, "#4d9a75"),
+        primaryColor: colorField(brand.primaryColor, ""),
+        secondaryColor: colorField(brand.secondaryColor, ""),
+        accentColor: colorField(brand.accentColor, ""),
+        neutralLightColor: colorField(brand.neutralLightColor, "#ffffff"),
+        neutralDarkColor: colorField(brand.neutralDarkColor, "#222222"),
         typography: stringField(brand.typography),
         imageryStyle: stringField(brand.imageryStyle),
         notes: stringField(brand.notes),
@@ -524,6 +532,8 @@ function productBrainContext(value) {
         primaryColor: clean(value.brand?.primaryColor, 20),
         secondaryColor: clean(value.brand?.secondaryColor, 20),
         accentColor: clean(value.brand?.accentColor, 20),
+        neutralLightColor: clean(value.brand?.neutralLightColor, 20),
+        neutralDarkColor: clean(value.brand?.neutralDarkColor, 20),
         typography: clean(value.brand?.typography),
         imageryStyle: clean(value.brand?.imageryStyle),
         notes: clean(value.brand?.notes),
@@ -544,7 +554,7 @@ function sourcePriorityInstruction(value) {
 }
 
 function applyProtectedBrainFields(next, saved, protectedFields) {
-  const allowed = new Set(["name", "website", "description", "audience", "valueProposition", "voice", "guardrails", "notes", "brand.primaryColor", "brand.secondaryColor", "brand.accentColor", "brand.typography", "brand.imageryStyle", "brand.notes"]);
+  const allowed = new Set(["name", "website", "description", "audience", "valueProposition", "voice", "guardrails", "notes", "brand.primaryColor", "brand.secondaryColor", "brand.accentColor", "brand.neutralLightColor", "brand.neutralDarkColor", "brand.typography", "brand.imageryStyle", "brand.notes"]);
   for (const path of protectedFields) {
     if (!allowed.has(path)) continue;
     if (path.startsWith("brand.")) {
@@ -909,6 +919,55 @@ function normalizeCssColor(value) {
   if (/^#[0-9A-F]{6}$/.test(raw)) return raw;
   if (/^#[0-9A-F]{8}$/.test(raw) && raw.slice(7) !== "00") return raw.slice(0, 7);
   return "";
+}
+
+function normalizeBrandPalette(brand, detectedColors = []) {
+  const chromatic = Array.from(new Set(detectedColors.map(normalizeCssColor).filter((color) => isChromaticColor(color))));
+  const used = [];
+  for (const key of ["primaryColor", "secondaryColor", "accentColor"]) {
+    const current = normalizeCssColor(brand[key]);
+    if (isChromaticColor(current) && !used.includes(current)) {
+      brand[key] = current;
+      used.push(current);
+      continue;
+    }
+    const replacement = chromatic.find((candidate) => !used.includes(candidate) && used.every((selected) => colorDistance(candidate, selected) >= 42))
+      || chromatic.find((candidate) => !used.includes(candidate))
+      || "";
+    brand[key] = replacement;
+    if (replacement) used.push(replacement);
+  }
+  const neutrals = Array.from(new Set(detectedColors.map(normalizeCssColor).filter((color) => color && !isChromaticColor(color))));
+  const light = neutrals.map((color) => [color, colorLightness(color)]).filter(([, value]) => value >= 0.7).sort((left, right) => right[1] - left[1])[0]?.[0];
+  const dark = neutrals.map((color) => [color, colorLightness(color)]).filter(([, value]) => value <= 0.35).sort((left, right) => left[1] - right[1])[0]?.[0];
+  brand.neutralLightColor = light || (!isChromaticColor(brand.neutralLightColor) ? normalizeCssColor(brand.neutralLightColor) : "") || "#FFFFFF";
+  brand.neutralDarkColor = dark || (!isChromaticColor(brand.neutralDarkColor) ? normalizeCssColor(brand.neutralDarkColor) : "") || "#222222";
+}
+
+function isChromaticColor(value) {
+  const rgb = hexRgb(value);
+  if (!rgb) return false;
+  const maximum = Math.max(...rgb);
+  const minimum = Math.min(...rgb);
+  const saturation = maximum === 0 ? 0 : (maximum - minimum) / maximum;
+  const lightness = (maximum + minimum) / 510;
+  return saturation >= 0.16 && maximum - minimum >= 20 && lightness > 0.06 && lightness < 0.94;
+}
+
+function colorLightness(value) {
+  const rgb = hexRgb(value);
+  return rgb ? (Math.max(...rgb) + Math.min(...rgb)) / 510 : 0.5;
+}
+
+function colorDistance(left, right) {
+  const a = hexRgb(left);
+  const b = hexRgb(right);
+  return a && b ? Math.sqrt(a.reduce((sum, channel, index) => sum + (channel - b[index]) ** 2, 0)) : 0;
+}
+
+function hexRgb(value) {
+  const normalized = normalizeCssColor(value);
+  return normalized ? [1, 3, 5].map((index) => Number.parseInt(normalized.slice(index, index + 2), 16)) : null;
 }
 
 function extractWebsiteFonts(source) {
