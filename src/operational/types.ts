@@ -35,6 +35,8 @@ export interface ProductWorkspace {
   voice: string;
   guardrails: string;
   notes: string;
+  sourcePriority: "best-evidence" | "website" | "deck";
+  sourceGuidance: string;
   sources: ProductSource[];
   materials: ProductMaterial[];
   brand: BrandIdentity;

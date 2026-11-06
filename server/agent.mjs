@@ -147,6 +147,7 @@ export async function buildProductBrain(payload, env = process.env) {
 
   const projectId = String(payload?.projectId || "project-default");
   const projectName = String(payload?.projectName || "New project").slice(0, 200);
+  const existingWorkspace = productBrainContext(payload?.workspace);
   const links = Array.isArray(payload?.links)
     ? payload.links.map((value) => String(value || "").trim()).filter((value) => /^https?:\/\//i.test(value)).slice(0, 15)
     : [];
@@ -176,13 +177,25 @@ export async function buildProductBrain(payload, env = process.env) {
 
   const prompt = `Build a factual product brain for the project named "${projectName}" from the supplied materials and public source links.
 
+EXISTING SAVED PRODUCT BRAIN
+${existingWorkspace ? JSON.stringify(existingWorkspace.brain, null, 2) : "No existing product brain."}
+
+CONFIRMED USER ANSWERS
+${existingWorkspace?.confirmedAnswers.length ? existingWorkspace.confirmedAnswers.map((item, index) => `${index + 1}. ${item.question}\nANSWER: ${item.answer}`).join("\n\n") : "No confirmed answers supplied."}
+
+SOURCE PRECEDENCE
+${sourcePriorityInstruction(existingWorkspace?.sourcePriority)}
+
+USER'S SOURCE NOTES
+${existingWorkspace?.sourceGuidance || "No additional source guidance supplied."}
+
 SOURCE LINKS
 ${links.length ? links.map((link) => `- ${link}`).join("\n") : "No links supplied."}
 
 EXTRACTED MATERIAL
 ${materialText || "Visual materials are attached."}
 
-Infer only what is strongly supported. Derive the visual identity from the supplied website, CSS, deck pages, images, and documents: choose the most representative visible colors as six-digit hex values, identify typography, recognize the logo, and summarize the imagery style. Consolidate duplicates and contradictions. Do not ask the user for colors, hex values, logo, typefaces, or visual style when those are visible or detected in a supplied source. Make the best evidence-based extraction and place any uncertainty in brand notes instead of unknowns. Put only genuinely unavailable business facts in unknowns. The result is a draft for the user to review, not a claim of certainty. Never mention internal systems, providers, or model names.`;
+Preserve useful saved facts unless stronger source evidence corrects them. Confirmed user answers are authoritative: carry them into the updated product brain and never replace them with a weaker inference or ask for them again. Infer only what is strongly supported. Derive the visual identity from the supplied website, CSS, deck pages, images, and documents: choose the most representative visible colors as six-digit hex values, identify typography, recognize the logo, and summarize the imagery style. Consolidate duplicates and contradictions. Do not ask the user for colors, hex values, logo, typefaces, or visual style when those are visible or detected in a supplied source. Make the best evidence-based extraction and place any uncertainty in brand notes instead of unknowns. Put only genuinely unavailable business facts in unknowns. The result is a draft for the user to review, not a claim of certainty. Never mention internal systems, providers, or model names.`;
 
   try {
     const parsed = await generateProductBrainStructured({
@@ -192,7 +205,10 @@ Infer only what is strongly supported. Derive the visual identity from the suppl
       images,
       useWeb: links.length > 0,
     });
-    const normalized = normalizeBrainResult(parsed, projectName, links[0] || "");
+    const normalized = normalizeBrainResult(parsed, projectName, links[0] || existingWorkspace?.brain.website || "");
+    if (existingWorkspace?.confirmedQuestions.length) {
+      normalized.unknowns = removeRepeatedQuestions(normalized.unknowns, existingWorkspace.confirmedQuestions);
+    }
     if (connectedMaterial.logoDataUrl) {
       normalized.brain.brand.logoDataUrl = connectedMaterial.logoDataUrl;
       normalized.brain.brand.logoName = connectedMaterial.logoName || "Logo extracted from website";
@@ -479,6 +495,47 @@ function normalizeBrainResult(parsed, fallbackName, fallbackWebsite) {
     reviewSummary: stringField(parsed?.reviewSummary, "The product brain is ready for review."),
     unknowns: Array.isArray(parsed?.unknowns) ? removeRepeatedQuestions(parsed.unknowns.map((value) => String(value)).filter(Boolean), []).slice(0, 12) : [],
   };
+}
+
+function productBrainContext(value) {
+  if (!value || typeof value !== "object") return null;
+  const clean = (field, maximum = 6000) => typeof field === "string" ? field.trim().slice(0, maximum) : "";
+  const answers = value.questionAnswers && typeof value.questionAnswers === "object"
+    ? Object.entries(value.questionAnswers)
+      .map(([question, answer]) => ({ question: clean(question, 1200), answer: clean(answer, 6000) }))
+      .filter((item) => item.question && item.answer && item.answer !== "__MARKET_AGENT_SKIPPED__")
+      .slice(0, 30)
+    : [];
+  return {
+    brain: {
+      name: clean(value.name, 200),
+      website: clean(value.website, 1000),
+      description: clean(value.description),
+      audience: clean(value.audience),
+      valueProposition: clean(value.valueProposition),
+      voice: clean(value.voice),
+      guardrails: clean(value.guardrails),
+      notes: clean(value.notes),
+      brand: {
+        primaryColor: clean(value.brand?.primaryColor, 20),
+        secondaryColor: clean(value.brand?.secondaryColor, 20),
+        accentColor: clean(value.brand?.accentColor, 20),
+        typography: clean(value.brand?.typography),
+        imageryStyle: clean(value.brand?.imageryStyle),
+        notes: clean(value.brand?.notes),
+      },
+    },
+    confirmedAnswers: answers,
+    confirmedQuestions: answers.map((item) => item.question),
+    sourcePriority: ["best-evidence", "website", "deck"].includes(value.sourcePriority) ? value.sourcePriority : "best-evidence",
+    sourceGuidance: clean(value.sourceGuidance, 6000),
+  };
+}
+
+function sourcePriorityInstruction(value) {
+  if (value === "website") return "When sources conflict, prefer the public website for brand, style, product facts, and current messaging. Use decks as supporting context and note material contradictions.";
+  if (value === "deck") return "When sources conflict, prefer decks, documents, and uploaded materials as the intended brand and product direction. Use the website as supporting public context and note material contradictions.";
+  return "Compare all sources and use the strongest, most explicit, and most recent evidence. Prefer a source only when its authority or recency is clear; record meaningful contradictions in notes instead of asking the user to restate extractable information.";
 }
 
 const questionStopWords = new Set(["about", "again", "also", "and", "are", "can", "confirm", "could", "does", "for", "from", "have", "how", "into", "is", "its", "now", "please", "should", "that", "the", "their", "them", "there", "these", "this", "today", "what", "when", "where", "which", "who", "why", "with", "would", "you", "your"]);

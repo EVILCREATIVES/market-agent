@@ -477,7 +477,7 @@ function ProductBrain({ workspace, onSave, notify }: { workspace: ProductWorkspa
     try {
       const response = await apiFetch("/api/onboard", {
         method: "POST",
-        body: JSON.stringify({ projectId: workspace.id, projectName: form.name, materials: compactMaterialsForUpload(materials), links: pendingLinks }),
+        body: JSON.stringify({ projectId: workspace.id, projectName: form.name, workspace: form, materials: compactMaterialsForUpload(materials), links: pendingLinks }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The product brain could not be built.");
@@ -655,6 +655,18 @@ function ProductBrain({ workspace, onSave, notify }: { workspace: ProductWorkspa
         {materials.map((material, index) => <div key={`${material.name}-${index}`}><MaterialIcon kind={material.kind} /><span><strong>{material.name}</strong><small>{material.detail}</small></span><button onClick={() => setMaterials((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X size={14} /></button></div>)}
         {links.map((url) => <div key={url}><Globe2 size={16} /><span><strong>{connectedSourceLabel(url)}</strong><small>{url}</small></span><button onClick={() => setLinks((current) => current.filter((item) => item !== url))}><X size={14} /></button></div>)}
       </div>}
+
+      <div className="op-source-guidance">
+        <div><strong>When sources disagree</strong><span>Choose which source should lead. The agent still extracts and compares everything.</span></div>
+        <div className="op-source-priority" role="group" aria-label="Source priority">
+          {([
+            ["best-evidence", "Best evidence", "Recommended"],
+            ["website", "Website leads", "Current public brand"],
+            ["deck", "Deck leads", "Intended direction"],
+          ] as const).map(([value, label, detail]) => <button key={value} className={form.sourcePriority === value ? "active" : ""} onClick={() => setForm((current) => ({ ...current, sourcePriority: value }))}><strong>{label}</strong><span>{detail}</span></button>)}
+        </div>
+        <label><span>Source notes <em>Optional</em></span><textarea value={form.sourceGuidance} onChange={(event) => setForm((current) => ({ ...current, sourceGuidance: event.target.value }))} placeholder="Example: the deck has the new visual identity; the website has the most current product information." /></label>
+      </div>
 
       {intakeError && <div className="op-intake-error"><CircleAlert size={16} />{intakeError}</div>}
       <div className="op-build-row"><div><strong>{hasBrain ? "Update the product brain" : "Build the product brain for me"}</strong><span>The agent extracts the facts, audience, positioning, voice, and guardrails.</span></div><button disabled={building || processing || (!materials.length && !links.length && !linkInput.trim())} onClick={() => void build()}>{building ? <LoaderCircle className="spin" size={17} /> : <Sparkles size={17} />}{building ? "Building…" : hasBrain ? "Update from sources" : "Build it for me"}</button></div>
