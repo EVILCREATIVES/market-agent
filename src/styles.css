@@ -800,6 +800,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-source-media a strong { font-size: 8.5px; }
 .op-source-media a small { color: #716f69; font-size: 7.5px; }
 .op-source-media a span { color: #9a9891; font-size: 7px; }
+.op-source-media a .op-source-media__action { color: #6b50c6; font-size: 7px; font-style: normal; font-weight: 700; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.op-project-assets-ready { padding: 16px; border: 1px solid #d9d5ca; border-radius: 13px; background: #fbfaf6; }
+.op-project-assets-ready .op-section-title { margin-bottom: 10px; }
+.op-project-assets-ready .op-section-title p { margin: 3px 0 0; color: #77756e; font-size: 8.5px; }
+.op-project-assets-ready .op-source-media { margin-top: 0; }
+.op-saved-source-list { margin-top: 10px; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
+.op-saved-source-list > div, .op-saved-source-list > a { min-width: 0; padding: 9px 10px; border: 1px solid #e0ddd5; border-radius: 9px; background: white; color: inherit; text-decoration: none; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 8px; }
+.op-saved-source-list > div > span, .op-saved-source-list > a > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.op-saved-source-list strong, .op-saved-source-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.op-saved-source-list strong { font-size: 8.5px; }
+.op-saved-source-list small { color: #85827b; font-size: 7.5px; }
+.op-saved-source-list em { color: #6d51c8; font-size: 7px; font-style: normal; font-weight: 700; display: inline-flex; align-items: center; gap: 3px; }
 .op-source-warning { padding: 14px 16px; border: 1px solid #ecd092; border-radius: 12px; background: #fff8ea; color: #865a23; display: flex; align-items: flex-start; gap: 9px; }
 .op-source-warning > svg { flex: none; }
 .op-source-warning > div { display: flex; flex-direction: column; gap: 5px; }
@@ -1239,6 +1251,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .op-intake-grid { grid-template-columns: 1fr; }
   .op-source-priority { grid-template-columns: 1fr; }
   .op-source-media > div { grid-template-columns: 1fr; }
+  .op-saved-source-list { grid-template-columns: 1fr; }
   .op-secretary-panel { top: 0; width: min(430px,100vw); }
 }
 @media (max-width: 600px) {
