@@ -212,7 +212,7 @@ Preserve useful saved facts unless stronger source evidence corrects them. Confi
       useWeb: links.length > 0,
     });
     const normalized = normalizeBrainResult(parsed, projectName, links[0] || existingWorkspace?.brain.website || "");
-    normalizeBrandPalette(normalized.brain.brand, connectedMaterial.colors);
+    normalizeBrandPalette(normalized.brain.brand, connectedMaterial.colors, existingWorkspace?.sourcePriority !== "deck");
     if (existingWorkspace?.protectedFields.length) applyProtectedBrainFields(normalized.brain, existingWorkspace.brain, existingWorkspace.protectedFields);
     if (existingWorkspace?.handledQuestions.length) {
       normalized.unknowns = removeRepeatedQuestions(normalized.unknowns, existingWorkspace.handledQuestions);
@@ -803,17 +803,38 @@ async function readPublicWebsite(url) {
       }
     }
 
-    const combinedVisualSource = `${html.slice(0, 1_500_000)}\n${cssTexts.join("\n").slice(0, 1_500_000)}`;
-    const colors = extractWebsiteColors(combinedVisualSource, readMeta(html, "theme-color"));
+    const scriptTexts = [];
+    const scriptUrls = Array.from(html.matchAll(/<script\b[^>]*>/gi))
+      .map((match) => readTagAttribute(match[0], "src"))
+      .filter(Boolean)
+      .slice(0, 5);
+    for (const href of scriptUrls) {
+      try {
+        const scriptUrl = new URL(href, url);
+        const script = await safeFetchPublic(scriptUrl, { headers: { Accept: "text/javascript,application/javascript,*/*;q=0.5" }, signal: AbortSignal.timeout(15_000) });
+        if (!script.ok) continue;
+        const scriptBytes = await limitedResponseBytes(script, 2_000_000);
+        if (scriptBytes) scriptTexts.push(new TextDecoder().decode(scriptBytes));
+      } catch {
+        // A blocked application bundle does not prevent analysis of static markup and CSS.
+      }
+    }
+
+    const cssSource = cssTexts.join("\n").slice(0, 1_500_000);
+    const bundleSource = scriptTexts.join("\n").slice(0, 2_500_000);
+    const combinedVisualSource = `${html.slice(0, 1_500_000)}\n${cssSource}`;
+    const colors = extractWebsiteColors(combinedVisualSource, readMeta(html, "theme-color"), bundleSource);
     const fonts = extractWebsiteFonts(combinedVisualSource);
     const title = readMeta(html, "og:title") || readHtmlTitle(html) || url.hostname;
     const description = readMeta(html, "description") || readMeta(html, "og:description");
     const pageText = htmlToReadableText(html).slice(0, 55_000);
-    const logoCandidates = websiteImageCandidates(html, url, cssTexts.join("\n"));
+    const logoCandidates = websiteImageCandidates(html, url, cssSource, bundleSource);
     const sourceMedia = [];
-    let logoDataUrl = "";
-    let logoName = "";
-    for (const candidate of logoCandidates.filter((candidate) => candidate.logoScore >= 6).slice(0, 6)) {
+    const inlineLogo = extractInlineWebsiteLogo(bundleSource, title);
+    let logoDataUrl = inlineLogo?.dataUrl || "";
+    let logoName = inlineLogo?.name || "";
+    if (inlineLogo) sourceMedia.push({ kind: "image", name: inlineLogo.name, url: inlineLogo.dataUrl, role: "Header logo", tags: ["logo", "brand"], recommendation: "reuse" });
+    for (const candidate of logoDataUrl ? [] : logoCandidates.filter((candidate) => candidate.logoScore >= 8).slice(0, 6)) {
       const image = await readWebsiteImage(candidate.url);
       if (!image || image.dataUrl.length > 1_200_000) continue;
       logoDataUrl = image.dataUrl;
@@ -823,15 +844,17 @@ async function readPublicWebsite(url) {
     }
     const images = [];
     if (isSupportedAnalysisImage(logoDataUrl)) images.push(logoDataUrl);
-    for (const candidate of logoCandidates.slice(0, 8)) {
+    for (const candidate of logoCandidates.filter((candidate) => candidate.logoScore === 0).slice(0, 32)) {
+      if (/^https?:\/\//i.test(candidate.url) && !sourceMedia.some((item) => item.url === candidate.url)) {
+        sourceMedia.push({ kind: "image", name: candidate.name || filenameFromUrl(candidate.url, "Website image"), url: candidate.url, role: candidate.role || "Website image", tags: mediaTags(candidate.name, candidate.role), recommendation: candidate.role === "Social preview" ? "review" : "review" });
+      }
       if (images.length >= 4 || candidate.logoScore !== 0) continue;
       const image = await readWebsiteImage(candidate.url);
       if (image && isSupportedAnalysisImage(image.dataUrl) && !images.includes(image.dataUrl)) {
         images.push(image.dataUrl);
-        if (image.byteLength >= 8_000 && /^https?:\/\//i.test(candidate.url)) sourceMedia.push({ kind: "image", name: candidate.name || filenameFromUrl(candidate.url, "Website image"), url: candidate.url, role: candidate.role || "Website image", tags: mediaTags(candidate.name, candidate.role), recommendation: candidate.role === "Social preview" ? "adapt" : "review" });
       }
     }
-    sourceMedia.push(...websiteVideoCandidates(html, url));
+    sourceMedia.push(...websiteVideoCandidates(html, url, bundleSource));
     const signalText = [
       `CONNECTED PUBLIC WEBSITE`,
       `URL: ${url}`,
@@ -858,7 +881,7 @@ async function readPublicWebsite(url) {
   }
 }
 
-function websiteImageCandidates(html, baseUrl, css = "") {
+function websiteImageCandidates(html, baseUrl, css = "", bundle = "") {
   const candidates = [];
   const add = (source, name, logoScore = 0, role = "Website image") => {
     if (!source) return;
@@ -880,17 +903,16 @@ function websiteImageCandidates(html, baseUrl, css = "") {
   for (const match of html.matchAll(/<link\b[^>]*>/gi)) {
     const tag = match[0];
     const rel = readTagAttribute(tag, "rel");
-    if (/\bmask-icon\b/i.test(rel)) add(readTagAttribute(tag, "href"), "Website brand mark", 6, "Logo or brand mark");
-    else if (/\bapple-touch-icon\b/i.test(rel)) add(readTagAttribute(tag, "href"), "Website brand mark", 6, "Logo or brand mark");
-    else if (/\bicon\b/i.test(rel)) add(readTagAttribute(tag, "href"), "Website icon", -1, "Website icon");
+    if (/\b(mask-icon|apple-touch-icon|icon)\b/i.test(rel)) add(readTagAttribute(tag, "href"), "Browser icon", -2, "Browser metadata icon");
   }
-  add(readMeta(html, "og:image"), readMeta(html, "og:image:alt") || "Website preview image", 0, "Social preview");
-  add(readMeta(html, "twitter:image"), readMeta(html, "twitter:image:alt") || "Website preview image", 0, "Social preview");
+  add(readMeta(html, "og:image"), readMeta(html, "og:image:alt") || "Website preview image", -1, "Social metadata preview");
+  add(readMeta(html, "twitter:image"), readMeta(html, "twitter:image:alt") || "Website preview image", -1, "Social metadata preview");
   for (const match of String(css || "").matchAll(/background(?:-image)?\s*:[^;}]*url\(\s*(["']?)([^"')]+)\1\s*\)/gi)) add(match[2], filenameFromUrl(match[2], "Website background"), 0, "Website background");
+  for (const asset of extractBundleMediaReferences(bundle, baseUrl).filter((item) => item.kind === "image")) add(asset.url, asset.name, 0, asset.role);
   return candidates.sort((left, right) => right.logoScore - left.logoScore);
 }
 
-function websiteVideoCandidates(html, baseUrl) {
+function websiteVideoCandidates(html, baseUrl, bundle = "") {
   const candidates = [];
   const add = (source, name, role = "Website video") => {
     if (!source) return;
@@ -913,7 +935,64 @@ function websiteVideoCandidates(html, baseUrl) {
   }
   add(readMeta(html, "og:video") || readMeta(html, "og:video:url"), readMeta(html, "og:title") || "Website video", "Social video");
   add(readMeta(html, "twitter:player"), readMeta(html, "twitter:title") || "Website video", "Social video");
-  return candidates.slice(0, 8);
+  for (const asset of extractBundleMediaReferences(bundle, baseUrl).filter((item) => item.kind === "video")) add(asset.url, asset.name, asset.role);
+  return candidates.slice(0, 20);
+}
+
+function extractBundleMediaReferences(bundle, baseUrl) {
+  const media = [];
+  const add = (source) => {
+    try {
+      const url = new URL(source, baseUrl).toString();
+      if (media.some((item) => item.url === url)) return;
+      const extension = new URL(url).pathname.split(".").pop()?.toLowerCase() || "";
+      const kind = /^(mp4|webm|mov|m4v)$/.test(extension) ? "video" : "image";
+      const filename = filenameFromUrl(url, kind === "video" ? "Website video" : "Website image");
+      const readable = filename.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
+      const role = kind === "video"
+        ? "Website video"
+        : /hero|background|manifesto/i.test(filename)
+          ? "Hero or background image"
+          : /gallery|case|site-img|web-/i.test(filename)
+            ? "Portfolio image"
+            : /product|interface|app/i.test(filename)
+              ? "Product image"
+              : "Website image";
+      media.push({ kind, url, name: readable || filename, role });
+    } catch {
+      // Ignore malformed bundle references.
+    }
+  };
+  for (const match of String(bundle || "").matchAll(/["'`](?:\$\{[^}]+\})?((?:\/)?(?:images|videos)\/[^"'`\s)]+\.(png|jpe?g|webp|avif|gif|svg|mp4|webm|mov|m4v)(?:\?[^"'`\s)]*)?)["'`]/gi)) {
+    add(match[1].startsWith("/") ? match[1] : `/${match[1]}`);
+  }
+  return media.slice(0, 60);
+}
+
+function extractInlineWebsiteLogo(bundle, fallbackName) {
+  const source = String(bundle || "");
+  const match = source.match(/viewBox:"([^"]+)"[\s\S]{0,500}?fill:"currentColor"[\s\S]{0,500}?"aria-label":"([^"]+)"[\s\S]{0,160}?children:\[([\s\S]{0,1800}?)\]\}\)/);
+  if (!match) return null;
+  const shapes = [];
+  for (const shapeMatch of match[3].matchAll(/[A-Za-z0-9_$]+\.jsx\("(rect|path|circle|polygon)",\{([^}]+)\}\)/g)) {
+    const tag = shapeMatch[1];
+    const attributes = [];
+    for (const attribute of shapeMatch[2].matchAll(/([a-zA-Z][a-zA-Z0-9-]*):"([^"]*)"/g)) {
+      if (["x", "y", "width", "height", "rx", "ry", "cx", "cy", "r", "d", "points"].includes(attribute[1])) attributes.push(`${attribute[1]}="${escapeXmlAttribute(attribute[2])}"`);
+    }
+    if (attributes.length) shapes.push(`<${tag} ${attributes.join(" ")}/>`);
+  }
+  if (!shapes.length) return null;
+  const label = match[2] || fallbackName || "Website";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${escapeXmlAttribute(match[1])}" role="img" aria-label="${escapeXmlAttribute(label)}" fill="#0D0D0D">${shapes.join("")}</svg>`;
+  return {
+    dataUrl: `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`,
+    name: `${label} header logo`,
+  };
+}
+
+function escapeXmlAttribute(value) {
+  return String(value || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function mediaTags(...values) {
@@ -924,23 +1003,78 @@ function mediaTags(...values) {
   return tags.slice(0, 5);
 }
 
-function extractWebsiteColors(source, themeColor) {
+function extractWebsiteColors(source, themeColor, bundle = "") {
   const counts = new Map();
+  const backgroundCounts = new Map();
+  const semanticBrandColors = [];
   const add = (value, weight = 1) => {
     const normalized = normalizeCssColor(value);
     if (!normalized) return;
     counts.set(normalized, (counts.get(normalized) || 0) + weight);
   };
-  if (themeColor) add(themeColor, 20);
-  for (const match of String(source || "").matchAll(/--[a-z0-9_-]*(?:brand|primary|secondary|accent|highlight|foreground|background)[a-z0-9_-]*\s*:\s*(#[0-9a-f]{3,8})\b/gi)) add(match[1], 15);
-  for (const match of String(source || "").matchAll(/#[0-9a-f]{3,8}\b/gi)) add(match[0]);
-  for (const match of String(source || "").matchAll(/rgba?\(\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*[, ]\s*(\d{1,3})/gi)) {
-    add(`#${[match[1], match[2], match[3]].map((value) => Math.max(0, Math.min(255, Number(value))).toString(16).padStart(2, "0")).join("")}`);
+  const addBackground = (value, weight = 1) => {
+    const normalized = normalizeCssColor(value);
+    if (!normalized) return;
+    backgroundCounts.set(normalized, (backgroundCounts.get(normalized) || 0) + weight);
+  };
+  let explicitBrandHue = false;
+  for (const match of String(source || "").matchAll(/--([a-z0-9_-]*(?:primary|accent|secondary|background|foreground)[a-z0-9_-]*)\s*:\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)%\s+(-?\d+(?:\.\d+)?)%/gi)) {
+    const name = match[1].toLowerCase();
+    const color = hslToHex(Number(match[2]), Number(match[3]), Number(match[4]));
+    const weight = /(?:^|-)primary$|(?:^|-)accent$/.test(name) ? 90 : /background/.test(name) ? 70 : /foreground/.test(name) ? 40 : 25;
+    if ((/(?:^|-)primary$|(?:^|-)accent$/.test(name)) && isChromaticColor(color)) {
+      explicitBrandHue = true;
+      if (!semanticBrandColors.includes(color)) semanticBrandColors.push(color);
+    }
+    if (/background/.test(name)) addBackground(color, 70);
+    add(color, weight);
   }
-  return [...counts.entries()]
+  for (const match of String(source || "").matchAll(/--[a-z0-9_-]*(?:brand|primary|secondary|accent|highlight|foreground|background)[a-z0-9_-]*\s*:\s*(#[0-9a-f]{3,8})\b/gi)) add(match[1], 15);
+  const visibleSource = `${String(source || "")}\n${String(bundle || "")}`;
+  for (const match of visibleSource.matchAll(/#[0-9a-f]{3,8}\b/gi)) {
+    const context = visibleSource.slice(Math.max(0, match.index - 70), Math.min(visibleSource.length, match.index + 90));
+    if (/theme-color|msapplication-(?:tile)?color/i.test(context)) continue;
+    const backgroundWeight = /background|bg-|from-|via-|to-|gradient/i.test(context) ? 8 : 0;
+    add(match[0], backgroundWeight || 1);
+    if (backgroundWeight) addBackground(match[0], backgroundWeight);
+  }
+  for (const match of visibleSource.matchAll(/rgba?\(\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*[, ]\s*(\d{1,3})/gi)) {
+    const color = `#${[match[1], match[2], match[3]].map((value) => Math.max(0, Math.min(255, Number(value))).toString(16).padStart(2, "0")).join("")}`;
+    const context = visibleSource.slice(Math.max(0, match.index - 70), Math.min(visibleSource.length, match.index + 90));
+    add(color);
+    if (/background|bg-|from-|via-|to-|gradient/i.test(context)) addBackground(color, 8);
+  }
+  if (themeColor && !explicitBrandHue && counts.size === 0) add(themeColor, 1);
+  const ranked = [...counts.entries()]
     .sort((left, right) => right[1] - left[1])
-    .map(([value]) => value)
-    .slice(0, 12);
+    .map(([value]) => value);
+  const backgroundRanked = [...backgroundCounts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .map(([value]) => value);
+  const semanticBrand = semanticBrandColors[0];
+  const visibleBrand = semanticBrand
+    ? ranked.find((color) => color !== semanticBrand && isChromaticColor(color) && colorDistance(color, semanticBrand) <= 10) || semanticBrand
+    : "";
+  const lightBackground = backgroundRanked.find((color) => !isChromaticColor(color) && colorLightness(color) >= 0.7);
+  const darkBackground = backgroundRanked.find((color) => !isChromaticColor(color) && colorLightness(color) <= 0.35);
+  return Array.from(new Set([visibleBrand, lightBackground, darkBackground, ...ranked].filter(Boolean))).slice(0, 12);
+}
+
+function hslToHex(hue, saturation, lightness) {
+  const h = ((hue % 360) + 360) % 360;
+  const s = Math.max(0, Math.min(100, saturation)) / 100;
+  const l = Math.max(0, Math.min(100, lightness)) / 100;
+  const chroma = (1 - Math.abs(2 * l - 1)) * s;
+  const section = h / 60;
+  const intermediate = chroma * (1 - Math.abs((section % 2) - 1));
+  const [r1, g1, b1] = section < 1 ? [chroma, intermediate, 0]
+    : section < 2 ? [intermediate, chroma, 0]
+      : section < 3 ? [0, chroma, intermediate]
+        : section < 4 ? [0, intermediate, chroma]
+          : section < 5 ? [intermediate, 0, chroma]
+            : [chroma, 0, intermediate];
+  const offset = l - chroma / 2;
+  return `#${[r1, g1, b1].map((value) => Math.round((value + offset) * 255).toString(16).padStart(2, "0")).join("")}`.toUpperCase();
 }
 
 function normalizeCssColor(value) {
@@ -951,11 +1085,17 @@ function normalizeCssColor(value) {
   return "";
 }
 
-function normalizeBrandPalette(brand, detectedColors = []) {
+function normalizeBrandPalette(brand, detectedColors = [], preferDetected = false) {
   const chromatic = Array.from(new Set(detectedColors.map(normalizeCssColor).filter((color) => isChromaticColor(color))));
   const used = [];
   for (const key of ["primaryColor", "secondaryColor", "accentColor"]) {
     const current = normalizeCssColor(brand[key]);
+    if (preferDetected) {
+      const replacement = key === "primaryColor" ? chromatic[0] || "" : "";
+      brand[key] = replacement;
+      if (replacement) used.push(replacement);
+      continue;
+    }
     if (isChromaticColor(current) && !used.includes(current)) {
       brand[key] = current;
       used.push(current);
@@ -968,8 +1108,8 @@ function normalizeBrandPalette(brand, detectedColors = []) {
     if (replacement) used.push(replacement);
   }
   const neutrals = Array.from(new Set(detectedColors.map(normalizeCssColor).filter((color) => color && !isChromaticColor(color))));
-  const light = neutrals.map((color) => [color, colorLightness(color)]).filter(([, value]) => value >= 0.7).sort((left, right) => right[1] - left[1])[0]?.[0];
-  const dark = neutrals.map((color) => [color, colorLightness(color)]).filter(([, value]) => value <= 0.35).sort((left, right) => left[1] - right[1])[0]?.[0];
+  const light = neutrals.find((color) => colorLightness(color) >= 0.7);
+  const dark = neutrals.find((color) => colorLightness(color) <= 0.35);
   brand.neutralLightColor = light || (!isChromaticColor(brand.neutralLightColor) ? normalizeCssColor(brand.neutralLightColor) : "") || "#FFFFFF";
   brand.neutralDarkColor = dark || (!isChromaticColor(brand.neutralDarkColor) ? normalizeCssColor(brand.neutralDarkColor) : "") || "#222222";
 }
