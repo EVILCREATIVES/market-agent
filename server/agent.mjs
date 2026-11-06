@@ -198,7 +198,7 @@ ${links.length ? links.map((link) => `- ${link}`).join("\n") : "No links supplie
 EXTRACTED MATERIAL
 ${materialText || "Visual materials are attached."}
 
-Preserve useful saved facts unless stronger source evidence corrects them. Confirmed user answers are authoritative: carry them into the updated product brain and never replace them with a weaker inference or ask for them again. Fields listed as protected user corrections must retain their exact saved meaning. If new source evidence materially conflicts with a protected field, keep the saved value and add one concise confirmation question describing the conflict; never silently overwrite it. Infer only what is strongly supported. Derive the visual identity from the supplied website, CSS, deck pages, images, and documents. Assign primaryColor, secondaryColor, and accentColor only to chromatic brand hues—never black, white, or gray. Store background/text neutrals separately as neutralLightColor and neutralDarkColor. Choose representative visible six-digit hex values, identify typography, recognize the logo, and summarize the imagery style. Consolidate duplicates and contradictions. Do not ask the user for colors, hex values, logo, typefaces, or visual style when those are visible or detected in a supplied source. Make the best evidence-based extraction and place any uncertainty in brand notes instead of unknowns. Put only genuinely unavailable business facts in unknowns. The result is a draft for the user to review, not a claim of certainty. Never mention internal systems, providers, or model names.`;
+Preserve useful saved facts unless stronger source evidence corrects them. Confirmed user answers are authoritative: carry them into the updated product brain and never replace them with a weaker inference or ask for them again. Fields listed as protected user corrections must retain their exact saved meaning. If new source evidence materially conflicts with a protected field, keep the saved value and add one concise confirmation question describing the conflict; never silently overwrite it. Infer only what is strongly supported. Derive the visual identity from the supplied website, CSS, deck pages, images, and documents. Assign primaryColor, secondaryColor, and accentColor only to chromatic brand hues—never black, white, or gray. Store background/text neutrals separately as neutralLightColor and neutralDarkColor. Keep the palette coherent to one source system: never combine hues from visibly distinct website and deck identities into a hybrid palette. Follow the selected source precedence; when no authoritative secondary or accent hue exists, return an empty string rather than inventing one. Choose representative visible six-digit hex values, identify typography, recognize the logo, and summarize the imagery style. Consolidate duplicates and contradictions. Do not ask the user for colors, hex values, logo, typefaces, or visual style when those are visible or detected in a supplied source. Make the best evidence-based extraction and place any uncertainty in brand notes instead of unknowns. Put only genuinely unavailable business facts in unknowns. The result is a draft for the user to review, not a claim of certainty. Never mention internal systems, providers, or model names.`;
 
   try {
     const parsed = await generateProductBrainStructured({
@@ -550,7 +550,7 @@ function productBrainContext(value) {
 function sourcePriorityInstruction(value) {
   if (value === "website") return "When sources conflict, prefer the public website for brand, style, product facts, and current messaging. Use decks as supporting context and note material contradictions.";
   if (value === "deck") return "When sources conflict, prefer decks, documents, and uploaded materials as the intended brand and product direction. Use the website as supporting public context and note material contradictions.";
-  return "Compare all sources and use the strongest, most explicit, and most recent evidence. Prefer a source only when its authority or recency is clear; record meaningful contradictions in notes instead of asking the user to restate extractable information.";
+  return "Compare all sources and use the strongest, most explicit, and most recent evidence. For the public brand identity, prefer the current official website unless a deck is explicitly identified as the newer intended direction. Never merge visibly separate visual systems into one palette; record meaningful contradictions in notes instead of asking the user to restate extractable information.";
 }
 
 function applyProtectedBrainFields(next, saved, protectedFields) {
@@ -931,9 +931,9 @@ function normalizeBrandPalette(brand, detectedColors = []) {
       used.push(current);
       continue;
     }
-    const replacement = chromatic.find((candidate) => !used.includes(candidate) && used.every((selected) => colorDistance(candidate, selected) >= 42))
-      || chromatic.find((candidate) => !used.includes(candidate))
-      || "";
+    const replacement = key === "primaryColor"
+      ? chromatic.find((candidate) => !used.includes(candidate) && used.every((selected) => colorDistance(candidate, selected) >= 42)) || chromatic.find((candidate) => !used.includes(candidate)) || ""
+      : "";
     brand[key] = replacement;
     if (replacement) used.push(replacement);
   }
