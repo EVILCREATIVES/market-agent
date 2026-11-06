@@ -14,6 +14,16 @@ export interface ProductMaterial {
   addedAt: string;
 }
 
+export interface SourceMediaAsset {
+  id: string;
+  kind: "image" | "video";
+  name: string;
+  url: string;
+  role: string;
+  tags: string[];
+  recommendation: "reuse" | "adapt" | "review";
+}
+
 export interface BrandIdentity {
   logoDataUrl: string;
   logoName: string;
@@ -39,6 +49,7 @@ export interface ProductWorkspace {
   sourceGuidance: string;
   sources: ProductSource[];
   materials: ProductMaterial[];
+  sourceMedia: SourceMediaAsset[];
   brand: BrandIdentity;
   reviewSummary: string;
   openQuestions: string[];

@@ -39,7 +39,7 @@ import { createDefaultSchedule, createEmptyProject, loadState, saveState } from 
 import { prepareLogo, prepareMaterial, type PreparedMaterial } from "./operational/materials";
 import { upload } from "@vercel/blob/client";
 import { apiFetch, getAccessToken } from "./auth";
-import type { AgentAction, AgentRun, AgentSchedule, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, ConnectionStatus, HealthState, MediaBudgetSummary, MediaJob, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, RunStatus } from "./operational/types";
+import type { AgentAction, AgentRun, AgentSchedule, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, ConnectionStatus, HealthState, MediaBudgetSummary, MediaJob, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, RunStatus, SourceMediaAsset } from "./operational/types";
 
 type Page = "agent" | "brain" | "research" | "campaigns" | "content" | "integrations";
 type CampaignIntensity = "careful" | "assertive" | "aggressive";
@@ -489,12 +489,25 @@ function ProductBrain({ workspace, onSave, notify }: { workspace: ProductWorkspa
         ...(workspace.materials || []),
         ...materials.map((material) => ({ id: crypto.randomUUID(), name: material.name, kind: material.kind, addedAt })),
       ].filter((material, index, all) => all.findIndex((candidate) => candidate.name === material.name) === index);
+      const extractedMedia: SourceMediaAsset[] = (Array.isArray(data.sourceMedia) ? data.sourceMedia : []).map((item: Partial<SourceMediaAsset>) => ({
+        id: crypto.randomUUID(),
+        kind: item.kind === "video" ? "video" : "image",
+        name: String(item.name || "Source media"),
+        url: String(item.url || ""),
+        role: String(item.role || "Source media"),
+        tags: Array.isArray(item.tags) ? item.tags.map(String).slice(0, 8) : [],
+        recommendation: item.recommendation === "adapt" || item.recommendation === "review" ? item.recommendation : "reuse",
+      })).filter((item: SourceMediaAsset) => /^https?:\/\//i.test(item.url));
+      const sourceMedia = [...extractedMedia, ...(workspace.sourceMedia || [])]
+        .filter((item, index, all) => all.findIndex((candidate) => candidate.url === item.url) === index)
+        .slice(0, 40);
       const updated: ProductWorkspace = {
         ...form,
         ...data.brain,
         brand: { ...form.brand, ...(data.brain?.brand || {}) },
         sources,
         materials: materialRecords,
+        sourceMedia,
         reviewSummary: data.reviewSummary || "The product brain is ready for review.",
         openQuestions: nextQuestions,
         questionAnswers: retainedAnswers,
@@ -656,6 +669,8 @@ function ProductBrain({ workspace, onSave, notify }: { workspace: ProductWorkspa
         {links.map((url) => <div key={url}><Globe2 size={16} /><span><strong>{connectedSourceLabel(url)}</strong><small>{url}</small></span><button onClick={() => setLinks((current) => current.filter((item) => item !== url))}><X size={14} /></button></div>)}
       </div>}
 
+      {(form.sourceMedia || []).length > 0 && <SourceMediaStrip media={form.sourceMedia || []} />}
+
       <div className="op-source-guidance">
         <div><strong>When sources disagree</strong><span>Choose which source should lead. The agent still extracts and compares everything.</span></div>
         <div className="op-source-priority" role="group" aria-label="Source priority">
@@ -716,6 +731,10 @@ function MaterialIcon({ kind }: { kind: PreparedMaterial["kind"] }) {
   if (kind === "image") return <ImageIcon size={16} />;
   if (kind === "video") return <Video size={16} />;
   return <FileText size={16} />;
+}
+
+function SourceMediaStrip({ media }: { media: SourceMediaAsset[] }) {
+  return <div className="op-source-media"><header><div><strong>Useful media extracted</strong><span>Saved with this project for future content and campaign work.</span></div><em>{media.length}</em></header><div>{media.slice(0, 12).map((item) => <a key={item.id} href={item.url} target="_blank" rel="noreferrer">{item.kind === "image" ? <img src={item.url} alt="" /> : <span className="video"><Video size={18} /></span>}<div><strong>{item.name}</strong><small>{item.role} · {item.recommendation}</small><span>{item.tags.slice(0, 3).join(" · ")}</span></div><ArrowRight size={13} /></a>)}</div></div>;
 }
 
 function connectedSourceLabel(value: string) {
@@ -1069,6 +1088,8 @@ function ContentLibrary({ userId, workspace, runs, mediaConfigured, videoConfigu
     <div className="op-heading"><div className="op-eyebrow">Creative production and saved assets</div><h1>Content library</h1><p>The agent evaluates existing work and proposes new assets from this project's product brain. You approve the estimated spend before paid production starts.</p></div>
 
     <section className="op-existing-assets"><div className="op-existing-assets__head"><div><small>EXISTING ASSET INTELLIGENCE</small><h2>Drop in everything you already have</h2><p>Upload several files at once or add a public Figma or document link. The agent reads, tags, and decides whether to reuse, adapt, replace, or archive each item.</p></div><button onClick={() => assetInput.current?.click()} disabled={!mediaConfigured || Boolean(assetWorking)}><UploadCloud size={16} />{assetWorking || "Upload assets"}</button><input ref={assetInput} type="file" multiple accept=".pdf,.pptx,.docx,.txt,.md,.csv,image/*,video/*" onChange={(event) => void uploadAssets(event.target.files)} /></div><div className="op-asset-link"><Link2 size={15} /><input value={assetLink} onChange={(event) => setAssetLink(event.target.value)} placeholder="Paste a public Figma, Slides, PDF, or asset link" /><button onClick={() => void addAssetLink()} disabled={!assetLink.trim() || Boolean(assetWorking)}>Add and analyze</button></div>{!mediaConfigured && <div className="op-asset-setup"><KeyRound size={15} /> Connect OpenAI or Gemini first so the agent can evaluate uploaded work.</div>}</section>
+
+    {(workspace.sourceMedia || []).length > 0 && <SourceMediaStrip media={workspace.sourceMedia || []} />}
 
     {assets.length > 0 && <section className="op-asset-decisions"><div className="op-section-title"><div><small>AGENT DECISIONS</small><h2>What to use, change, or retire</h2></div><em>{assets.length}</em></div><div className="op-asset-grid">{assets.map((asset) => <article key={asset.id} className={`decision-${asset.recommendation}`}><header><span>{asset.kind === "image" ? <ImageIcon size={16} /> : asset.kind === "video" ? <Video size={16} /> : asset.kind === "figma" ? <LayoutDashboard size={16} /> : <FileText size={16} />}</span><div><strong>{asset.name}</strong><small>{asset.detail || asset.kind}</small></div><em>{asset.status === "failed" ? "Needs attention" : asset.recommendation}</em></header>{asset.status === "failed" ? <p className="error">{asset.error}</p> : <><p>{asset.summary}</p><div className="op-asset-tags">{asset.tags.map((tag) => <span key={tag}>{tag}</span>)}</div><details><summary>Why this decision <ChevronDown size={13} /></summary><p>{asset.rationale}</p>{asset.suggestedChanges.length > 0 && <ul>{asset.suggestedChanges.map((change) => <li key={change}>{change}</li>)}</ul>}</details></>}{asset.status === "ready" && ["adapt", "replace"].includes(asset.recommendation) && ["image", "video"].includes(asset.kind) && <button className="op-adapt-button" onClick={() => void prepare(asset.kind === "video" && videoConfigured ? "video" : "image", asset)} disabled={!mediaConfigured || Boolean(working)}><WandSparkles size={13} /> Prepare {asset.recommendation === "adapt" ? "adapted version" : "replacement"}</button>}{asset.downloadable && <button className="op-asset-download" onClick={() => void downloadProjectFile(asset.id, "asset", asset.name)} disabled={assetWorking === asset.id}><ArrowRight size={13} />{assetWorking === asset.id ? "Downloading…" : "Download original"}</button>}{asset.sourceUrl && <a className="op-asset-download" href={asset.sourceUrl} target="_blank" rel="noreferrer"><ArrowRight size={13} /> Open source</a>}</article>)}</div></section>}
 

@@ -220,7 +220,7 @@ Preserve useful saved facts unless stronger source evidence corrects them. Confi
     if (connectedMaterial.issues.length) {
       normalized.unknowns = normalized.unknowns.filter((question) => !/what (content|visual identity).*(deck|figma)|what.*(deck|figma).*(contain|show)|describe.*(deck|figma)/i.test(question));
     }
-    return { projectId, ...normalized, sourceWarnings: connectedMaterial.issues };
+    return { projectId, ...normalized, sourceWarnings: connectedMaterial.issues, sourceMedia: connectedMaterial.sourceMedia };
   } catch {
     const error = new Error("The project materials were read, but the product brain could not be assembled. Please try again.");
     error.statusCode = 502;
@@ -582,6 +582,7 @@ export async function readConnectedMaterial(links) {
   const textParts = [];
   const images = [];
   const issues = [];
+  const sourceMedia = [];
   const detectedColors = [];
   const detectedFonts = [];
   let logoDataUrl = "";
@@ -659,6 +660,7 @@ export async function readConnectedMaterial(links) {
           logoDataUrl = website.logoDataUrl;
           logoName = website.logoName || "Website logo";
         }
+        sourceMedia.push(...(website.sourceMedia || []));
         brandEvidence ||= Boolean(website.brandEvidence);
         if (website.issue) issues.push(website.issue);
       }
@@ -675,6 +677,9 @@ export async function readConnectedMaterial(links) {
     logoDataUrl,
     logoName,
     brandEvidence,
+    sourceMedia: sourceMedia
+      .filter((item, index, all) => item?.url && all.findIndex((candidate) => candidate.url === item.url) === index)
+      .slice(0, 40),
   };
 }
 
@@ -693,7 +698,26 @@ async function readPublicWebsite(url) {
       const bytes = await limitedResponseBytes(response, 3 * 1024 * 1024);
       if (!bytes) return { issue: `The linked image at ${url.hostname} is too large to analyze.` };
       const dataUrl = `data:${contentType.split(";")[0]};base64,${Buffer.from(bytes).toString("base64")}`;
-      return { text: `CONNECTED BRAND IMAGE\nSource: ${url}`, images: [dataUrl], colors: [], fonts: [], logoDataUrl: dataUrl, logoName: filenameFromUrl(url, "Brand image"), brandEvidence: true };
+      return {
+        text: `CONNECTED BRAND IMAGE\nSource: ${url}`,
+        images: isSupportedAnalysisImage(dataUrl) ? [dataUrl] : [],
+        colors: [],
+        fonts: [],
+        logoDataUrl: dataUrl,
+        logoName: filenameFromUrl(url, "Brand image"),
+        brandEvidence: true,
+        sourceMedia: [{ kind: "image", name: filenameFromUrl(url, "Brand image"), url: url.toString(), role: "Brand image", tags: ["brand", "image"], recommendation: "reuse" }],
+      };
+    }
+    if (contentType.startsWith("video/")) {
+      return {
+        text: `CONNECTED VIDEO SOURCE\nSource: ${url}`,
+        images: [],
+        colors: [],
+        fonts: [],
+        brandEvidence: false,
+        sourceMedia: [{ kind: "video", name: filenameFromUrl(url, "Website video"), url: url.toString(), role: "Website video", tags: ["video", "source"], recommendation: "review" }],
+      };
     }
     if (!contentType.includes("html") && !contentType.includes("xhtml") && contentType) {
       return { issue: `The source at ${url.hostname} is not a readable website. Upload the file directly so the agent can inspect it.` };
@@ -727,7 +751,8 @@ async function readPublicWebsite(url) {
     const title = readMeta(html, "og:title") || readHtmlTitle(html) || url.hostname;
     const description = readMeta(html, "description") || readMeta(html, "og:description");
     const pageText = htmlToReadableText(html).slice(0, 55_000);
-    const logoCandidates = websiteImageCandidates(html, url);
+    const logoCandidates = websiteImageCandidates(html, url, cssTexts.join("\n"));
+    const sourceMedia = [];
     let logoDataUrl = "";
     let logoName = "";
     for (const candidate of logoCandidates.filter((candidate) => candidate.logoScore >= 6).slice(0, 6)) {
@@ -735,6 +760,7 @@ async function readPublicWebsite(url) {
       if (!image || image.dataUrl.length > 1_200_000) continue;
       logoDataUrl = image.dataUrl;
       logoName = candidate.name || filenameFromUrl(candidate.url, "Website logo");
+      if (/^https?:\/\//i.test(candidate.url)) sourceMedia.push({ kind: "image", name: logoName, url: candidate.url, role: "Logo or brand mark", tags: ["logo", "brand"], recommendation: "reuse" });
       break;
     }
     const images = [];
@@ -742,8 +768,12 @@ async function readPublicWebsite(url) {
     for (const candidate of logoCandidates.slice(0, 8)) {
       if (images.length >= 4 || candidate.logoScore !== 0) continue;
       const image = await readWebsiteImage(candidate.url);
-      if (image && isSupportedAnalysisImage(image.dataUrl) && !images.includes(image.dataUrl)) images.push(image.dataUrl);
+      if (image && isSupportedAnalysisImage(image.dataUrl) && !images.includes(image.dataUrl)) {
+        images.push(image.dataUrl);
+        if (image.byteLength >= 8_000 && /^https?:\/\//i.test(candidate.url)) sourceMedia.push({ kind: "image", name: candidate.name || filenameFromUrl(candidate.url, "Website image"), url: candidate.url, role: candidate.role || "Website image", tags: mediaTags(candidate.name, candidate.role), recommendation: candidate.role === "Social preview" ? "adapt" : "review" });
+      }
     }
+    sourceMedia.push(...websiteVideoCandidates(html, url));
     const signalText = [
       `CONNECTED PUBLIC WEBSITE`,
       `URL: ${url}`,
@@ -752,6 +782,7 @@ async function readPublicWebsite(url) {
       colors.length ? `Detected CSS and theme colors, ranked by frequency: ${colors.join(", ")}` : "No reliable CSS colors detected.",
       fonts.length ? `Detected font families: ${fonts.join(", ")}` : "No explicit font families detected.",
       logoDataUrl ? `Logo: extracted automatically as ${logoName}` : "Logo: no reliable logo image was exposed in the page markup.",
+      sourceMedia.length ? `Reusable media discovered: ${sourceMedia.map((item) => `${item.kind}: ${item.name} (${item.role})`).join("; ")}` : "No clearly reusable image or video assets were exposed in the page markup.",
       `VISIBLE PAGE COPY\n${pageText || "No readable page copy exposed."}`,
     ].filter(Boolean).join("\n");
     return {
@@ -762,19 +793,20 @@ async function readPublicWebsite(url) {
       logoDataUrl,
       logoName,
       brandEvidence: Boolean(colors.length || fonts.length || logoDataUrl || images.length),
+      sourceMedia,
     };
   } catch {
     return { issue: `The website at ${url.hostname} could not be read. Confirm that it is public and does not block automated viewing.` };
   }
 }
 
-function websiteImageCandidates(html, baseUrl) {
+function websiteImageCandidates(html, baseUrl, css = "") {
   const candidates = [];
-  const add = (source, name, logoScore = 0) => {
+  const add = (source, name, logoScore = 0, role = "Website image") => {
     if (!source) return;
     try {
       const url = source.startsWith("data:image/") ? source : new URL(source, baseUrl).toString();
-      if (!candidates.some((candidate) => candidate.url === url)) candidates.push({ url, name, logoScore });
+      if (!candidates.some((candidate) => candidate.url === url)) candidates.push({ url, name, logoScore, role });
     } catch {
       // Ignore invalid asset references.
     }
@@ -785,17 +817,53 @@ function websiteImageCandidates(html, baseUrl) {
     const label = [readTagAttribute(tag, "alt"), readTagAttribute(tag, "aria-label"), readTagAttribute(tag, "class"), readTagAttribute(tag, "id"), source].filter(Boolean).join(" ");
     let score = /\b(logo|brand|wordmark|logotype)\b/i.test(label) ? 10 : 0;
     if (/\b(header|nav|masthead)\b/i.test(label)) score += 2;
-    add(source, readTagAttribute(tag, "alt") || "Website image", score);
+    add(source, readTagAttribute(tag, "alt") || "Website image", score, score > 0 ? "Logo or brand mark" : "Website image");
   }
   for (const match of html.matchAll(/<link\b[^>]*>/gi)) {
     const tag = match[0];
     const rel = readTagAttribute(tag, "rel");
-    if (/\bmask-icon\b/i.test(rel)) add(readTagAttribute(tag, "href"), "Website brand mark", 6);
-    else if (/\b(icon|apple-touch-icon)\b/i.test(rel)) add(readTagAttribute(tag, "href"), "Website icon", -1);
+    if (/\bmask-icon\b/i.test(rel)) add(readTagAttribute(tag, "href"), "Website brand mark", 6, "Logo or brand mark");
+    else if (/\bapple-touch-icon\b/i.test(rel)) add(readTagAttribute(tag, "href"), "Website brand mark", 6, "Logo or brand mark");
+    else if (/\bicon\b/i.test(rel)) add(readTagAttribute(tag, "href"), "Website icon", -1, "Website icon");
   }
-  add(readMeta(html, "og:image"), "Website preview image", 0);
-  add(readMeta(html, "twitter:image"), "Website preview image", 0);
+  add(readMeta(html, "og:image"), readMeta(html, "og:image:alt") || "Website preview image", 0, "Social preview");
+  add(readMeta(html, "twitter:image"), readMeta(html, "twitter:image:alt") || "Website preview image", 0, "Social preview");
+  for (const match of String(css || "").matchAll(/background(?:-image)?\s*:[^;}]*url\(\s*(["']?)([^"')]+)\1\s*\)/gi)) add(match[2], filenameFromUrl(match[2], "Website background"), 0, "Website background");
   return candidates.sort((left, right) => right.logoScore - left.logoScore);
+}
+
+function websiteVideoCandidates(html, baseUrl) {
+  const candidates = [];
+  const add = (source, name, role = "Website video") => {
+    if (!source) return;
+    try {
+      const url = new URL(source, baseUrl).toString();
+      if (!/^https?:\/\//i.test(url) || candidates.some((item) => item.url === url)) return;
+      candidates.push({ kind: "video", name: name || filenameFromUrl(url, "Website video"), url, role, tags: mediaTags(name, `${role} video`), recommendation: "review" });
+    } catch {
+      // Ignore invalid media references.
+    }
+  };
+  for (const match of String(html || "").matchAll(/<(video|source)\b[^>]*>/gi)) {
+    const tag = match[0];
+    add(readTagAttribute(tag, "src"), readTagAttribute(tag, "title") || readTagAttribute(tag, "aria-label") || "Website video");
+  }
+  for (const match of String(html || "").matchAll(/<iframe\b[^>]*>/gi)) {
+    const tag = match[0];
+    const source = readTagAttribute(tag, "src");
+    if (/\b(youtube(?:-nocookie)?\.com|youtu\.be|vimeo\.com|wistia\.)/i.test(source)) add(source, readTagAttribute(tag, "title") || "Embedded video", "Embedded video");
+  }
+  add(readMeta(html, "og:video") || readMeta(html, "og:video:url"), readMeta(html, "og:title") || "Website video", "Social video");
+  add(readMeta(html, "twitter:player"), readMeta(html, "twitter:title") || "Website video", "Social video");
+  return candidates.slice(0, 8);
+}
+
+function mediaTags(...values) {
+  const text = values.filter(Boolean).join(" ").toLowerCase();
+  const tags = [];
+  for (const [pattern, tag] of [[/logo|brand|wordmark/, "brand"], [/product|demo|interface|app/, "product"], [/team|people|portrait/, "people"], [/event|stage|talk/, "event"], [/case|work|project/, "portfolio"], [/video|film|reel/, "video"], [/social|preview|share/, "social"]]) if (pattern.test(text)) tags.push(tag);
+  if (!tags.length) tags.push("website");
+  return tags.slice(0, 5);
 }
 
 function extractWebsiteColors(source, themeColor) {
@@ -859,14 +927,14 @@ function readTagAttribute(tag, name) {
 
 async function readWebsiteImage(url) {
   if (typeof url !== "string") return null;
-  if (url.startsWith("data:image/")) return url.length <= 3_000_000 ? { dataUrl: url } : null;
+  if (url.startsWith("data:image/")) return url.length <= 3_000_000 ? { dataUrl: url, byteLength: Math.floor(url.length * 0.75) } : null;
   try {
     const response = await safeFetchPublic(new URL(url), { headers: { Accept: "image/*" }, signal: AbortSignal.timeout(12_000) });
     const contentType = String(response.headers.get("content-type") || "").split(";")[0].toLowerCase();
     if (!response.ok || !contentType.startsWith("image/")) return null;
     const bytes = await limitedResponseBytes(response, 3 * 1024 * 1024);
     if (!bytes) return null;
-    return { dataUrl: `data:${contentType};base64,${Buffer.from(bytes).toString("base64")}` };
+    return { dataUrl: `data:${contentType};base64,${Buffer.from(bytes).toString("base64")}`, byteLength: bytes.byteLength };
   } catch {
     return null;
   }
