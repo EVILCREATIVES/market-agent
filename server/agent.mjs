@@ -1,6 +1,8 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { generateText } from "ai";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { inflateSync } from "fflate";
 import { decompress as decompressZstd } from "fzstd";
 import { compileSchema, decodeBinarySchema } from "kiwi-schema";
@@ -179,7 +181,7 @@ ${links.length ? links.map((link) => `- ${link}`).join("\n") : "No links supplie
 EXTRACTED MATERIAL
 ${materialText || "Visual materials are attached."}
 
-Infer only what is strongly supported. Derive the visual identity from the supplied deck pages, images, and documents: choose the most representative visible colors as six-digit hex values, describe typography, and summarize the imagery style. Consolidate duplicates and contradictions. Put uncertainties and facts that need confirmation in the notes and unknowns fields. The result is a draft for the user to review, not a claim of certainty. Never mention internal systems, providers, or model names.`;
+Infer only what is strongly supported. Derive the visual identity from the supplied website, CSS, deck pages, images, and documents: choose the most representative visible colors as six-digit hex values, identify typography, recognize the logo, and summarize the imagery style. Consolidate duplicates and contradictions. Do not ask the user for colors, hex values, logo, typefaces, or visual style when those are visible or detected in a supplied source. Make the best evidence-based extraction and place any uncertainty in brand notes instead of unknowns. Put only genuinely unavailable business facts in unknowns. The result is a draft for the user to review, not a claim of certainty. Never mention internal systems, providers, or model names.`;
 
   let parsed;
   try {
@@ -214,6 +216,14 @@ Infer only what is strongly supported. Derive the visual identity from the suppl
   }
 
   const normalized = normalizeBrainResult(parsed, projectName, links[0] || "");
+  if (connectedMaterial.logoDataUrl) {
+    normalized.brain.brand.logoDataUrl = connectedMaterial.logoDataUrl;
+    normalized.brain.brand.logoName = connectedMaterial.logoName || "Logo extracted from website";
+  }
+  const sourceContainsVisualEvidence = images.length > 0 || connectedMaterial.brandEvidence;
+  if (sourceContainsVisualEvidence) {
+    normalized.unknowns = normalized.unknowns.filter((question) => !isSourceAnswerableBrandQuestion(question));
+  }
   if (connectedMaterial.issues.length) {
     normalized.unknowns = normalized.unknowns.filter((question) => !/what (content|visual identity).*(deck|figma)|what.*(deck|figma).*(contain|show)|describe.*(deck|figma)/i.test(question));
   }
@@ -297,6 +307,7 @@ ${additionalContext || "None supplied."}`;
     }
     const normalized = normalizeBrainResult(parsed, safeWorkspace.name, safeWorkspace.website);
     normalized.unknowns = removeRepeatedQuestions(normalized.unknowns, answers.map((item) => item.question));
+    if (safeWorkspace.sources.length) normalized.unknowns = normalized.unknowns.filter((question) => !isSourceAnswerableBrandQuestion(question));
     return normalized;
   } catch {
     const error = new Error("The answers were read, but the product brain could not be updated. Please try again.");
@@ -539,14 +550,28 @@ function removeRepeatedQuestions(questions, alreadyHandled) {
   return unique;
 }
 
+function isSourceAnswerableBrandQuestion(value) {
+  const question = String(value || "").toLowerCase();
+  return /\b(primary|secondary|accent|brand|approved)\b.*\b(colou?r|hex|palette)\b/.test(question)
+    || /\b(colou?r|hex|palette)\b.*\b(primary|secondary|accent|brand|approved)\b/.test(question)
+    || /\b(logo|typeface|typography|font|visual identity|imagery style|photography style|brand guideline)\b/.test(question);
+}
+
 export async function readConnectedMaterial(links) {
   const textParts = [];
   const images = [];
   const issues = [];
+  const detectedColors = [];
+  const detectedFonts = [];
+  let logoDataUrl = "";
+  let logoName = "";
+  let brandEvidence = false;
   for (const link of links) {
     try {
       const url = new URL(link);
+      let handled = false;
       if (url.hostname === "docs.google.com" && url.pathname.includes("/presentation/d/")) {
+        handled = true;
         const id = url.pathname.match(/\/presentation\/d\/([a-zA-Z0-9_-]+)/)?.[1];
         if (!id) {
           issues.push("A Google Slides link could not be recognized. Check that it is a complete presentation link.");
@@ -579,23 +604,297 @@ export async function readConnectedMaterial(links) {
           if (text) slideText.push(`Slide ${index + 1}: ${text}`);
         }
         if (slideText.length) textParts.push(`CONNECTED GOOGLE SLIDES\n${slideText.join("\n")}`);
+        const mediaNames = Object.keys(zip.files).filter((name) => /^ppt\/media\//.test(name) && !zip.files[name].dir).slice(0, 8);
+        for (const name of mediaNames) {
+          const mimeType = mimeTypeFromFilename(name);
+          if (!mimeType.startsWith("image/") || mimeType === "image/svg+xml" || images.length >= 8) continue;
+          const bytes = await zip.file(name)?.async("uint8array");
+          if (!bytes || bytes.byteLength > 3 * 1024 * 1024) continue;
+          images.push(`data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`);
+          brandEvidence = true;
+        }
       }
 
       if (url.hostname === "figma.com" || url.hostname.endsWith(".figma.com")) {
+        handled = true;
         try {
           const connected = await readPublicFigmaDeck(link);
           if (connected.text) textParts.push(connected.text);
-          if (connected.image && images.length < 4) images.push(connected.image);
+          if (connected.image && images.length < 8) images.push(connected.image);
+          if (connected.text || connected.image) brandEvidence = true;
           if (connected.issue) issues.push(connected.issue);
         } catch {
           issues.push("Figma could not read this deck. Confirm that Share → link access is set to “Anyone” with “Can view,” then return here and select Update from sources.");
         }
       }
+
+      if (!handled) {
+        const website = await readPublicWebsite(url);
+        if (website.text) textParts.push(website.text);
+        for (const image of website.images || []) if (images.length < 8) images.push(image);
+        detectedColors.push(...(website.colors || []));
+        detectedFonts.push(...(website.fonts || []));
+        if (!logoDataUrl && website.logoDataUrl) {
+          logoDataUrl = website.logoDataUrl;
+          logoName = website.logoName || "Website logo";
+        }
+        brandEvidence ||= Boolean(website.brandEvidence);
+        if (website.issue) issues.push(website.issue);
+      }
     } catch {
       // A connector can fail independently; the remaining uploaded material is still analyzed.
     }
   }
-  return { text: textParts.join("\n\n").slice(0, 100_000), images, issues: Array.from(new Set(issues)) };
+  return {
+    text: textParts.join("\n\n").slice(0, 100_000),
+    images,
+    issues: Array.from(new Set(issues)),
+    colors: Array.from(new Set(detectedColors)),
+    fonts: Array.from(new Set(detectedFonts)),
+    logoDataUrl,
+    logoName,
+    brandEvidence,
+  };
+}
+
+async function readPublicWebsite(url) {
+  try {
+    const response = await safeFetchPublic(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; MarketAgent/1.0; +https://market-agent-lime-gamma.vercel.app)",
+        Accept: "text/html,application/xhtml+xml,image/*;q=0.8,*/*;q=0.5",
+      },
+      signal: AbortSignal.timeout(25_000),
+    });
+    const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+    if (!response.ok) return { issue: `The website at ${url.hostname} returned ${response.status}. Confirm that it is publicly accessible.` };
+    if (contentType.startsWith("image/")) {
+      const bytes = await limitedResponseBytes(response, 3 * 1024 * 1024);
+      if (!bytes) return { issue: `The linked image at ${url.hostname} is too large to analyze.` };
+      const dataUrl = `data:${contentType.split(";")[0]};base64,${Buffer.from(bytes).toString("base64")}`;
+      return { text: `CONNECTED BRAND IMAGE\nSource: ${url}`, images: [dataUrl], colors: [], fonts: [], logoDataUrl: dataUrl, logoName: filenameFromUrl(url, "Brand image"), brandEvidence: true };
+    }
+    if (!contentType.includes("html") && !contentType.includes("xhtml") && contentType) {
+      return { issue: `The source at ${url.hostname} is not a readable website. Upload the file directly so the agent can inspect it.` };
+    }
+
+    const htmlBytes = await limitedResponseBytes(response, 3 * 1024 * 1024);
+    if (!htmlBytes) return { issue: `The website at ${url.hostname} is too large to analyze safely.` };
+    const html = new TextDecoder().decode(htmlBytes);
+    const cssTexts = Array.from(html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)).map((match) => match[1]).slice(0, 20);
+    const stylesheetUrls = Array.from(html.matchAll(/<link\b[^>]*>/gi))
+      .map((match) => match[0])
+      .filter((tag) => /\brel\s*=\s*["'][^"']*stylesheet/i.test(tag))
+      .map((tag) => readTagAttribute(tag, "href"))
+      .filter(Boolean)
+      .slice(0, 5);
+    for (const href of stylesheetUrls) {
+      try {
+        const stylesheetUrl = new URL(href, url);
+        const stylesheet = await safeFetchPublic(stylesheetUrl, { headers: { Accept: "text/css,*/*;q=0.5" }, signal: AbortSignal.timeout(12_000) });
+        if (!stylesheet.ok) continue;
+        const cssBytes = await limitedResponseBytes(stylesheet, 1_500_000);
+        if (cssBytes) cssTexts.push(new TextDecoder().decode(cssBytes));
+      } catch {
+        // A blocked stylesheet does not prevent analysis of the rest of the page.
+      }
+    }
+
+    const combinedVisualSource = `${html.slice(0, 1_500_000)}\n${cssTexts.join("\n").slice(0, 1_500_000)}`;
+    const colors = extractWebsiteColors(combinedVisualSource, readMeta(html, "theme-color"));
+    const fonts = extractWebsiteFonts(combinedVisualSource);
+    const title = readMeta(html, "og:title") || readHtmlTitle(html) || url.hostname;
+    const description = readMeta(html, "description") || readMeta(html, "og:description");
+    const pageText = htmlToReadableText(html).slice(0, 55_000);
+    const logoCandidates = websiteImageCandidates(html, url);
+    let logoDataUrl = "";
+    let logoName = "";
+    for (const candidate of logoCandidates.filter((candidate) => candidate.logoScore > 0).slice(0, 6)) {
+      const image = await readWebsiteImage(candidate.url);
+      if (!image || image.dataUrl.length > 1_200_000) continue;
+      logoDataUrl = image.dataUrl;
+      logoName = candidate.name || filenameFromUrl(candidate.url, "Website logo");
+      break;
+    }
+    const images = [];
+    if (logoDataUrl && !logoDataUrl.startsWith("data:image/svg+xml")) images.push(logoDataUrl);
+    for (const candidate of logoCandidates.slice(0, 8)) {
+      if (images.length >= 4 || candidate.logoScore > 0) continue;
+      const image = await readWebsiteImage(candidate.url);
+      if (image && !image.dataUrl.startsWith("data:image/svg+xml") && !images.includes(image.dataUrl)) images.push(image.dataUrl);
+    }
+    const signalText = [
+      `CONNECTED PUBLIC WEBSITE`,
+      `URL: ${url}`,
+      `Page title: ${title}`,
+      description ? `Meta description: ${description}` : "",
+      colors.length ? `Detected CSS and theme colors, ranked by frequency: ${colors.join(", ")}` : "No reliable CSS colors detected.",
+      fonts.length ? `Detected font families: ${fonts.join(", ")}` : "No explicit font families detected.",
+      logoDataUrl ? `Logo: extracted automatically as ${logoName}` : "Logo: no reliable logo image was exposed in the page markup.",
+      `VISIBLE PAGE COPY\n${pageText || "No readable page copy exposed."}`,
+    ].filter(Boolean).join("\n");
+    return {
+      text: signalText,
+      images,
+      colors,
+      fonts,
+      logoDataUrl,
+      logoName,
+      brandEvidence: Boolean(colors.length || fonts.length || logoDataUrl || images.length),
+    };
+  } catch {
+    return { issue: `The website at ${url.hostname} could not be read. Confirm that it is public and does not block automated viewing.` };
+  }
+}
+
+function websiteImageCandidates(html, baseUrl) {
+  const candidates = [];
+  const add = (source, name, logoScore = 0) => {
+    if (!source) return;
+    try {
+      const url = source.startsWith("data:image/") ? source : new URL(source, baseUrl).toString();
+      if (!candidates.some((candidate) => candidate.url === url)) candidates.push({ url, name, logoScore });
+    } catch {
+      // Ignore invalid asset references.
+    }
+  };
+  for (const match of html.matchAll(/<img\b[^>]*>/gi)) {
+    const tag = match[0];
+    const source = readTagAttribute(tag, "src") || readTagAttribute(tag, "data-src") || readTagAttribute(tag, "data-lazy-src");
+    const label = [readTagAttribute(tag, "alt"), readTagAttribute(tag, "aria-label"), readTagAttribute(tag, "class"), readTagAttribute(tag, "id"), source].filter(Boolean).join(" ");
+    let score = /\b(logo|brand|wordmark|logotype)\b/i.test(label) ? 10 : 0;
+    if (/\b(header|nav|masthead)\b/i.test(label)) score += 2;
+    add(source, readTagAttribute(tag, "alt") || "Website image", score);
+  }
+  for (const match of html.matchAll(/<link\b[^>]*>/gi)) {
+    const tag = match[0];
+    const rel = readTagAttribute(tag, "rel");
+    if (/\b(icon|apple-touch-icon|mask-icon)\b/i.test(rel)) add(readTagAttribute(tag, "href"), "Website icon", 3);
+  }
+  add(readMeta(html, "og:image"), "Website preview image", 0);
+  add(readMeta(html, "twitter:image"), "Website preview image", 0);
+  return candidates.sort((left, right) => right.logoScore - left.logoScore);
+}
+
+function extractWebsiteColors(source, themeColor) {
+  const counts = new Map();
+  const add = (value, weight = 1) => {
+    const normalized = normalizeCssColor(value);
+    if (!normalized) return;
+    counts.set(normalized, (counts.get(normalized) || 0) + weight);
+  };
+  if (themeColor) add(themeColor, 20);
+  for (const match of String(source || "").matchAll(/--[a-z0-9_-]*(?:brand|primary|secondary|accent|highlight|foreground|background)[a-z0-9_-]*\s*:\s*(#[0-9a-f]{3,8})\b/gi)) add(match[1], 15);
+  for (const match of String(source || "").matchAll(/#[0-9a-f]{3,8}\b/gi)) add(match[0]);
+  for (const match of String(source || "").matchAll(/rgba?\(\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*[, ]\s*(\d{1,3})/gi)) {
+    add(`#${[match[1], match[2], match[3]].map((value) => Math.max(0, Math.min(255, Number(value))).toString(16).padStart(2, "0")).join("")}`);
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .map(([value]) => value)
+    .slice(0, 12);
+}
+
+function normalizeCssColor(value) {
+  const raw = String(value || "").trim().toUpperCase();
+  if (/^#[0-9A-F]{3}$/.test(raw)) return `#${raw.slice(1).split("").map((character) => character + character).join("")}`;
+  if (/^#[0-9A-F]{6}$/.test(raw)) return raw;
+  if (/^#[0-9A-F]{8}$/.test(raw) && raw.slice(7) !== "00") return raw.slice(0, 7);
+  return "";
+}
+
+function extractWebsiteFonts(source) {
+  const counts = new Map();
+  for (const match of String(source || "").matchAll(/font-family\s*:\s*([^;}]+)/gi)) {
+    const family = String(match[1] || "").split(",")[0].replace(/["']/g, "").trim();
+    if (!family || /^(inherit|initial|unset|var\(|sans-serif|serif|monospace|system-ui)/i.test(family)) continue;
+    incrementCount(counts, family);
+  }
+  for (const match of String(source || "").matchAll(/fonts\.googleapis\.com\/css2?\?[^"')\s]*family=([^&"')\s]+)/gi)) {
+    const family = decodeURIComponent(match[1]).replace(/\+/g, " ").split(":")[0].trim();
+    if (family) incrementCount(counts, family);
+  }
+  return topCounts(counts, 8);
+}
+
+function htmlToReadableText(html) {
+  return decodeXml(String(html || "")
+    .replace(/<(script|style|svg|noscript|template)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|section|article|header|footer|main|li|h[1-6])>/gi, "\n")
+    .replace(/<[^>]+>/g, " "))
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n\s*\n+/g, "\n")
+    .trim();
+}
+
+function readTagAttribute(tag, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const quoted = String(tag || "").match(new RegExp(`\\b${escaped}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, "i"));
+  if (quoted) return decodeXml(quoted[2]).trim();
+  return decodeXml(String(tag || "").match(new RegExp(`\\b${escaped}\\s*=\\s*([^\\s>]+)`, "i"))?.[1] || "").trim();
+}
+
+async function readWebsiteImage(url) {
+  if (typeof url !== "string") return null;
+  if (url.startsWith("data:image/")) return url.length <= 3_000_000 ? { dataUrl: url } : null;
+  try {
+    const response = await safeFetchPublic(new URL(url), { headers: { Accept: "image/*" }, signal: AbortSignal.timeout(12_000) });
+    const contentType = String(response.headers.get("content-type") || "").split(";")[0].toLowerCase();
+    if (!response.ok || !contentType.startsWith("image/")) return null;
+    const bytes = await limitedResponseBytes(response, 3 * 1024 * 1024);
+    if (!bytes) return null;
+    return { dataUrl: `data:${contentType};base64,${Buffer.from(bytes).toString("base64")}` };
+  } catch {
+    return null;
+  }
+}
+
+async function safeFetchPublic(input, init = {}) {
+  let current = input instanceof URL ? new URL(input.toString()) : new URL(input);
+  for (let redirects = 0; redirects <= 4; redirects += 1) {
+    await assertPublicUrl(current);
+    const response = await fetch(current, { ...init, redirect: "manual" });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    const location = response.headers.get("location");
+    if (!location) return response;
+    current = new URL(location, current);
+  }
+  throw new Error("Too many redirects");
+}
+
+async function assertPublicUrl(url) {
+  if (!/^https?:$/.test(url.protocol) || url.username || url.password) throw new Error("Unsupported public URL");
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local") || hostname.endsWith(".internal")) throw new Error("Private URL blocked");
+  const addresses = isIP(hostname) ? [{ address: hostname }] : await lookup(hostname, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some(({ address }) => isPrivateAddress(address))) throw new Error("Private URL blocked");
+}
+
+function isPrivateAddress(value) {
+  const address = String(value || "").toLowerCase().split("%")[0];
+  if (address === "::1" || address === "::" || address.startsWith("fc") || address.startsWith("fd") || address.startsWith("fe8") || address.startsWith("fe9") || address.startsWith("fea") || address.startsWith("feb")) return true;
+  const mapped = address.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
+  const ipv4 = mapped || (isIP(address) === 4 ? address : "");
+  if (!ipv4) return false;
+  const [a, b] = ipv4.split(".").map(Number);
+  return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
+}
+
+async function limitedResponseBytes(response, maximum) {
+  const declared = Number(response.headers.get("content-length") || 0);
+  if (declared > maximum) return null;
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return bytes.byteLength <= maximum ? bytes : null;
+}
+
+function filenameFromUrl(url, fallback) {
+  try { return decodeURIComponent(new URL(url).pathname.split("/").filter(Boolean).pop() || fallback).slice(0, 200); } catch { return fallback; }
+}
+
+function mimeTypeFromFilename(name) {
+  const extension = String(name || "").split(".").pop()?.toLowerCase();
+  return ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", svg: "image/svg+xml" })[extension] || "application/octet-stream";
 }
 
 async function readPublicFigmaDeck(link) {

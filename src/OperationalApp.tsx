@@ -393,13 +393,13 @@ function ProductBrain({ workspace, onSave, notify }: { workspace: ProductWorkspa
   const [intakeError, setIntakeError] = useState("");
   const [reviewOpen, setReviewOpen] = useState(() => workspaceCompleteness(workspace) > 20);
   const [reviewSummary, setReviewSummary] = useState(workspace.reviewSummary || "");
-  const [unknowns, setUnknowns] = useState<string[]>(workspace.openQuestions || []);
+  const [unknowns, setUnknowns] = useState<string[]>(() => filterSourceBackedBrandQuestions(workspace.openQuestions || [], workspace));
   const [answers, setAnswers] = useState<Record<string, string>>(workspace.questionAnswers || {});
   const [additionalContext, setAdditionalContext] = useState(workspace.additionalContextDraft || "");
   const [refining, setRefining] = useState(false);
-  const [assistantOpen, setAssistantOpen] = useState(() => (workspace.openQuestions || []).length > 0);
+  const [assistantOpen, setAssistantOpen] = useState(() => filterSourceBackedBrandQuestions(workspace.openQuestions || [], workspace).length > 0);
   const [questionIndex, setQuestionIndex] = useState(() => {
-    const questions = workspace.openQuestions || [];
+    const questions = filterSourceBackedBrandQuestions(workspace.openQuestions || [], workspace);
     const savedAnswers = workspace.questionAnswers || {};
     return firstUnhandledQuestionIndex(questions, savedAnswers);
   });
@@ -755,6 +755,17 @@ function filterHandledQuestions(questions: unknown[], answers: Record<string, st
     unique.push(question);
   }
   return unique;
+}
+
+function filterSourceBackedBrandQuestions(questions: string[], workspace: ProductWorkspace) {
+  const hasVisualSource = workspace.sources.length > 0 || workspace.materials.length > 0 || Boolean(workspace.brand.logoDataUrl);
+  if (!hasVisualSource) return questions;
+  return questions.filter((value) => {
+    const question = String(value || "").toLowerCase();
+    return !(/\b(primary|secondary|accent|brand|approved)\b.*\b(colou?r|hex|palette)\b/.test(question)
+      || /\b(colou?r|hex|palette)\b.*\b(primary|secondary|accent|brand|approved)\b/.test(question)
+      || /\b(logo|typeface|typography|font|visual identity|imagery style|photography style|brand guideline)\b/.test(question));
+  });
 }
 
 function firstUnhandledQuestionIndex(questions: string[], answers: Record<string, string>) {
