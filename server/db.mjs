@@ -200,12 +200,14 @@ function defaultBrand() {
   return {
     logoDataUrl: "",
     logoName: "",
-    primaryColor: "#7856ff",
-    secondaryColor: "#4d9a75",
-    accentColor: "#f2a65a",
+    primaryColor: "",
+    secondaryColor: "",
+    accentColor: "",
     neutralLightColor: "#ffffff",
     neutralDarkColor: "#222222",
     typography: "",
+    fontFamilies: [],
+    fontSources: [],
     imageryStyle: "",
     notes: "",
   };

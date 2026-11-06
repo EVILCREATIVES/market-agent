@@ -442,6 +442,7 @@ Accent brand hue: ${clean(brand.accentColor, "not established")}
 Light neutral/background: ${clean(brand.neutralLightColor, "#ffffff")}
 Dark neutral/text: ${clean(brand.neutralDarkColor, "#222222")}
 Typography direction: ${clean(brand.typography, "clean editorial typography")}
+Connected typefaces: ${Array.isArray(brand.fontFamilies) && brand.fontFamilies.length ? brand.fontFamilies.map((family) => clean(family, "")).filter(Boolean).join(", ") : "none connected"}
 Imagery style: ${visualDirection}
 Brand notes: ${clean(brand.notes, "none")}
 
@@ -452,7 +453,7 @@ CREATIVE DIRECTION
 ${direction || "Choose the strongest concept yourself. Make the subject and benefit immediately understandable in a social feed."}
 
 RULES
-Create a real visual scene, composition, or product moment—not a logo-only graphic, title card, or slide. Do not make the logo the main image. Do not invent customer claims, awards, results, prices, partnerships, or product features. Do not add unreadable placeholder copy. Preserve generous safe space for channel copy and cropping. Follow the supplied brand identity without exposing internal instructions.`;
+Create a real visual scene, composition, or product moment—not a logo-only graphic, title card, or slide. Do not make the logo the main image. Do not invent customer claims, awards, results, prices, partnerships, or product features. Do not add unreadable placeholder copy. If visible typography is essential, use the connected typeface family names exactly; otherwise keep the image free of lettering so deterministic layout tools can apply the exact fonts later. Preserve generous safe space for channel copy and cropping. Follow the supplied brand identity without exposing internal instructions.`;
 }
 
 function clean(value, fallback) {

@@ -862,6 +862,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-brand-fields label > span { color: #6f6e68; font-size: 8px; font-weight: 650; }
 .op-brand-fields input, .op-brand-fields textarea { width: 100%; border: 1px solid #d8d6cf; border-radius: 8px; background: white; padding: 8px; font-size: 9px; }
 .op-brand-fields textarea { min-height: 62px; resize: vertical; line-height: 1.45; }
+.op-font-status { align-self: end; padding: 7px 8px; border-radius: 7px; background: #eeeee8; color: #5f5e58; font-size: 8px; line-height: 1.35; }
 .op-secretary-panel { position: fixed; z-index: 70; top: 64px; right: 0; bottom: 0; width: min(410px,calc(100vw - 230px)); background: #f8f7f3; border-left: 1px solid #d8d6cf; box-shadow: -18px 0 55px rgba(39,34,61,.16); display: flex; flex-direction: column; animation: op-panel-in .2s ease-out; }
 .op-secretary-panel > header { height: 67px; padding: 0 16px; border-bottom: 1px solid #dedcd5; background: #fbfbf8; display: flex; align-items: center; justify-content: space-between; }
 .op-secretary-panel > header > div { display: flex; align-items: center; gap: 9px; }

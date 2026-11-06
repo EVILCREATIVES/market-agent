@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { get, put } from "@vercel/blob";
+import fontkit from "@pdf-lib/fontkit";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-import { analyzeProjectAsset, generateProjectDocument } from "./agent.mjs";
+import { analyzeProjectAsset, generateProjectDocument, safeFetchPublic } from "./agent.mjs";
 import { getPool } from "./db.mjs";
 
 let tablesReady = false;
@@ -264,11 +265,13 @@ async function loadProposalVisuals(assets, env) {
   return visuals;
 }
 
-async function renderPdf(content, kind, brand = {}, visuals = []) {
+export async function renderPdf(content, kind, brand = {}, visuals = []) {
   const document = await PDFDocument.create();
-  const regular = await document.embedFont(StandardFonts.Helvetica);
-  const bold = await document.embedFont(StandardFonts.HelveticaBold);
+  const { regular, bold } = await embedBrandFonts(document, brand);
+  const primary = hexColor(brand?.primaryColor || brand?.accentColor || "#6e50d7");
   const accent = hexColor(brand?.accentColor || brand?.primaryColor || "#6e50d7");
+  const light = hexColor(brand?.neutralLightColor || "#ffffff");
+  const dark = hexColor(brand?.neutralDarkColor || brand?.secondaryColor || "#222222");
   const embeddedVisuals = [];
   for (const visual of visuals) {
     try {
@@ -282,10 +285,10 @@ async function renderPdf(content, kind, brand = {}, visuals = []) {
   const titleSize = kind === "deck" ? 36 : 28;
   const bodySize = kind === "deck" ? 16 : 11;
   const cover = document.addPage(pageSize);
-  cover.drawRectangle({ x: 0, y: 0, width: pageSize[0], height: pageSize[1], color: rgb(0.975, 0.97, 0.99) });
-  cover.drawRectangle({ x: 0, y: 0, width: 14, height: pageSize[1], color: accent });
-  drawWrapped(cover, cleanText(content?.title || "Project document"), bold, titleSize, margin, pageSize[1] - margin - 35, pageSize[0] - margin * 2, titleSize * 1.15, rgb(0.13, 0.12, 0.16));
-  drawWrapped(cover, cleanText(content?.subtitle || "Prepared from approved project assets"), regular, bodySize + 2, margin, pageSize[1] - margin - 145, pageSize[0] - margin * 2, (bodySize + 2) * 1.45, rgb(0.36, 0.34, 0.42));
+  cover.drawRectangle({ x: 0, y: 0, width: pageSize[0], height: pageSize[1], color: light });
+  cover.drawRectangle({ x: 0, y: 0, width: 14, height: pageSize[1], color: primary });
+  drawWrapped(cover, cleanText(content?.title || "Project document"), bold, titleSize, margin, pageSize[1] - margin - 35, pageSize[0] - margin * 2, titleSize * 1.15, dark);
+  drawWrapped(cover, cleanText(content?.subtitle || "Prepared from approved project assets"), regular, bodySize + 2, margin, pageSize[1] - margin - 145, pageSize[0] - margin * 2, (bodySize + 2) * 1.45, dark);
   if (embeddedVisuals[0]) {
     const scaled = embeddedVisuals[0].scaleToFit(kind === "deck" ? 340 : 260, kind === "deck" ? 210 : 250);
     cover.drawImage(embeddedVisuals[0], { x: pageSize[0] - margin - scaled.width, y: margin, width: scaled.width, height: scaled.height });
@@ -293,14 +296,15 @@ async function renderPdf(content, kind, brand = {}, visuals = []) {
 
   for (const [sectionIndex, section] of (Array.isArray(content?.sections) ? content.sections.slice(0, 14) : []).entries()) {
     const page = document.addPage(pageSize);
-    page.drawRectangle({ x: 0, y: pageSize[1] - 9, width: pageSize[0], height: 9, color: accent });
+    page.drawRectangle({ x: 0, y: 0, width: pageSize[0], height: pageSize[1], color: light });
+    page.drawRectangle({ x: 0, y: pageSize[1] - 9, width: pageSize[0], height: 9, color: primary });
     let y = pageSize[1] - margin;
-    y = drawWrapped(page, cleanText(section?.heading || "Section"), bold, kind === "deck" ? 28 : 20, margin, y, pageSize[0] - margin * 2, kind === "deck" ? 34 : 25, rgb(0.13, 0.12, 0.16)) - 16;
-    y = drawWrapped(page, cleanText(section?.body || ""), regular, bodySize, margin, y, pageSize[0] - margin * 2, bodySize * 1.5, rgb(0.29, 0.28, 0.32)) - 12;
+    y = drawWrapped(page, cleanText(section?.heading || "Section"), bold, kind === "deck" ? 28 : 20, margin, y, pageSize[0] - margin * 2, kind === "deck" ? 34 : 25, dark) - 16;
+    y = drawWrapped(page, cleanText(section?.body || ""), regular, bodySize, margin, y, pageSize[0] - margin * 2, bodySize * 1.5, dark) - 12;
     for (const bullet of Array.isArray(section?.bullets) ? section.bullets.slice(0, 10) : []) {
       if (y < margin + 25) break;
       page.drawCircle({ x: margin + 4, y: y - bodySize * 0.35, size: 2.4, color: accent });
-      y = drawWrapped(page, cleanText(bullet), regular, bodySize, margin + 18, y, pageSize[0] - margin * 2 - 18, bodySize * 1.45, rgb(0.24, 0.23, 0.28)) - 6;
+      y = drawWrapped(page, cleanText(bullet), regular, bodySize, margin + 18, y, pageSize[0] - margin * 2 - 18, bodySize * 1.45, dark) - 6;
     }
     const visual = embeddedVisuals[sectionIndex + 1];
     if (visual) {
@@ -311,6 +315,67 @@ async function renderPdf(content, kind, brand = {}, visuals = []) {
   document.setTitle(cleanText(content?.title || "Project document"));
   document.setCreator("Market Agent");
   return document.save();
+}
+
+async function embedBrandFonts(document, brand) {
+  const fallbackRegular = await document.embedFont(StandardFonts.Helvetica);
+  const fallbackBold = await document.embedFont(StandardFonts.HelveticaBold);
+  const sources = Array.isArray(brand?.fontSources) ? brand.fontSources.filter((source) => source?.family && /^https:\/\//i.test(source?.url || "")) : [];
+  if (!sources.length) return { regular: fallbackRegular, bold: fallbackBold };
+  document.registerFontkit(fontkit);
+  const families = Array.isArray(brand?.fontFamilies) ? brand.fontFamilies.map(String) : [];
+  const typography = String(brand?.typography || "");
+  const displayFamily = selectTypographyFamily(families, typography, /(?:display|headline|heading|title)/i) || families.find((family) => !/inter|sans|serif/i.test(family)) || families[0];
+  const bodyFamily = selectTypographyFamily(families, typography, /(?:body|support|copy|text|interface)/i) || families.find((family) => /inter|sans|serif/i.test(family)) || families[1] || families[0];
+  const regularSource = selectFontFile(sources, bodyFamily, false);
+  const boldSource = selectFontFile(sources, displayFamily, true);
+  const cache = new Map();
+  const embed = async (source, fallback) => {
+    if (!source) return fallback;
+    try {
+      let bytes = cache.get(source.url);
+      if (!bytes) {
+        bytes = await fetchFontBytes(source.url);
+        if (bytes) cache.set(source.url, bytes);
+      }
+      return bytes ? await document.embedFont(bytes, { subset: true }) : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  return {
+    regular: await embed(regularSource, fallbackRegular),
+    bold: await embed(boldSource, fallbackBold),
+  };
+}
+
+function selectTypographyFamily(families, typography, rolePattern) {
+  return families.find((family) => {
+    const index = typography.toLowerCase().indexOf(String(family).toLowerCase());
+    return index >= 0 && rolePattern.test(typography.slice(index, index + 80));
+  });
+}
+
+function selectFontFile(sources, family, preferBold) {
+  const matching = sources.filter((source) => !family || String(source.family).toLowerCase() === String(family).toLowerCase());
+  const candidates = matching.length ? matching : sources;
+  return candidates.sort((left, right) => fontWeightScore(right, preferBold) - fontWeightScore(left, preferBold))[0];
+}
+
+function fontWeightScore(source, preferBold) {
+  const weight = String(source?.weight || "400").toLowerCase();
+  const number = Number(weight.match(/\d{3}/)?.[0] || (/bold/.test(weight) ? 700 : 400));
+  const target = preferBold ? 700 : 400;
+  return 1000 - Math.abs(number - target) - (/italic|oblique/i.test(source?.style || "") ? 100 : 0);
+}
+
+async function fetchFontBytes(url) {
+  const response = await safeFetchPublic(url, { headers: { Accept: "font/woff2,font/woff,font/ttf,font/otf,application/octet-stream;q=0.8,*/*;q=0.2" }, signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) return null;
+  const declared = Number(response.headers.get("content-length") || 0);
+  if (declared > 4 * 1024 * 1024) return null;
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return bytes.byteLength <= 4 * 1024 * 1024 ? bytes : null;
 }
 
 function drawWrapped(page, text, font, size, x, y, maxWidth, lineHeight, color) {

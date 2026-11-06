@@ -201,7 +201,7 @@ ${links.length ? links.map((link) => `- ${link}`).join("\n") : "No links supplie
 EXTRACTED MATERIAL
 ${materialText || "Visual materials are attached."}
 
-Preserve useful saved facts unless stronger source evidence corrects them. Confirmed user answers are authoritative: carry them into the updated product brain and never replace them with a weaker inference or ask for them again. Fields listed as protected user corrections must retain their exact saved meaning. If new source evidence materially conflicts with a protected field, keep the saved value and add one concise confirmation question describing the conflict; never silently overwrite it. Infer only what is strongly supported. Derive the visual identity from the supplied website, CSS, deck pages, images, and documents. Assign primaryColor, secondaryColor, and accentColor only to chromatic brand hues—never black, white, or gray. Store background/text neutrals separately as neutralLightColor and neutralDarkColor. Keep the palette coherent to one source system: never combine hues from visibly distinct website and deck identities into a hybrid palette. Follow the selected source precedence; when no authoritative secondary or accent hue exists, return an empty string rather than inventing one. Choose representative visible six-digit hex values, identify typography, recognize the logo, and summarize the imagery style. Consolidate duplicates and contradictions. Do not ask the user for colors, hex values, logo, typefaces, or visual style when those are visible or detected in a supplied source. Make the best evidence-based extraction and place any uncertainty in brand notes instead of unknowns. Put only genuinely unavailable business facts in unknowns. The result is a draft for the user to review, not a claim of certainty. Never mention internal systems, providers, or model names.`;
+Preserve useful saved facts unless stronger source evidence corrects them. Confirmed user answers are authoritative: carry them into the updated product brain and never replace them with a weaker inference or ask for them again. Fields listed as protected user corrections must retain their exact saved meaning. If new source evidence materially conflicts with a protected field, keep the saved value and add one concise confirmation question describing the conflict; never silently overwrite it. Infer only what is strongly supported. Derive the visual identity from the supplied website, CSS, deck pages, images, and documents. Treat primaryColor as the leading brand signal, secondaryColor as a deliberately designed supporting hue or high-contrast surface, and accentColor as an optional highlight or supporting brand touchpoint. Black, white, and gray must never become brand roles merely because they are frequent defaults, but a distinctive dark or light surface may be secondary when the visible design system uses it prominently. A favicon or metadata theme color is supporting evidence for an accent, never sufficient evidence for the primary color by itself. Store functional background/text references separately as neutralLightColor and neutralDarkColor even when one is also used as a designed secondary surface. Keep the palette coherent to one source system: never combine hues from visibly distinct website and deck identities into a hybrid palette. Follow the selected source precedence; when a role truly has no evidence, return an empty string rather than inventing one. Choose representative visible six-digit hex values, identify typography, recognize the logo, and summarize the imagery style. Consolidate duplicates and contradictions. Do not ask the user for colors, hex values, logo, typefaces, or visual style when those are visible or detected in a supplied source. Make the best evidence-based extraction and place any uncertainty in brand notes instead of unknowns. Put only genuinely unavailable business facts in unknowns. The result is a draft for the user to review, not a claim of certainty. Never mention internal systems, providers, or model names.`;
 
   try {
     const parsed = await generateProductBrainStructured({
@@ -212,7 +212,10 @@ Preserve useful saved facts unless stronger source evidence corrects them. Confi
       useWeb: links.length > 0,
     });
     const normalized = normalizeBrainResult(parsed, projectName, links[0] || existingWorkspace?.brain.website || "");
-    normalizeBrandPalette(normalized.brain.brand, connectedMaterial.colors, existingWorkspace?.sourcePriority !== "deck");
+    const websiteVisualsLead = existingWorkspace?.sourcePriority !== "deck";
+    normalizeBrandPalette(normalized.brain.brand, connectedMaterial.colors, websiteVisualsLead, connectedMaterial.palette);
+    normalized.brain.brand.fontFamilies = websiteVisualsLead ? connectedMaterial.fonts : existingWorkspace?.brain?.brand?.fontFamilies || [];
+    normalized.brain.brand.fontSources = websiteVisualsLead ? connectedMaterial.fontSources : existingWorkspace?.brain?.brand?.fontSources || [];
     if (existingWorkspace?.protectedFields.length) applyProtectedBrainFields(normalized.brain, existingWorkspace.brain, existingWorkspace.protectedFields);
     if (existingWorkspace?.handledQuestions.length) {
       normalized.unknowns = removeRepeatedQuestions(normalized.unknowns, existingWorkspace.handledQuestions);
@@ -267,12 +270,14 @@ export async function refineProductBrain(payload, env = process.env) {
     guardrails: workspace.guardrails || "",
     notes: workspace.notes || "",
     brand: {
-      primaryColor: workspace.brand?.primaryColor || "#7856ff",
-      secondaryColor: workspace.brand?.secondaryColor || "#4d9a75",
-      accentColor: workspace.brand?.accentColor || "#f2a65a",
+      primaryColor: workspace.brand?.primaryColor || "",
+      secondaryColor: workspace.brand?.secondaryColor || "",
+      accentColor: workspace.brand?.accentColor || "",
       neutralLightColor: workspace.brand?.neutralLightColor || "#ffffff",
       neutralDarkColor: workspace.brand?.neutralDarkColor || "#222222",
       typography: workspace.brand?.typography || "",
+      fontFamilies: Array.isArray(workspace.brand?.fontFamilies) ? workspace.brand.fontFamilies.slice(0, 8) : [],
+      fontSources: normalizeFontSources(workspace.brand?.fontSources),
       imageryStyle: workspace.brand?.imageryStyle || "",
       notes: workspace.brand?.notes || "",
     },
@@ -297,6 +302,8 @@ ${additionalContext || "None supplied."}`;
     });
     const normalized = normalizeBrainResult(parsed, safeWorkspace.name, safeWorkspace.website);
     normalizeBrandPalette(normalized.brain.brand, []);
+    normalized.brain.brand.fontFamilies = safeWorkspace.brand.fontFamilies;
+    normalized.brain.brand.fontSources = safeWorkspace.brand.fontSources;
     normalized.unknowns = removeRepeatedQuestions(normalized.unknowns, answers.map((item) => item.question));
     if (safeWorkspace.sources.length) normalized.unknowns = normalized.unknowns.filter((question) => !isSourceAnswerableBrandQuestion(question));
     return normalized;
@@ -503,6 +510,8 @@ function normalizeBrainResult(parsed, fallbackName, fallbackWebsite) {
         neutralLightColor: colorField(brand.neutralLightColor, "#ffffff"),
         neutralDarkColor: colorField(brand.neutralDarkColor, "#222222"),
         typography: stringField(brand.typography),
+        fontFamilies: [],
+        fontSources: [],
         imageryStyle: stringField(brand.imageryStyle),
         notes: stringField(brand.notes),
       },
@@ -542,6 +551,8 @@ function productBrainContext(value) {
         neutralLightColor: clean(value.brand?.neutralLightColor, 20),
         neutralDarkColor: clean(value.brand?.neutralDarkColor, 20),
         typography: clean(value.brand?.typography),
+        fontFamilies: Array.isArray(value.brand?.fontFamilies) ? value.brand.fontFamilies.map((family) => clean(family, 200)).filter(Boolean).slice(0, 8) : [],
+        fontSources: normalizeFontSources(value.brand?.fontSources),
         imageryStyle: clean(value.brand?.imageryStyle),
         notes: clean(value.brand?.notes),
       },
@@ -643,6 +654,8 @@ export async function readConnectedMaterial(links) {
   const sourceMedia = [];
   const detectedColors = [];
   const detectedFonts = [];
+  const detectedFontSources = [];
+  let detectedPalette = null;
   let logoDataUrl = "";
   let logoName = "";
   let brandEvidence = false;
@@ -714,6 +727,8 @@ export async function readConnectedMaterial(links) {
         for (const image of website.images || []) if (images.length < 8) images.push(image);
         detectedColors.push(...(website.colors || []));
         detectedFonts.push(...(website.fonts || []));
+        detectedFontSources.push(...(website.fontSources || []));
+        if (!detectedPalette && website.palette) detectedPalette = website.palette;
         if (!logoDataUrl && website.logoDataUrl) {
           logoDataUrl = website.logoDataUrl;
           logoName = website.logoName || "Website logo";
@@ -732,6 +747,8 @@ export async function readConnectedMaterial(links) {
     issues: Array.from(new Set(issues)),
     colors: Array.from(new Set(detectedColors)),
     fonts: Array.from(new Set(detectedFonts)),
+    fontSources: normalizeFontSources(detectedFontSources),
+    palette: detectedPalette,
     logoDataUrl,
     logoName,
     brandEvidence,
@@ -741,7 +758,7 @@ export async function readConnectedMaterial(links) {
   };
 }
 
-async function readPublicWebsite(url) {
+export async function readPublicWebsite(url) {
   try {
     const response = await safeFetchPublic(url, {
       headers: {
@@ -784,7 +801,7 @@ async function readPublicWebsite(url) {
     const htmlBytes = await limitedResponseBytes(response, 3 * 1024 * 1024);
     if (!htmlBytes) return { issue: `The website at ${url.hostname} is too large to analyze safely.` };
     const html = new TextDecoder().decode(htmlBytes);
-    const cssTexts = Array.from(html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)).map((match) => match[1]).slice(0, 20);
+    const cssDocuments = Array.from(html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)).map((match) => ({ text: match[1], baseUrl: url.toString() })).slice(0, 20);
     const stylesheetUrls = Array.from(html.matchAll(/<link\b[^>]*>/gi))
       .map((match) => match[0])
       .filter((tag) => /\brel\s*=\s*["'][^"']*stylesheet/i.test(tag))
@@ -797,9 +814,33 @@ async function readPublicWebsite(url) {
         const stylesheet = await safeFetchPublic(stylesheetUrl, { headers: { Accept: "text/css,*/*;q=0.5" }, signal: AbortSignal.timeout(12_000) });
         if (!stylesheet.ok) continue;
         const cssBytes = await limitedResponseBytes(stylesheet, 1_500_000);
-        if (cssBytes) cssTexts.push(new TextDecoder().decode(cssBytes));
+        if (cssBytes) cssDocuments.push({ text: new TextDecoder().decode(cssBytes), baseUrl: stylesheetUrl.toString() });
       } catch {
         // A blocked stylesheet does not prevent analysis of the rest of the page.
+      }
+    }
+    const importedStylesheets = [];
+    for (const document of [...cssDocuments]) {
+      for (const match of String(document.text || "").matchAll(/@import\s*(?:url\(\s*)?(?:(["'])(.*?)\1|([^)'"\s;]+))/gi)) {
+        try {
+          const importedUrl = new URL(match[2] || match[3], document.baseUrl);
+          if (!importedStylesheets.includes(importedUrl.toString())) importedStylesheets.push(importedUrl.toString());
+        } catch {
+          // Ignore malformed stylesheet imports.
+        }
+        if (importedStylesheets.length >= 8) break;
+      }
+      if (importedStylesheets.length >= 8) break;
+    }
+    for (const href of importedStylesheets) {
+      try {
+        const stylesheetUrl = new URL(href);
+        const stylesheet = await safeFetchPublic(stylesheetUrl, { headers: { Accept: "text/css,*/*;q=0.5", "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(12_000) });
+        if (!stylesheet.ok) continue;
+        const cssBytes = await limitedResponseBytes(stylesheet, 1_500_000);
+        if (cssBytes) cssDocuments.push({ text: new TextDecoder().decode(cssBytes), baseUrl: stylesheetUrl.toString() });
+      } catch {
+        // Imported fonts are optional; the declared family still remains useful evidence.
       }
     }
 
@@ -820,11 +861,13 @@ async function readPublicWebsite(url) {
       }
     }
 
-    const cssSource = cssTexts.join("\n").slice(0, 1_500_000);
+    const cssSource = cssDocuments.map((document) => document.text).join("\n").slice(0, 1_500_000);
     const bundleSource = scriptTexts.join("\n").slice(0, 2_500_000);
     const combinedVisualSource = `${html.slice(0, 1_500_000)}\n${cssSource}`;
-    const colors = extractWebsiteColors(combinedVisualSource, readMeta(html, "theme-color"), bundleSource);
+    const palette = extractWebsitePalette(combinedVisualSource, readMeta(html, "theme-color"), bundleSource);
+    const colors = palette.colors;
     const fonts = extractWebsiteFonts(combinedVisualSource);
+    const fontSources = extractWebsiteFontSources(cssDocuments);
     const title = readMeta(html, "og:title") || readHtmlTitle(html) || url.hostname;
     const description = readMeta(html, "description") || readMeta(html, "og:description");
     const pageText = htmlToReadableText(html).slice(0, 55_000);
@@ -860,8 +903,9 @@ async function readPublicWebsite(url) {
       `URL: ${url}`,
       `Page title: ${title}`,
       description ? `Meta description: ${description}` : "",
-      colors.length ? `Detected CSS and theme colors, ranked by frequency: ${colors.join(", ")}` : "No reliable CSS colors detected.",
+      colors.length ? `Detected palette: primary candidate ${palette.primary || "not established"}; secondary surface candidate ${palette.secondary || "not established"}; accent candidate ${palette.accent || "not established"}; light background ${palette.neutralLight || "not established"}; dark text/background ${palette.neutralDark || "not established"}. Other ranked colors: ${colors.join(", ")}` : "No reliable CSS colors detected.",
       fonts.length ? `Detected font families: ${fonts.join(", ")}` : "No explicit font families detected.",
+      fontSources.length ? `Connected font files available for exact document rendering: ${fontSources.map((font) => `${font.family} ${font.weight} ${font.style}`).join("; ")}` : "No reusable font files were exposed by the website.",
       logoDataUrl ? `Logo: extracted automatically as ${logoName}` : "Logo: no reliable logo image was exposed in the page markup.",
       sourceMedia.length ? `Reusable media discovered: ${sourceMedia.map((item) => `${item.kind}: ${item.name} (${item.role})`).join("; ")}` : "No clearly reusable image or video assets were exposed in the page markup.",
       `VISIBLE PAGE COPY\n${pageText || "No readable page copy exposed."}`,
@@ -870,7 +914,9 @@ async function readPublicWebsite(url) {
       text: signalText,
       images,
       colors,
+      palette,
       fonts,
+      fontSources,
       logoDataUrl,
       logoName,
       brandEvidence: Boolean(colors.length || fonts.length || logoDataUrl || images.length),
@@ -1003,7 +1049,7 @@ function mediaTags(...values) {
   return tags.slice(0, 5);
 }
 
-function extractWebsiteColors(source, themeColor, bundle = "") {
+function extractWebsitePalette(source, themeColor, bundle = "") {
   const counts = new Map();
   const backgroundCounts = new Map();
   const semanticBrandColors = [];
@@ -1044,7 +1090,8 @@ function extractWebsiteColors(source, themeColor, bundle = "") {
     add(color);
     if (/background|bg-|from-|via-|to-|gradient/i.test(context)) addBackground(color, 8);
   }
-  if (themeColor && !explicitBrandHue && counts.size === 0) add(themeColor, 1);
+  const metadataTheme = normalizeCssColor(themeColor);
+  if (metadataTheme && !explicitBrandHue && counts.size === 0) add(metadataTheme, 1);
   const ranked = [...counts.entries()]
     .sort((left, right) => right[1] - left[1])
     .map(([value]) => value);
@@ -1054,10 +1101,22 @@ function extractWebsiteColors(source, themeColor, bundle = "") {
   const semanticBrand = semanticBrandColors[0];
   const visibleBrand = semanticBrand
     ? ranked.find((color) => color !== semanticBrand && isChromaticColor(color) && colorDistance(color, semanticBrand) <= 10) || semanticBrand
-    : "";
+    : ranked.find((color) => isChromaticColor(color)) || "";
   const lightBackground = backgroundRanked.find((color) => !isChromaticColor(color) && colorLightness(color) >= 0.7);
   const darkBackground = backgroundRanked.find((color) => !isChromaticColor(color) && colorLightness(color) <= 0.35);
-  return Array.from(new Set([visibleBrand, lightBackground, darkBackground, ...ranked].filter(Boolean))).slice(0, 12);
+  const supportingChromatic = ranked.find((color) => isChromaticColor(color) && color !== visibleBrand && colorDistance(color, visibleBrand) >= 35) || "";
+  const metadataAccent = metadataTheme && isChromaticColor(metadataTheme) && metadataTheme !== visibleBrand && colorDistance(metadataTheme, visibleBrand) >= 35 ? metadataTheme : "";
+  const secondary = darkBackground || supportingChromatic || lightBackground || "";
+  const accent = metadataAccent || supportingChromatic || "";
+  return {
+    primary: visibleBrand,
+    secondary,
+    accent,
+    neutralLight: lightBackground || "",
+    neutralDark: darkBackground || "",
+    metadataTheme: metadataTheme || "",
+    colors: Array.from(new Set([visibleBrand, lightBackground, darkBackground, metadataAccent, ...ranked].filter(Boolean))).slice(0, 12),
+  };
 }
 
 function hslToHex(hue, saturation, lightness) {
@@ -1085,31 +1144,27 @@ function normalizeCssColor(value) {
   return "";
 }
 
-function normalizeBrandPalette(brand, detectedColors = [], preferDetected = false) {
+export function normalizeBrandPalette(brand, detectedColors = [], preferDetected = false, palette = null) {
   const chromatic = Array.from(new Set(detectedColors.map(normalizeCssColor).filter((color) => isChromaticColor(color))));
+  const neutrals = Array.from(new Set(detectedColors.map(normalizeCssColor).filter((color) => color && !isChromaticColor(color))));
+  const light = normalizeCssColor(palette?.neutralLight) || neutrals.find((color) => colorLightness(color) >= 0.7);
+  const dark = normalizeCssColor(palette?.neutralDark) || neutrals.find((color) => colorLightness(color) <= 0.35);
+  const detectedRoles = {
+    primaryColor: normalizeCssColor(palette?.primary) || chromatic[0] || "",
+    secondaryColor: normalizeCssColor(palette?.secondary) || dark || chromatic[1] || "",
+    accentColor: normalizeCssColor(palette?.accent) || chromatic.find((color) => color !== normalizeCssColor(palette?.primary)) || "",
+  };
   const used = [];
   for (const key of ["primaryColor", "secondaryColor", "accentColor"]) {
     const current = normalizeCssColor(brand[key]);
-    if (preferDetected) {
-      const replacement = key === "primaryColor" ? chromatic[0] || "" : "";
-      brand[key] = replacement;
-      if (replacement) used.push(replacement);
+    const candidate = preferDetected ? detectedRoles[key] : current || detectedRoles[key];
+    if (!candidate || used.includes(candidate)) {
+      brand[key] = "";
       continue;
     }
-    if (isChromaticColor(current) && !used.includes(current)) {
-      brand[key] = current;
-      used.push(current);
-      continue;
-    }
-    const replacement = key === "primaryColor"
-      ? chromatic.find((candidate) => !used.includes(candidate) && used.every((selected) => colorDistance(candidate, selected) >= 42)) || chromatic.find((candidate) => !used.includes(candidate)) || ""
-      : "";
-    brand[key] = replacement;
-    if (replacement) used.push(replacement);
+    brand[key] = candidate;
+    used.push(candidate);
   }
-  const neutrals = Array.from(new Set(detectedColors.map(normalizeCssColor).filter((color) => color && !isChromaticColor(color))));
-  const light = neutrals.find((color) => colorLightness(color) >= 0.7);
-  const dark = neutrals.find((color) => colorLightness(color) <= 0.35);
   brand.neutralLightColor = light || (!isChromaticColor(brand.neutralLightColor) ? normalizeCssColor(brand.neutralLightColor) : "") || "#FFFFFF";
   brand.neutralDarkColor = dark || (!isChromaticColor(brand.neutralDarkColor) ? normalizeCssColor(brand.neutralDarkColor) : "") || "#222222";
 }
@@ -1154,6 +1209,50 @@ function extractWebsiteFonts(source) {
   return topCounts(counts, 8);
 }
 
+function extractWebsiteFontSources(documents) {
+  const sources = [];
+  for (const document of Array.isArray(documents) ? documents : []) {
+    const css = String(document?.text || "");
+    for (const match of css.matchAll(/@font-face\s*\{([\s\S]*?)\}/gi)) {
+      const block = match[1];
+      const family = block.match(/font-family\s*:\s*(["']?)([^;"']+)\1\s*;/i)?.[2]?.trim();
+      if (!family) continue;
+      const weight = block.match(/font-weight\s*:\s*([^;]+)/i)?.[1]?.trim() || "400";
+      const style = block.match(/font-style\s*:\s*([^;]+)/i)?.[1]?.trim() || "normal";
+      for (const source of block.matchAll(/url\(\s*(["']?)([^"')]+)\1\s*\)\s*(?:format\(\s*(["']?)([^"')]+)\3\s*\))?/gi)) {
+        try {
+          const resolved = new URL(source[2], document?.baseUrl).toString();
+          if (!/^https:\/\//i.test(resolved)) continue;
+          sources.push({ family, url: resolved, weight, style, format: String(source[4] || "").toLowerCase() });
+        } catch {
+          // Ignore malformed font references.
+        }
+      }
+    }
+  }
+  return normalizeFontSources(sources);
+}
+
+function normalizeFontSources(values) {
+  if (!Array.isArray(values)) return [];
+  const result = [];
+  for (const value of values) {
+    const family = String(value?.family || "").trim().slice(0, 200);
+    const url = String(value?.url || "").trim().slice(0, 2000);
+    if (!family || !/^https:\/\//i.test(url)) continue;
+    const item = {
+      family,
+      url,
+      weight: String(value?.weight || "400").trim().slice(0, 40),
+      style: String(value?.style || "normal").trim().slice(0, 40),
+      format: String(value?.format || "").trim().slice(0, 40),
+    };
+    if (!result.some((candidate) => candidate.family.toLowerCase() === family.toLowerCase() && candidate.url === url && candidate.weight === item.weight && candidate.style === item.style)) result.push(item);
+    if (result.length >= 16) break;
+  }
+  return result;
+}
+
 function htmlToReadableText(html) {
   return decodeXml(String(html || "")
     .replace(/<(script|style|svg|noscript|template)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
@@ -1187,7 +1286,7 @@ async function readWebsiteImage(url) {
   }
 }
 
-async function safeFetchPublic(input, init = {}) {
+export async function safeFetchPublic(input, init = {}) {
   let current = input instanceof URL ? new URL(input.toString()) : new URL(input);
   for (let redirects = 0; redirects <= 4; redirects += 1) {
     await assertPublicUrl(current);
@@ -1672,6 +1771,18 @@ Value proposition: ${workspace.valueProposition || "Not supplied"}
 Voice: ${workspace.voice || "Not supplied"}
 Claims and guardrails: ${workspace.guardrails || "No claims supplied; do not invent any."}
 Additional product notes: ${workspace.notes || "None supplied"}
+
+BRAND SYSTEM
+Logo: ${workspace.brand?.logoName || "Not supplied"}
+Primary: ${workspace.brand?.primaryColor || "Not established"}
+Secondary: ${workspace.brand?.secondaryColor || "Not established"}
+Accent: ${workspace.brand?.accentColor || "Not established"}
+Light background: ${workspace.brand?.neutralLightColor || "Not established"}
+Dark text/background: ${workspace.brand?.neutralDarkColor || "Not established"}
+Typography: ${workspace.brand?.typography || "Not established"}
+Connected typefaces: ${Array.isArray(workspace.brand?.fontFamilies) && workspace.brand.fontFamilies.length ? workspace.brand.fontFamilies.join(", ") : "No exact font files connected"}
+Imagery: ${workspace.brand?.imageryStyle || "Not established"}
+Identity notes: ${workspace.brand?.notes || "None supplied"}
 
 VERIFIED SOURCE URLS
 ${sourceText}

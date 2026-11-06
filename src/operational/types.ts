@@ -33,8 +33,18 @@ export interface BrandIdentity {
   neutralLightColor: string;
   neutralDarkColor: string;
   typography: string;
+  fontFamilies: string[];
+  fontSources: BrandFontSource[];
   imageryStyle: string;
   notes: string;
+}
+
+export interface BrandFontSource {
+  family: string;
+  url: string;
+  weight: string;
+  style: string;
+  format: string;
 }
 
 export interface ProductWorkspace {
