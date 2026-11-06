@@ -769,11 +769,33 @@ function questionTokens(value: string) {
     .map((token) => token.length > 5 ? token.replace(/(ing|ed|es|s)$/, "") : token);
 }
 
+const QUESTION_TOPIC_PATTERNS: Record<string, RegExp> = {
+  pricing: /\b(price|prices|pricing|rate|rates|cost|costs|fee|fees|budget|minimum engagement|estimate|estimates)\b/i,
+  availability: /\b(available|availability|live|planned|prototype|roadmap|launch|released|commercially)\b/i,
+  capabilities: /\b(output|outputs|produce|produces|capability|capabilities|feature|features|deliverable|deliverables)\b/i,
+  deployment: /\b(deploy|deployment|hosting|hosted|on premise|on-premise|cloud|installation)\b/i,
+  privacy: /\b(consent|retention|deletion|delete|privacy|personal data|guest photo|guest photos|data handling)\b/i,
+  proof: /\b(customer|customers|client|clients|pilot|pilots|result|results|case stud|testimonial|metric|metrics)\b/i,
+  identity: /\b(brand|branding|logo|logos|colour|colours|color|colors|palette|typeface|typefaces|font|fonts|visual identity|imagery)\b/i,
+  audience: /\b(audience|audiences|buyer|buyers|customer segment|customer segments|target market|target markets)\b/i,
+  geography: /\b(geography|region|regions|country|countries|market|markets|location|locations|territory|territories)\b/i,
+  purchase: /\b(buy|purchase|commission|engage|engagement|contact|booking|book|sales process|procurement)\b/i,
+};
+
+function questionTopics(value: string) {
+  return Object.entries(QUESTION_TOPIC_PATTERNS)
+    .filter(([, pattern]) => pattern.test(String(value || "")))
+    .map(([topic]) => topic);
+}
+
 function questionsMatch(left: string, right: string) {
   const leftNormalized = String(left || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   const rightNormalized = String(right || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   if (!leftNormalized || !rightNormalized) return false;
   if (leftNormalized === rightNormalized || leftNormalized.includes(rightNormalized) || rightNormalized.includes(leftNormalized)) return true;
+  const leftTopics = questionTopics(left);
+  const rightTopics = questionTopics(right);
+  if (leftTopics.some((topic) => rightTopics.includes(topic))) return true;
   const leftTokens = new Set(questionTokens(left));
   const rightTokens = new Set(questionTokens(right));
   const shared = [...leftTokens].filter((token) => rightTokens.has(token)).length;

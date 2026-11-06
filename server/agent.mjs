@@ -183,6 +183,9 @@ ${existingWorkspace ? JSON.stringify(existingWorkspace.brain, null, 2) : "No exi
 CONFIRMED USER ANSWERS
 ${existingWorkspace?.confirmedAnswers.length ? existingWorkspace.confirmedAnswers.map((item, index) => `${index + 1}. ${item.question}\nANSWER: ${item.answer}`).join("\n\n") : "No confirmed answers supplied."}
 
+QUESTIONS THE USER DISMISSED OR COULD NOT ANSWER
+${existingWorkspace?.dismissedQuestions.length ? existingWorkspace.dismissedQuestions.map((question, index) => `${index + 1}. ${question}`).join("\n") : "None."}
+
 PROTECTED USER CORRECTIONS
 ${existingWorkspace?.protectedFields.length ? existingWorkspace.protectedFields.join(", ") : "No individually protected fields."}
 
@@ -211,8 +214,8 @@ Preserve useful saved facts unless stronger source evidence corrects them. Confi
     const normalized = normalizeBrainResult(parsed, projectName, links[0] || existingWorkspace?.brain.website || "");
     normalizeBrandPalette(normalized.brain.brand, connectedMaterial.colors);
     if (existingWorkspace?.protectedFields.length) applyProtectedBrainFields(normalized.brain, existingWorkspace.brain, existingWorkspace.protectedFields);
-    if (existingWorkspace?.confirmedQuestions.length) {
-      normalized.unknowns = removeRepeatedQuestions(normalized.unknowns, existingWorkspace.confirmedQuestions);
+    if (existingWorkspace?.handledQuestions.length) {
+      normalized.unknowns = removeRepeatedQuestions(normalized.unknowns, existingWorkspace.handledQuestions);
     }
     if (connectedMaterial.logoDataUrl) {
       normalized.brain.brand.logoDataUrl = connectedMaterial.logoDataUrl;
@@ -512,12 +515,16 @@ function normalizeBrainResult(parsed, fallbackName, fallbackWebsite) {
 function productBrainContext(value) {
   if (!value || typeof value !== "object") return null;
   const clean = (field, maximum = 6000) => typeof field === "string" ? field.trim().slice(0, maximum) : "";
-  const answers = value.questionAnswers && typeof value.questionAnswers === "object"
+  const handledAnswers = value.questionAnswers && typeof value.questionAnswers === "object"
     ? Object.entries(value.questionAnswers)
       .map(([question, answer]) => ({ question: clean(question, 1200), answer: clean(answer, 6000) }))
-      .filter((item) => item.question && item.answer && item.answer !== "__MARKET_AGENT_SKIPPED__")
+      .filter((item) => item.question && item.answer)
       .slice(0, 30)
     : [];
+  const answers = handledAnswers.filter((item) => item.answer !== "__MARKET_AGENT_SKIPPED__");
+  const dismissedQuestions = handledAnswers
+    .filter((item) => item.answer === "__MARKET_AGENT_SKIPPED__")
+    .map((item) => item.question);
   return {
     brain: {
       name: clean(value.name, 200),
@@ -540,7 +547,8 @@ function productBrainContext(value) {
       },
     },
     confirmedAnswers: answers,
-    confirmedQuestions: answers.map((item) => item.question),
+    dismissedQuestions,
+    handledQuestions: handledAnswers.map((item) => item.question),
     protectedFields: Array.isArray(value.protectedFields) ? value.protectedFields.map((field) => clean(field, 100)).filter(Boolean).slice(0, 30) : [],
     sourcePriority: ["best-evidence", "website", "deck"].includes(value.sourcePriority) ? value.sourcePriority : "best-evidence",
     sourceGuidance: clean(value.sourceGuidance, 6000),
@@ -577,11 +585,33 @@ function questionWords(value) {
     .map((word) => word.length > 5 ? word.replace(/(ing|ed|es|s)$/, "") : word);
 }
 
+const questionTopicPatterns = {
+  pricing: /\b(price|prices|pricing|rate|rates|cost|costs|fee|fees|budget|minimum engagement|estimate|estimates)\b/i,
+  availability: /\b(available|availability|live|planned|prototype|roadmap|launch|released|commercially)\b/i,
+  capabilities: /\b(output|outputs|produce|produces|capability|capabilities|feature|features|deliverable|deliverables)\b/i,
+  deployment: /\b(deploy|deployment|hosting|hosted|on premise|on-premise|cloud|installation)\b/i,
+  privacy: /\b(consent|retention|deletion|delete|privacy|personal data|guest photo|guest photos|data handling)\b/i,
+  proof: /\b(customer|customers|client|clients|pilot|pilots|result|results|case stud|testimonial|metric|metrics)\b/i,
+  identity: /\b(brand|branding|logo|logos|colour|colours|color|colors|palette|typeface|typefaces|font|fonts|visual identity|imagery)\b/i,
+  audience: /\b(audience|audiences|buyer|buyers|customer segment|customer segments|target market|target markets)\b/i,
+  geography: /\b(geography|region|regions|country|countries|market|markets|location|locations|territory|territories)\b/i,
+  purchase: /\b(buy|purchase|commission|engage|engagement|contact|booking|book|sales process|procurement)\b/i,
+};
+
+function questionTopics(value) {
+  return Object.entries(questionTopicPatterns)
+    .filter(([, pattern]) => pattern.test(String(value || "")))
+    .map(([topic]) => topic);
+}
+
 function sameQuestion(left, right) {
   const leftNormalized = String(left || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   const rightNormalized = String(right || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   if (!leftNormalized || !rightNormalized) return false;
   if (leftNormalized === rightNormalized || leftNormalized.includes(rightNormalized) || rightNormalized.includes(leftNormalized)) return true;
+  const leftTopics = questionTopics(left);
+  const rightTopics = questionTopics(right);
+  if (leftTopics.some((topic) => rightTopics.includes(topic))) return true;
   const leftWords = new Set(questionWords(left));
   const rightWords = new Set(questionWords(right));
   const shared = [...leftWords].filter((word) => rightWords.has(word)).length;
