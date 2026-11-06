@@ -764,7 +764,7 @@ function filterSourceBackedBrandQuestions(questions: string[], workspace: Produc
     const question = String(value || "").toLowerCase();
     return !(/\b(primary|secondary|accent|brand|approved)\b.*\b(colou?r|hex|palette)\b/.test(question)
       || /\b(colou?r|hex|palette)\b.*\b(primary|secondary|accent|brand|approved)\b/.test(question)
-      || /\b(logo|typeface|typography|font|visual identity|imagery style|photography style|brand guideline)\b/.test(question));
+      || /\b(logos?|typefaces?|typography|fonts?|visual[\s-]+identity|imagery[\s-]+styles?|photography[\s-]+styles?|brand[\s-]+guidelines?)\b/.test(question));
   });
 }
 
