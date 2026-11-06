@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { LoaderCircle, LockKeyhole, Sparkles } from "lucide-react";
 import OperationalApp from "./OperationalApp";
+import PublicSite, { isPublicRoute } from "./PublicSite";
 import { authClient, authUrl } from "./auth";
 
 export default function CloudApp() {
+  if (isPublicRoute()) return <PublicSite />;
   if (!authUrl) return <ConfigurationMissing />;
   return <AuthenticatedApp />;
 }
@@ -67,6 +69,7 @@ function AuthScreen() {
         </button>
       </section>
       <p className="auth-note">Every account has its own private projects, data, and saved agent work.</p>
+      <nav className="auth-links" aria-label="About and legal"><a href="/about">About</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></nav>
     </div>
   );
 }

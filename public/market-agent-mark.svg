@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">Market Agent</title>
+  <description id="description">A violet rounded square with a four point light mark.</description>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8c70f2"/>
+      <stop offset="1" stop-color="#6040cc"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="238" fill="url(#bg)"/>
+  <path d="M512 184c25 169 92 236 261 261-169 25-236 92-261 261-25-169-92-236-261-261 169-25 236-92 261-261Z" fill="#fff"/>
+  <circle cx="744" cy="744" r="76" fill="#c6b8ff"/>
+</svg>
