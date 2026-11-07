@@ -104,7 +104,7 @@ export async function approveMediaJob(userId, payload, env = process.env) {
     }
     if (row.status !== "awaiting_budget") throw httpError(409, "This media request is no longer waiting for approval.");
     if (!Number.isInteger(approvedBudgetCents) || approvedBudgetCents !== Number(row.estimated_cost_cents)) {
-      throw httpError(400, "Approve the exact maximum shown for this request.");
+      throw httpError(400, "Approve the exact maximum estimate shown for this request.");
     }
 
     const monthlyCapCents = await getUserMediaBudgetCents(userId, env, client, true);

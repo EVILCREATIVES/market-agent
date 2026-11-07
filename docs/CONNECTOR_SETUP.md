@@ -9,8 +9,9 @@ Production base URL: `https://market-agent-lime-gamma.vercel.app`
 - Social, email, newsletter, and analytics authorizations belong to the signed-in user and selected project.
 - Each user supplies their own private API credential for image or video creation. Provider usage is therefore charged to that user's provider account, never to the platform owner's API account.
 - Demo and $29.99 managed access are text-only. Platform credentials cannot be used for customer image or video generation.
-- Each user chooses an account-wide monthly creative-production ceiling. Every media item also requires a separate approval for the displayed maximum before generation begins.
-- Setting the ceiling to `$0` disables all paid media generation for that user.
+- Each user chooses an account-wide monthly creative-production approval limit. Every media item also requires a separate approval for the displayed estimate before generation begins.
+- Setting the approval limit to `$0` disables all paid media generation for that user.
+- This is an application-side guard based on estimated provider usage, not a provider-issued billing cap. Provider invoices can differ, so users should also configure a billing limit in their provider account when that provider offers one.
 - PayPal subscription receipts go to the platform owner's PayPal business account. This is income, not a provider cost passed through to end users.
 
 ## Redirects and server variables
