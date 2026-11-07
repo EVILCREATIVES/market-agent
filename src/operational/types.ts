@@ -249,6 +249,8 @@ export interface ConnectionStatus {
   instagram: SocialConnectionStatus;
   tiktok: SocialConnectionStatus;
   x: SocialConnectionStatus;
+  discord: SocialConnectionStatus;
+  reddit: SocialConnectionStatus;
 }
 
 export interface MailchimpConnectionStatus {
@@ -339,6 +341,9 @@ export interface SocialConnectionStatus {
   scopes: string[];
   connectedAt: string | null;
   canPublish: boolean;
+  destinations?: Array<{ id: string; name: string; label: string }>;
+  destinationId?: string;
+  destinationName?: string;
 }
 
 export type DeliveryJobStatus = "awaiting_approval" | "running" | "submitted" | "complete" | "failed" | "cancelled";
@@ -347,7 +352,7 @@ export interface DeliveryJob {
   id: string;
   projectId: string;
   runId: string;
-  channel: "gmail" | "linkedin" | "instagram" | "tiktok" | "x";
+  channel: "gmail" | "linkedin" | "instagram" | "tiktok" | "x" | "discord" | "reddit";
   payload: {
     recipient: string;
     subject: string;

@@ -23,6 +23,8 @@ Production base URL: `https://market-agent-lime-gamma.vercel.app`
 | Instagram | `/api/social-callback` | `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET` |
 | TikTok | `/api/social-callback` | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` |
 | X | `/api/social-callback` | `X_CLIENT_ID`, `X_CLIENT_SECRET` |
+| Discord | `/api/social-callback` | `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` |
+| Reddit | `/api/social-callback` | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_USER_AGENT` |
 | Mailchimp | `/api/mailchimp-callback` | `MAILCHIMP_CLIENT_ID`, `MAILCHIMP_CLIENT_SECRET` |
 | PayPal | `/api/paypal-webhook` | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_PLAN_ID`, `PAYPAL_WEBHOOK_ID`, `PAYPAL_ENVIRONMENT` |
 
@@ -70,6 +72,23 @@ Market Agent reads the connected creator's current visibility and interaction ch
 3. Add the client ID and secret to Vercel, then redeploy.
 
 Each user authorizes their own Mailchimp account and selects an audience for each project. Subscriber consent, Mailchimp plan limits, and Mailchimp delivery charges stay with that user's Mailchimp account.
+
+### Discord
+
+1. Create a Discord application and add the full social callback URL under OAuth2 redirects.
+2. No personal-account automation and no password are used. Market Agent requests `identify`, `guilds`, and `webhook.incoming`.
+3. Add the client ID and secret to Vercel, then redeploy.
+
+During connection, a server administrator chooses the exact server channel. The resulting webhook is encrypted and isolated to that Market Agent user and project. This first version is publish-only and keeps every message behind item-level approval; reading and responding to member messages requires a separately reviewed Discord bot with message-content access.
+
+### Reddit
+
+1. Request and obtain external Reddit Data API access under Reddit's Responsible Builder requirements.
+2. Register an OAuth web application with the full social callback URL.
+3. Add the client ID, secret, and an accurate Reddit user-agent string to Vercel, then redeploy.
+4. Register the app with Reddit's current app-registration program and plan migration as Reddit's platform requirements evolve.
+
+Each user authorizes their own Reddit account and selects one eligible community for each project. Market Agent reads the current community rules before preparing a queue item and publishes only after item-level approval. It never votes, follows users, or generates covert personal endorsements.
 
 ### PayPal
 

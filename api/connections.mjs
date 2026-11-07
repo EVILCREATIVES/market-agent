@@ -8,6 +8,7 @@ import {
 import {
   createSocialAuthorizationUrl,
   disconnectSocialConnection,
+  selectSocialDestination,
   SOCIAL_PROVIDERS,
 } from "../server/social-connections.mjs";
 import {
@@ -54,6 +55,10 @@ export default async function handler(req, res) {
     }
     if (provider === "mailchimp" && req.body?.audienceId) {
       await selectMailchimpAudience(userId, projectId, req.body.audienceId);
+      return res.status(200).json({ ok: true, ...(await getConnectionStatus(userId, projectId)) });
+    }
+    if (provider === "reddit" && req.body?.destinationId) {
+      await selectSocialDestination(userId, projectId, provider, req.body.destinationId);
       return res.status(200).json({ ok: true, ...(await getConnectionStatus(userId, projectId)) });
     }
     const origin = requestOrigin(req);

@@ -81,7 +81,8 @@ export async function generateDeliveryPlan(payload, env = process.env) {
   }
   const run = payload?.run && typeof payload.run === "object" ? payload.run : {};
   const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
-  const channels = Array.isArray(payload?.channels) ? payload.channels.filter((channel) => ["gmail", "linkedin", "instagram", "tiktok", "x"].includes(channel)) : [];
+  const channels = Array.isArray(payload?.channels) ? payload.channels.filter((channel) => ["gmail", "linkedin", "instagram", "tiktok", "x", "discord", "reddit"].includes(channel)) : [];
+  const channelContexts = payload?.channelContexts && typeof payload.channelContexts === "object" ? payload.channelContexts : {};
   const reusableMedia = Array.isArray(workspace.sourceMedia)
     ? workspace.sourceMedia.filter((item) => item?.url && /^https:\/\//i.test(item.url)).slice(0, 30).map((item) => ({ kind: item.kind, name: item.name, url: item.url, role: item.role, recommendation: item.recommendation }))
     : [];
@@ -99,10 +100,13 @@ ${String(run.output || "").slice(0, 50_000)}
 OPERATIONAL CHANNELS
 ${channels.join(", ") || "None"}
 
+CHANNEL-SPECIFIC CONTEXT
+${JSON.stringify(channelContexts, null, 2).slice(0, 20_000)}
+
 PUBLIC REUSABLE MEDIA
 ${JSON.stringify(reusableMedia, null, 2)}
 
-Create only items that are immediately executable. For social channels, select the strongest final post already supported by the approved run and adapt it to the channel. For Gmail, create an item only when the approved run contains at least one explicit, valid recipient email address; never invent recipients. Instagram requires a public image or video URL. TikTok requires a public image or video URL and should default to SELF_ONLY for the approval preview. Do not invent media URLs, claims, recipients, or product facts. Return an empty list when nothing can be executed safely.`;
+Create only items that are immediately executable. For social and community channels, select the strongest final post already supported by the approved run and adapt it to the channel. For Gmail, create an item only when the approved run contains at least one explicit, valid recipient email address; never invent recipients. Instagram requires a public image or video URL. TikTok requires a public image or video URL and should default to SELF_ONLY for the approval preview. Discord should be concise and conversational; do not use @everyone, @here, or role mentions. Reddit requires a specific, informative title in subject and must follow every supplied community rule; do not disguise promotion as a personal recommendation. Do not invent media URLs, claims, recipients, communities, or product facts. Return an empty list when nothing can be executed safely.`;
   return generateStructuredObject({
     env,
     name: "approved_delivery_queue",
@@ -211,7 +215,7 @@ function normalizeCampaignIntensity(value) {
 function deliveryChannels(connections) {
   const channels = [];
   if (connections?.gmail?.connected && connections.gmail.canSend) channels.push("Email");
-  for (const provider of ["linkedin", "instagram", "tiktok", "x"]) if (connections?.[provider]?.connected && connections[provider].canPublish) channels.push(provider === "x" ? "X" : provider[0].toUpperCase() + provider.slice(1));
+  for (const provider of ["linkedin", "instagram", "tiktok", "x", "discord", "reddit"]) if (connections?.[provider]?.connected && connections[provider].canPublish) channels.push(provider === "x" ? "X" : provider[0].toUpperCase() + provider.slice(1));
   return channels;
 }
 
@@ -549,7 +553,7 @@ function deliveryPlanSchema() {
           additionalProperties: false,
           required: ["channel", "recipient", "subject", "text", "mediaUrl", "mediaKind", "privacyLevel", "aiGenerated", "rationale"],
           properties: {
-            channel: { type: "string", enum: ["gmail", "linkedin", "instagram", "tiktok", "x"] },
+            channel: { type: "string", enum: ["gmail", "linkedin", "instagram", "tiktok", "x", "discord", "reddit"] },
             recipient: { type: "string" },
             subject: { type: "string" },
             text: { type: "string" },

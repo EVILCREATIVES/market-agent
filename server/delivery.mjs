@@ -62,9 +62,15 @@ export async function prepareDeliveryJobs(userId, projectId, runId, userApiEnv, 
   if (!run || !workspace) throw deliveryError("The approved project work could not be found.", 404);
   if (run.status !== "Approved") throw deliveryError("Approve the saved work before preparing external actions.", 409);
   const connections = await getConnectionStatus(userId, projectId, env);
-  const channels = operationalChannels(connections).filter((channel) => channelAllowedForAccess(channel, userApiEnv));
+  let channels = operationalChannels(connections).filter((channel) => channelAllowedForAccess(channel, userApiEnv));
   if (!channels.length) throw deliveryError("Connect an operational email or social channel first.", 409);
-  const plan = await generateDeliveryPlan({ run, workspace, channels }, userApiEnv);
+  const channelContexts = {};
+  if (channels.includes("reddit")) {
+    try { channelContexts.reddit = await getSocialPublishingOptions(userId, projectId, "reddit", env); }
+    catch { channels = channels.filter((channel) => channel !== "reddit"); }
+  }
+  if (!channels.length) throw deliveryError("The selected community's current rules could not be verified. Nothing was prepared.", 409);
+  const plan = await generateDeliveryPlan({ run, workspace, channels, channelContexts }, userApiEnv);
   const safeItems = normalizeDeliveryItems(plan?.items, channels, workspace);
   for (const item of safeItems) {
     await getPool(env).query(
@@ -168,7 +174,7 @@ export async function cancelDeliveryJob(userId, id, env = process.env) {
 function operationalChannels(connections) {
   const channels = [];
   if (connections.gmail?.connected && connections.gmail.canSend) channels.push("gmail");
-  for (const provider of ["linkedin", "instagram", "tiktok", "x"]) if (connections[provider]?.connected && connections[provider].canPublish) channels.push(provider);
+  for (const provider of ["linkedin", "instagram", "tiktok", "x", "discord", "reddit"]) if (connections[provider]?.connected && connections[provider].canPublish) channels.push(provider);
   return channels;
 }
 
@@ -185,16 +191,17 @@ function normalizeDeliveryItems(values, channels, workspace) {
   for (const value of values) {
     const channel = String(value?.channel || "");
     if (!channels.includes(channel)) continue;
-    const text = String(value?.text || "").trim().slice(0, channel === "x" ? 280 : channel === "linkedin" ? 3000 : channel === "gmail" ? 100_000 : 2200);
+    const textLimit = channel === "x" ? 280 : channel === "linkedin" ? 3000 : channel === "gmail" ? 100_000 : channel === "discord" ? 2000 : channel === "reddit" ? 40_000 : 2200;
+    const text = String(value?.text || "").trim().slice(0, textLimit);
     if (!text) continue;
     const requestedMediaKind = value?.mediaKind === "video" ? "video" : "image";
-    const channelAcceptsMedia = channel === "instagram" || channel === "tiktok" || (["linkedin", "x"].includes(channel) && requestedMediaKind === "image");
+    const channelAcceptsMedia = channel === "instagram" || channel === "tiktok" || channel === "discord" || (["linkedin", "x"].includes(channel) && requestedMediaKind === "image");
     const mediaUrl = channelAcceptsMedia && allowedMedia.has(value?.mediaUrl) ? String(value.mediaUrl) : "";
     if ((channel === "instagram" || channel === "tiktok") && !mediaUrl) continue;
     const recipient = channel === "gmail" ? validRecipientList(value?.recipient) : "";
     if (channel === "gmail" && !recipient) continue;
-    const subject = channel === "gmail" ? String(value?.subject || "").replace(/[\r\n]+/g, " ").trim().slice(0, 300) : "";
-    if (channel === "gmail" && !subject) continue;
+    const subject = ["gmail", "reddit"].includes(channel) ? String(value?.subject || "").replace(/[\r\n]+/g, " ").trim().slice(0, 300) : "";
+    if (["gmail", "reddit"].includes(channel) && !subject) continue;
     items.push({
       channel,
       recipient,
@@ -289,7 +296,7 @@ async function ensureDeliveryTable(env) {
   await getPool(env).query(`
     CREATE TABLE IF NOT EXISTS market_agent_delivery_jobs (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, project_id TEXT NOT NULL, run_id TEXT NOT NULL,
-      channel TEXT NOT NULL CHECK (channel IN ('gmail','linkedin','instagram','tiktok','x')),
+      channel TEXT NOT NULL CHECK (channel IN ('gmail','linkedin','instagram','tiktok','x','discord','reddit')),
       payload JSONB NOT NULL DEFAULT '{}'::jsonb,
       status TEXT NOT NULL DEFAULT 'awaiting_approval' CHECK (status IN ('awaiting_approval','running','submitted','complete','failed','cancelled')),
       external_id TEXT NOT NULL DEFAULT '', result JSONB NOT NULL DEFAULT '{}'::jsonb, error TEXT NOT NULL DEFAULT '',
@@ -297,6 +304,18 @@ async function ensureDeliveryTable(env) {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS market_agent_delivery_jobs_user_project_run_idx ON market_agent_delivery_jobs (user_id, project_id, run_id, created_at DESC);
+    DO $$ BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'market_agent_delivery_jobs'::regclass
+          AND conname = 'market_agent_delivery_jobs_channel_check'
+          AND pg_get_constraintdef(oid) NOT LIKE '%discord%'
+      ) THEN
+        ALTER TABLE market_agent_delivery_jobs DROP CONSTRAINT market_agent_delivery_jobs_channel_check;
+        ALTER TABLE market_agent_delivery_jobs ADD CONSTRAINT market_agent_delivery_jobs_channel_check
+          CHECK (channel IN ('gmail','linkedin','instagram','tiktok','x','discord','reddit'));
+      END IF;
+    END $$;
   `);
   deliveryTableReady = true;
 }

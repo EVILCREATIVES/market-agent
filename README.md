@@ -16,7 +16,7 @@ It starts empty on purpose. There are no fictional prospects, campaigns, replies
 - Market research, audience analysis, campaign, social-pack, and custom workflows
 - Saved and editable drafts with approval states and source links
 - Per-project Google Analytics connection with verified live GA4 reports
-- Per-project Gmail, Mailchimp, LinkedIn, Instagram, TikTok, and X authorization
+- Per-project Gmail, Mailchimp, LinkedIn, Instagram, TikTok, X, Discord, and Reddit authorization
 - In-app newsletter drafting, branded HTML preview, consent-based subscriber registration, approved send/schedule, and live campaign reporting
 - A server-backed delivery queue with an explicit approval before every real send or publish action
 - Optional daily cloud automation that creates a draft without publishing it
@@ -60,6 +60,8 @@ The deployment's three AI keys fund only the limited demo and active managed sub
 - `INSTAGRAM_APP_ID` and `INSTAGRAM_APP_SECRET` — Instagram professional-account OAuth and publishing
 - `TIKTOK_CLIENT_KEY` and `TIKTOK_CLIENT_SECRET` — TikTok Login Kit and Content Posting API
 - `X_CLIENT_ID` and `X_CLIENT_SECRET` — X OAuth 2.0 posting
+- `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET` — per-project authorization of a user-selected Discord channel webhook
+- `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, and `REDDIT_USER_AGENT` — per-user Reddit authorization, community selection, rule checks, and approved text posts
 - `MAILCHIMP_CLIENT_ID` and `MAILCHIMP_CLIENT_SECRET` — per-user Mailchimp OAuth for audiences, newsletters, subscribers, and campaign reports
 - `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, and `PAYPAL_PLAN_ID` — $29.99 monthly subscription checkout
 - `PAYPAL_WEBHOOK_ID` — signature-verified subscription lifecycle updates
@@ -86,6 +88,8 @@ Content generation works. Direct publishing requires separate authorization and 
 - Instagram: professional account and Meta/Instagram OAuth
 - TikTok: OAuth, `video.publish`, and Content Posting API audit
 - X: developer app, funded API access, and user OAuth
+- Discord: OAuth `webhook.incoming`; the server administrator chooses the exact channel during connection
+- Reddit: approved external Data API access, user OAuth, and a project community selected from the connected account
 
 Publishing is behind explicit per-item approval and a database audit record. A developer app without the platform's required product approval may authorize successfully but will not be shown as operational without its write scope.
 

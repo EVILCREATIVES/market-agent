@@ -2,13 +2,15 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { EncryptJWT, jwtDecrypt } from "jose";
 import { getPool } from "./db.mjs";
 
-export const SOCIAL_PROVIDERS = ["linkedin", "instagram", "tiktok", "x"];
+export const SOCIAL_PROVIDERS = ["linkedin", "instagram", "tiktok", "x", "discord", "reddit"];
 
 const SOCIAL_SCOPES = {
   linkedin: ["openid", "profile", "email", "w_member_social"],
   instagram: ["instagram_business_basic", "instagram_business_content_publish"],
   tiktok: ["user.info.basic", "video.publish"],
   x: ["tweet.read", "tweet.write", "users.read", "media.write", "offline.access"],
+  discord: ["identify", "guilds", "webhook.incoming"],
+  reddit: ["identity", "read", "submit", "mysubreddits"],
 };
 
 let socialTableReady = false;
@@ -18,7 +20,7 @@ export async function getSocialConnectionStatus(userId, projectId = "project-def
   if (!env.DATABASE_URL) return status;
   await ensureSocialTable(env);
   const result = await getPool(env).query(
-    `SELECT provider, account_id, account_label, account_email, scopes, status, connected_at, updated_at
+    `SELECT provider, account_id, account_label, account_email, encrypted_credentials, scopes, status, connected_at, updated_at
        FROM market_agent_connections
       WHERE user_id = $1 AND project_id = $2 AND provider = ANY($3::text[])`,
     [userId, projectId, SOCIAL_PROVIDERS],
@@ -33,7 +35,10 @@ export async function getSocialConnectionStatus(userId, projectId = "project-def
       accountLabel: row.account_label || row.account_email || "",
       scopes,
       connectedAt: row.connected_at || row.updated_at || null,
-      canPublish: providerCanPublish(row.provider, scopes),
+      canPublish: providerCanPublish(row.provider, scopes, row),
+      destinations: row.provider === "reddit" ? safeRedditCommunities(row, env) : [],
+      destinationId: row.provider === "reddit" ? String(row.account_email || "") : "",
+      destinationName: row.provider === "reddit" && row.account_email ? `r/${row.account_email}` : "",
     };
   }
   return status;
@@ -77,6 +82,28 @@ export async function createSocialAuthorizationUrl({ provider, userId, projectId
     });
   }
 
+  if (provider === "discord") {
+    return authorizationUrl("https://discord.com/oauth2/authorize", {
+      response_type: "code",
+      client_id: env.DISCORD_CLIENT_ID,
+      redirect_uri: redirectUri,
+      scope: SOCIAL_SCOPES.discord.join(" "),
+      state,
+      prompt: "consent",
+    });
+  }
+
+  if (provider === "reddit") {
+    return authorizationUrl("https://www.reddit.com/api/v1/authorize", {
+      client_id: env.REDDIT_CLIENT_ID,
+      response_type: "code",
+      state,
+      redirect_uri: redirectUri,
+      duration: "permanent",
+      scope: SOCIAL_SCOPES.reddit.join(" "),
+    });
+  }
+
   const codeChallenge = createHash("sha256").update(codeVerifier).digest("base64url");
   return authorizationUrl("https://x.com/i/oauth2/authorize", {
     response_type: "code",
@@ -108,30 +135,49 @@ export async function disconnectSocialConnection(userId, projectId, provider, en
   );
 }
 
+export async function selectSocialDestination(userId, projectId, provider, destinationId, env = process.env) {
+  if (provider !== "reddit") throw connectionError("This connection does not require a destination selection.", 400);
+  const row = await readSocialConnection(userId, projectId, provider, env);
+  if (!row || row.status !== "connected") throw connectionError("Connect Reddit before choosing a community.", 409);
+  const credentials = decryptCredentials(row.encrypted_credentials, env);
+  const communities = normalizeRedditCommunities(credentials.communities);
+  const subreddit = String(destinationId || "").trim().replace(/^r\//i, "").toLowerCase();
+  const selected = communities.find((item) => item.id.toLowerCase() === subreddit);
+  if (!selected) throw connectionError("Choose one of the Reddit communities returned by the connected account.", 400);
+  await getPool(env).query(
+    "UPDATE market_agent_connections SET account_email = $4, updated_at = NOW() WHERE user_id = $1 AND project_id = $2 AND provider = $3",
+    [userId, projectId, provider, selected.id],
+  );
+  return getSocialConnectionStatus(userId, projectId, env);
+}
+
 export async function publishSocialPost(userId, projectId, provider, payload, env = process.env) {
   if (!SOCIAL_PROVIDERS.includes(provider)) throw connectionError("Choose a supported social channel.", 400);
   const row = await readSocialConnection(userId, projectId, provider, env);
   if (!row || row.status !== "connected") throw connectionError(`Connect ${providerLabel(provider)} before publishing.`, 409);
   const scopes = Array.isArray(row.scopes) ? row.scopes : [];
-  if (!providerCanPublish(provider, scopes)) throw connectionError(`Reconnect ${providerLabel(provider)} and approve publishing access.`, 403);
+  if (!providerCanPublish(provider, scopes, row)) throw connectionError(provider === "reddit" ? "Choose a Reddit community for this project before publishing." : `Reconnect ${providerLabel(provider)} and approve publishing access.`, 403);
   const credentials = decryptCredentials(row.encrypted_credentials, env);
-  const accessToken = await validSocialAccessToken(userId, projectId, provider, credentials, env);
   const text = String(payload?.text || "").trim();
   if (!text) throw connectionError("The approved post has no copy.", 400);
+  if (provider === "discord") return publishDiscord(row, credentials, { ...payload, text });
+  const accessToken = await validSocialAccessToken(userId, projectId, provider, credentials, env);
   if (provider === "linkedin") return publishLinkedIn(row, accessToken, { ...payload, text }, env);
   if (provider === "instagram") return publishInstagram(row, accessToken, { ...payload, text }, env);
   if (provider === "tiktok") return publishTikTok(row, accessToken, { ...payload, text });
+  if (provider === "reddit") return publishReddit(row, accessToken, { ...payload, text }, env);
   return publishX(row, accessToken, { ...payload, text });
 }
 
 export async function getSocialPublishingOptions(userId, projectId, provider, env = process.env) {
-  if (provider !== "tiktok") throw connectionError("Publishing options are not required for this channel.", 400);
+  if (!["tiktok", "reddit"].includes(provider)) throw connectionError("Publishing options are not required for this channel.", 400);
   const row = await readSocialConnection(userId, projectId, provider, env);
-  if (!row || row.status !== "connected") throw connectionError("Connect TikTok before reviewing publishing settings.", 409);
+  if (!row || row.status !== "connected") throw connectionError(`Connect ${providerLabel(provider)} before reviewing publishing settings.`, 409);
   const scopes = Array.isArray(row.scopes) ? row.scopes : [];
-  if (!providerCanPublish(provider, scopes)) throw connectionError("Reconnect TikTok and approve publishing access.", 403);
+  if (!providerCanPublish(provider, scopes, row)) throw connectionError(provider === "reddit" ? "Choose a Reddit community for this project first." : "Reconnect TikTok and approve publishing access.", 403);
   const credentials = decryptCredentials(row.encrypted_credentials, env);
   const accessToken = await validSocialAccessToken(userId, projectId, provider, credentials, env);
+  if (provider === "reddit") return readRedditCommunityRules(row.account_email, accessToken, env);
   const creator = await readTikTokCreatorInfo(accessToken);
   return {
     provider,
@@ -175,6 +221,8 @@ export function socialConnectorConfigured(provider, env = process.env) {
   if (provider === "instagram") return Boolean(secure && env.INSTAGRAM_APP_ID && env.INSTAGRAM_APP_SECRET);
   if (provider === "tiktok") return Boolean(secure && env.TIKTOK_CLIENT_KEY && env.TIKTOK_CLIENT_SECRET);
   if (provider === "x") return Boolean(secure && env.X_CLIENT_ID && env.X_CLIENT_SECRET);
+  if (provider === "discord") return Boolean(secure && env.DISCORD_CLIENT_ID && env.DISCORD_CLIENT_SECRET);
+  if (provider === "reddit") return Boolean(secure && env.REDDIT_CLIENT_ID && env.REDDIT_CLIENT_SECRET && env.REDDIT_USER_AGENT);
   return false;
 }
 
@@ -182,6 +230,8 @@ async function finishProvider(provider, code, request, env) {
   if (provider === "linkedin") return finishLinkedIn(code, request, env);
   if (provider === "instagram") return finishInstagram(code, request, env);
   if (provider === "tiktok") return finishTikTok(code, request, env);
+  if (provider === "discord") return finishDiscord(code, request, env);
+  if (provider === "reddit") return finishReddit(code, request, env);
   return finishX(code, request, env);
 }
 
@@ -264,6 +314,69 @@ async function finishTikTok(code, request, env) {
     accountEmail: "",
     scopes: splitScopes(tokens.scope),
     credentials: tokenCredentials(tokens),
+  };
+}
+
+async function finishDiscord(code, request, env) {
+  const tokens = await exchangeFormToken("https://discord.com/api/v10/oauth2/token", {
+    client_id: env.DISCORD_CLIENT_ID,
+    client_secret: env.DISCORD_CLIENT_SECRET,
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: request.redirectUri,
+  }, "Discord");
+  const webhook = tokens.webhook || {};
+  if (!webhook.id || !webhook.token || !webhook.channel_id || !webhook.guild_id) {
+    throw connectionError("Discord did not return the selected server channel. Reconnect and choose a channel where you can manage webhooks.", 400);
+  }
+  const profile = await fetchJson("https://discord.com/api/v10/users/@me", {
+    headers: { Authorization: `Bearer ${tokens.access_token}` },
+  }, "Discord could not read the authorized profile.");
+  let guildName = "Discord server";
+  try {
+    const guilds = await fetchJson("https://discord.com/api/v10/users/@me/guilds", {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+    }, "Discord could not read the authorized servers.");
+    guildName = String((Array.isArray(guilds) ? guilds : []).find((guild) => String(guild.id) === String(webhook.guild_id))?.name || guildName);
+  } catch {
+    // The selected webhook remains usable even when Discord omits guild-list access.
+  }
+  return {
+    accountId: `${webhook.guild_id}:${webhook.channel_id}`,
+    accountLabel: `${guildName} · selected channel`,
+    accountEmail: "",
+    scopes: splitScopes(tokens.scope || SOCIAL_SCOPES.discord.join(" ")),
+    credentials: {
+      ...tokenCredentials(tokens),
+      webhookId: String(webhook.id),
+      webhookToken: String(webhook.token),
+      guildId: String(webhook.guild_id),
+      channelId: String(webhook.channel_id),
+      authorizedUserId: String(profile.id || ""),
+    },
+  };
+}
+
+async function finishReddit(code, request, env) {
+  const response = await fetch("https://www.reddit.com/api/v1/access_token", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${env.REDDIT_CLIENT_ID}:${env.REDDIT_CLIENT_SECRET}`).toString("base64")}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": redditUserAgent(env),
+    },
+    body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: request.redirectUri }),
+  });
+  const tokens = await response.json().catch(() => ({}));
+  if (!response.ok || !tokens.access_token) throw connectionError(providerError("Reddit", tokens), 400);
+  const profile = await redditJson("https://oauth.reddit.com/api/v1/me", tokens.access_token, env, "Reddit could not read the authorized profile.");
+  const communities = await fetchRedditCommunities(tokens.access_token, env);
+  return {
+    accountId: String(profile.id || profile.name || ""),
+    accountLabel: profile.name ? `u/${profile.name}` : "Reddit account",
+    accountEmail: "",
+    scopes: splitScopes(tokens.scope),
+    credentials: { ...tokenCredentials(tokens), communities },
   };
 }
 
@@ -401,6 +514,18 @@ async function validSocialAccessToken(userId, projectId, provider, credentials, 
     });
     refreshed = await response.json().catch(() => ({}));
     if (!response.ok || !refreshed.access_token) throw connectionError("X access expired. Reconnect it.", 401);
+  } else if (provider === "reddit" && credentials?.refreshToken) {
+    const response = await fetch("https://www.reddit.com/api/v1/access_token", {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${env.REDDIT_CLIENT_ID}:${env.REDDIT_CLIENT_SECRET}`).toString("base64")}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": redditUserAgent(env),
+      },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: credentials.refreshToken }),
+    });
+    refreshed = await response.json().catch(() => ({}));
+    if (!response.ok || !refreshed.access_token) throw connectionError("Reddit access expired. Reconnect it.", 401);
   } else if (provider === "instagram" && credentials?.accessToken && Number(credentials.expiresAt || 0) > Date.now()) {
     const url = new URL("https://graph.instagram.com/refresh_access_token");
     url.search = new URLSearchParams({ grant_type: "ig_refresh_token", access_token: credentials.accessToken }).toString();
@@ -448,6 +573,61 @@ async function publishLinkedIn(row, accessToken, payload, env) {
   if (!response.ok) throw connectionError(providerError("LinkedIn", parseProviderBody(body)), response.status === 401 ? 401 : 502);
   const externalId = response.headers.get("x-restli-id") || parseProviderBody(body)?.id || "";
   return { provider: "linkedin", externalId: String(externalId), accountLabel: row.account_label, publishedAt: new Date().toISOString() };
+}
+
+async function publishDiscord(row, credentials, payload) {
+  const text = String(payload.text || "").trim();
+  const mediaUrl = validMediaUrl(payload.mediaUrl);
+  const isImage = payload.mediaKind === "image" && mediaUrl;
+  const content = !isImage && mediaUrl ? `${text}\n\n${mediaUrl}` : text;
+  if ([...content].length > 2000) throw connectionError("Discord copy exceeds 2,000 characters after adding the approved media link.", 400);
+  if (!credentials.webhookId || !credentials.webhookToken) throw connectionError("The Discord channel authorization is incomplete. Reconnect it.", 401);
+  const endpoint = `https://discord.com/api/v10/webhooks/${encodeURIComponent(credentials.webhookId)}/${encodeURIComponent(credentials.webhookToken)}?wait=true`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      content,
+      allowed_mentions: { parse: [] },
+      ...(isImage ? { embeds: [{ image: { url: mediaUrl } }] } : {}),
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.id) throw connectionError(providerError("Discord", data), [401, 404].includes(response.status) ? 401 : 502);
+  return { provider: "discord", externalId: String(data.id), accountLabel: row.account_label, channelId: String(data.channel_id || credentials.channelId || ""), publishedAt: new Date().toISOString() };
+}
+
+async function publishReddit(row, accessToken, payload, env) {
+  const subreddit = String(row.account_email || "").trim();
+  if (!subreddit) throw connectionError("Choose a Reddit community for this project before publishing.", 409);
+  const title = String(payload.subject || "").replace(/[\r\n]+/g, " ").trim().slice(0, 300);
+  if (!title) throw connectionError("The approved Reddit post needs a title.", 400);
+  const response = await fetch("https://oauth.reddit.com/api/submit", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": redditUserAgent(env),
+    },
+    body: new URLSearchParams({
+      api_type: "json",
+      kind: "self",
+      sr: subreddit,
+      title,
+      text: String(payload.text || "").slice(0, 40_000),
+      resubmit: "true",
+      sendreplies: "true",
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  const errors = Array.isArray(data.json?.errors) ? data.json.errors : [];
+  if (!response.ok || errors.length) {
+    const detail = errors.map((entry) => Array.isArray(entry) ? entry.slice(0, 2).join(": ") : String(entry)).join("; ");
+    throw connectionError(detail ? `Reddit rejected the approved post: ${detail}` : providerError("Reddit", data), response.status === 401 ? 401 : 502);
+  }
+  const externalId = String(data.json?.data?.name || data.json?.data?.id || data.json?.data?.url || "");
+  if (!externalId) throw connectionError("Reddit accepted the request but did not return a post receipt.", 502);
+  return { provider: "reddit", externalId, accountLabel: row.account_label, subreddit: `r/${subreddit}`, url: String(data.json?.data?.url || ""), publishedAt: new Date().toISOString() };
 }
 
 async function uploadLinkedInImage(row, accessToken, mediaUrl, env) {
@@ -643,6 +823,65 @@ async function readTikTokCreatorInfo(accessToken) {
   };
 }
 
+async function readRedditCommunityRules(subreddit, accessToken, env) {
+  const name = String(subreddit || "").trim().replace(/^r\//i, "");
+  if (!name) throw connectionError("Choose a Reddit community for this project first.", 409);
+  const data = await redditJson(`https://oauth.reddit.com/r/${encodeURIComponent(name)}/about/rules`, accessToken, env, "Reddit could not read this community's rules.");
+  const rules = Array.isArray(data.rules) ? data.rules.slice(0, 30).map((rule) => ({
+    title: String(rule.short_name || "Community rule").slice(0, 200),
+    description: String(rule.description || rule.violation_reason || "").slice(0, 2000),
+  })) : [];
+  return { provider: "reddit", subreddit: `r/${name}`, rules };
+}
+
+async function fetchRedditCommunities(accessToken, env) {
+  const communities = [];
+  for (const path of ["/subreddits/mine/moderator?limit=100", "/subreddits/mine/subscriber?limit=100"]) {
+    try {
+      const data = await redditJson(`https://oauth.reddit.com${path}`, accessToken, env, "Reddit could not read the account's communities.");
+      for (const child of data.data?.children || []) {
+        const item = child?.data || {};
+        const id = String(item.display_name || "").trim();
+        if (id) communities.push({ id, name: `r/${id}`, label: String(item.title || `r/${id}`).slice(0, 200) });
+      }
+    } catch {
+      // A partially available list is still useful; publishing remains blocked until selection.
+    }
+  }
+  return normalizeRedditCommunities(communities);
+}
+
+async function redditJson(url, accessToken, env, errorMessage) {
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}`, "User-Agent": redditUserAgent(env) },
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw connectionError(data.message || data.error || errorMessage, response.status === 401 ? 401 : 400);
+  return data;
+}
+
+function safeRedditCommunities(row, env) {
+  try {
+    return normalizeRedditCommunities(decryptCredentials(row.encrypted_credentials, env).communities);
+  } catch {
+    return [];
+  }
+}
+
+function normalizeRedditCommunities(values) {
+  const result = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const id = String(value?.id || "").trim().replace(/^r\//i, "");
+    if (!/^[A-Za-z0-9_]{2,21}$/.test(id) || result.some((item) => item.id.toLowerCase() === id.toLowerCase())) continue;
+    result.push({ id, name: `r/${id}`, label: String(value?.label || value?.name || `r/${id}`).slice(0, 200) });
+  }
+  return result.sort((left, right) => left.name.localeCompare(right.name)).slice(0, 200);
+}
+
+function redditUserAgent(env) {
+  return String(env.REDDIT_USER_AGENT || "web:market-agent:1.0 (by /u/market-agent-owner)").slice(0, 250);
+}
+
 async function ensureSocialTable(env) {
   if (socialTableReady) return;
   await getPool(env).query(`
@@ -731,10 +970,12 @@ function normalizeOrigin(value) {
   return url.origin;
 }
 
-function providerCanPublish(provider, scopes) {
+function providerCanPublish(provider, scopes, row = null) {
   if (provider === "linkedin") return scopes.includes("w_member_social") || scopes.includes("w_organization_social");
   if (provider === "instagram") return scopes.includes("instagram_business_content_publish");
   if (provider === "tiktok") return scopes.includes("video.publish");
+  if (provider === "discord") return scopes.includes("webhook.incoming");
+  if (provider === "reddit") return scopes.includes("submit") && Boolean(row?.account_email);
   return scopes.includes("tweet.write");
 }
 
