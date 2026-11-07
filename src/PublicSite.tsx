@@ -1,16 +1,54 @@
-import { ArrowRight, BarChart3, Check, FileLock2, Mail, Megaphone, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowRight, BarChart3, Check, CircleAlert, FileLock2, Mail, Megaphone, ShieldCheck, Sparkles } from "lucide-react";
 
 const updated = "November 7, 2026";
 
 export function isPublicRoute(pathname = window.location.pathname) {
-  return ["/about", "/privacy", "/terms"].includes(normalizePath(pathname));
+  return ["/about", "/privacy", "/terms", "/connection-result"].includes(normalizePath(pathname));
 }
 
 export default function PublicSite() {
   const pathname = normalizePath(window.location.pathname);
+  if (pathname === "/connection-result") return <ConnectionResult />;
   if (pathname === "/privacy") return <PrivacyPolicy />;
   if (pathname === "/terms") return <TermsOfService />;
   return <AboutMarketAgent />;
+}
+
+function ConnectionResult() {
+  const params = new URLSearchParams(window.location.search);
+  const result = params.get("connection") || "social-error";
+  const successful = result.endsWith("-success") || result === "analytics-select";
+  const provider = result.replace(/-(success|error)$/, "").replace(/-select$/, "");
+  const labels: Record<string, string> = {
+    analytics: "Google Analytics",
+    gmail: "Email",
+    linkedin: "LinkedIn",
+    instagram: "Instagram",
+    tiktok: "TikTok",
+    x: "X",
+    social: "Social account",
+  };
+  const label = labels[provider] || "Account";
+  const reason = params.get("reason") || `${label} could not be connected.`;
+  const workspaceParams = new URLSearchParams({ connection: result });
+  if (!successful) workspaceParams.set("reason", reason);
+
+  return (
+    <div className="connection-result-shell">
+      <section className={successful ? "connection-result success" : "connection-result error"}>
+        <span>{successful ? <Check size={27} /> : <CircleAlert size={27} />}</span>
+        <small>MARKET AGENT CONNECTION</small>
+        <h1>{successful ? `${label} connected` : `${label} needs attention`}</h1>
+        <p>{successful
+          ? result === "analytics-select"
+            ? "Authorization is complete. Return to the workspace to choose the Analytics property for this project."
+            : "Authorization is complete and securely saved to this project."
+          : reason}</p>
+        <a href={`/?${workspaceParams.toString()}`}>Return to your workspace <ArrowRight size={15} /></a>
+        <em>If your session expired while you were away, sign in again with the same Market Agent account.</em>
+      </section>
+    </div>
+  );
 }
 
 function PublicHeader() {

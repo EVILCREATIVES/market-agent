@@ -10,9 +10,9 @@ export default async function handler(req, res) {
       throw Object.assign(new Error(`Account authorization was cancelled.${detail}`), { statusCode: 400 });
     }
     const result = await finishSocialAuthorization({ code: req.query?.code, state: req.query?.state });
-    return res.redirect(302, `${origin}/?connection=${encodeURIComponent(result.provider)}-success`);
+    return res.redirect(302, `${origin}/connection-result?connection=${encodeURIComponent(result.provider)}-success`);
   } catch (error) {
     const message = encodeURIComponent(error.message || "Account connection failed.");
-    return res.redirect(302, `${origin}/?connection=social-error&reason=${message}`);
+    return res.redirect(302, `${origin}/connection-result?connection=social-error&reason=${message}`);
   }
 }
