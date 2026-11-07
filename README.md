@@ -76,6 +76,8 @@ The Mailchimp registered app must use `https://market-agent-lime-gamma.vercel.ap
 
 The PayPal app must send subscription webhooks to `https://market-agent-lime-gamma.vercel.app/api/paypal-webhook`. Subscribe to subscription activated, updated, suspended, cancelled, expired, and payment-failed events, plus subscription payment completed, refunded, and reversed events.
 
+The one-time platform-owner setup is documented in [`docs/CONNECTOR_SETUP.md`](docs/CONNECTOR_SETUP.md). Ordinary users never need the developer credentials: they click Connect, authorize their own account, choose the relevant project destination, and approve each external action.
+
 ## Social publishing boundary
 
 Content generation works. Direct publishing requires separate authorization and platform approval:
