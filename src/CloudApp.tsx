@@ -68,7 +68,7 @@ function AuthScreen() {
           {mode === "sign-in" ? "First time here? Create an account" : "Already have an account? Sign in"}
         </button>
       </section>
-      <p className="auth-note">Every account has its own private projects, data, and saved agent work.</p>
+      <p className="auth-note">Every account has its own private projects, data, and saved agent work.<br />Market Agent is a product owned and operated by Evil Creatives. © 2026 Evil Creatives.</p>
       <nav className="auth-links" aria-label="About and legal"><a href="/about">About</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></nav>
     </div>
   );
