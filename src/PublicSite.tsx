@@ -30,7 +30,7 @@ function PublicHeader() {
 function PublicFooter() {
   return (
     <footer className="public-footer">
-      <span><strong>Market Agent</strong><small>A product owned and operated by Evil Creatives.<br />© 2026 Evil Creatives. All rights reserved.</small></span>
+      <span><strong>Market Agent</strong><small>© 2026 Evil Creatives. All rights reserved.</small></span>
       <div><a href="/about">Product</a><a href="/privacy">Privacy Policy</a><a href="/terms">Terms of Service</a></div>
       <a href="mailto:unleash@evilcreatives.com">unleash@evilcreatives.com</a>
     </footer>
@@ -52,7 +52,6 @@ function AboutMarketAgent() {
           <div className="public-eyebrow"><ShieldCheck size={15} /> Multi-project marketing workspace</div>
           <h1>From project truth<br />to approved execution.</h1>
           <p>Market Agent researches the live market, understands project materials, prepares channel-ready work, and executes only through accounts the user explicitly connects.</p>
-          <p className="public-owner">Market Agent is a product owned and operated by Evil Creatives.</p>
           <div className="public-hero-actions"><a href="/">Open your workspace <ArrowRight size={15} /></a><span>No social account is shared between users or projects.</span></div>
         </section>
 

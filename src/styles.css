@@ -1264,7 +1264,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .public-eyebrow { color: #7053d3; display: flex; align-items: center; gap: 8px; font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
 .public-hero h1 { max-width: 850px; margin: 24px 0 22px; font-size: clamp(54px,8vw,105px); line-height: .92; letter-spacing: -.075em; }
 .public-hero > p { max-width: 665px; margin: 0; color: #68665f; font-size: clamp(15px,1.8vw,20px); line-height: 1.58; }
-.public-hero > p.public-owner { margin-top: 12px; color: #7a756c; font-size: 10px; font-weight: 700; letter-spacing: .02em; }
 .public-hero-actions { margin-top: 38px; display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
 .public-hero-actions a, .public-cta > a { min-height: 45px; padding: 0 18px; border-radius: 10px; background: #7454e8; color: white; display: inline-flex; align-items: center; gap: 9px; font-size: 11px; font-weight: 750; text-decoration: none; }
 .public-hero-actions span { color: #7c7971; font-size: 10px; }
