@@ -188,7 +188,7 @@ function normalizeDeliveryItems(values, channels, workspace) {
     const text = String(value?.text || "").trim().slice(0, channel === "x" ? 280 : channel === "linkedin" ? 3000 : channel === "gmail" ? 100_000 : 2200);
     if (!text) continue;
     const requestedMediaKind = value?.mediaKind === "video" ? "video" : "image";
-    const channelAcceptsMedia = channel === "instagram" || channel === "tiktok" || (channel === "linkedin" && requestedMediaKind === "image");
+    const channelAcceptsMedia = channel === "instagram" || channel === "tiktok" || (["linkedin", "x"].includes(channel) && requestedMediaKind === "image");
     const mediaUrl = channelAcceptsMedia && allowedMedia.has(value?.mediaUrl) ? String(value.mediaUrl) : "";
     if ((channel === "instagram" || channel === "tiktok") && !mediaUrl) continue;
     const recipient = channel === "gmail" ? validRecipientList(value?.recipient) : "";

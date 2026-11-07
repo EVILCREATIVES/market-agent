@@ -8,7 +8,7 @@ const SOCIAL_SCOPES = {
   linkedin: ["openid", "profile", "email", "w_member_social"],
   instagram: ["instagram_business_basic", "instagram_business_content_publish"],
   tiktok: ["user.info.basic", "video.publish"],
-  x: ["tweet.read", "tweet.write", "users.read", "offline.access"],
+  x: ["tweet.read", "tweet.write", "users.read", "media.write", "offline.access"],
 };
 
 let socialTableReady = false;
@@ -121,7 +121,7 @@ export async function publishSocialPost(userId, projectId, provider, payload, en
   if (provider === "linkedin") return publishLinkedIn(row, accessToken, { ...payload, text }, env);
   if (provider === "instagram") return publishInstagram(row, accessToken, { ...payload, text }, env);
   if (provider === "tiktok") return publishTikTok(row, accessToken, { ...payload, text });
-  return publishX(row, accessToken, text);
+  return publishX(row, accessToken, { ...payload, text });
 }
 
 export async function getSocialPublishingOptions(userId, projectId, provider, env = process.env) {
@@ -484,16 +484,37 @@ async function uploadLinkedInImage(row, accessToken, mediaUrl, env) {
   return String(imageUrn);
 }
 
-async function publishX(row, accessToken, text) {
+async function publishX(row, accessToken, payload) {
+  const text = payload.text;
   if ([...text].length > 280) throw connectionError("X copy exceeds 280 characters.", 400);
+  const mediaUrl = payload.mediaKind === "image" ? validMediaUrl(payload.mediaUrl) : "";
+  const mediaId = mediaUrl ? await uploadXImage(accessToken, mediaUrl) : "";
   const response = await fetch("https://api.x.com/2/tweets", {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, ...(mediaId ? { media: { media_ids: [mediaId] } } : {}) }),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.data?.id) throw connectionError(providerError("X", data), response.status === 401 ? 401 : 502);
   return { provider: "x", externalId: String(data.data.id), accountLabel: row.account_label, publishedAt: new Date().toISOString() };
+}
+
+async function uploadXImage(accessToken, mediaUrl) {
+  const source = await fetch(mediaUrl, { redirect: "follow" });
+  if (!source.ok) throw connectionError("The approved X image could not be downloaded for publishing.", 502);
+  const contentType = String(source.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  if (!["image/jpeg", "image/png", "image/gif", "image/webp"].includes(contentType)) throw connectionError("X accepts approved JPG, PNG, GIF, or WebP images for this post.", 400);
+  const bytes = Buffer.from(await source.arrayBuffer());
+  if (!bytes.length || bytes.length > 5 * 1024 * 1024) throw connectionError("X image publishing currently supports approved files up to 5 MB.", 400);
+  const uploadResponse = await fetch("https://api.x.com/2/media/upload", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ media: bytes.toString("base64"), media_category: "tweet_image" }),
+  });
+  const uploaded = await uploadResponse.json().catch(() => ({}));
+  const mediaId = uploaded.data?.id || uploaded.data?.media_id_string;
+  if (!uploadResponse.ok || !mediaId) throw connectionError(providerError("X", uploaded), uploadResponse.status === 401 ? 401 : 502);
+  return String(mediaId);
 }
 
 async function publishInstagram(row, accessToken, payload, env) {
@@ -513,12 +534,12 @@ async function publishInstagram(row, accessToken, payload, env) {
   if (!createResponse.ok || !container.id) throw connectionError(providerError("Instagram", container), createResponse.status === 401 ? 401 : 502);
   if (mediaKind === "video") {
     let ready = false;
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
       const statusResponse = await fetch(`https://graph.instagram.com/${version}/${encodeURIComponent(container.id)}?fields=status_code,status&access_token=${encodeURIComponent(accessToken)}`);
       const status = await statusResponse.json().catch(() => ({}));
       if (status.status_code === "FINISHED") { ready = true; break; }
       if (status.status_code === "ERROR" || status.status_code === "EXPIRED") throw connectionError(providerError("Instagram", status), 502);
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
     if (!ready) throw connectionError("Instagram is still processing the video. Try publishing again in a moment.", 409);
   }
