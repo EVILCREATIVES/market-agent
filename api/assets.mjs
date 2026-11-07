@@ -7,6 +7,7 @@ import {
   registerUploadedAsset,
 } from "../server/assets.mjs";
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
+import { consumeAiUsage } from "../server/billing.mjs";
 
 export const config = { maxDuration: 300 };
 
@@ -17,6 +18,7 @@ export default async function handler(req, res) {
     if (req.method === "GET") return res.status(200).json(await listProjectAssets(userId, req.query?.projectId));
     const action = String(req.body?.action || "");
     const userApiEnv = await loadUserApiEnv(userId);
+    if (action !== "cancel-proposal") await consumeAiUsage(userId, "workspace", userApiEnv);
     if (action === "register-upload") return res.status(200).json(await registerUploadedAsset(userId, req.body, userApiEnv));
     if (action === "add-link") return res.status(200).json(await registerLinkedAsset(userId, req.body, userApiEnv));
     if (action === "approve-proposal") return res.status(200).json(await approveAssetProposal(userId, req.body, userApiEnv));

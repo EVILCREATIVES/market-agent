@@ -1,6 +1,7 @@
 import { requireUser } from "../server/auth.mjs";
 import { cancelDeliveryJob, executeDeliveryJob, listDeliveryJobs, prepareDeliveryJobs } from "../server/delivery.mjs";
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
+import { consumeAiUsage } from "../server/billing.mjs";
 
 export const config = { maxDuration: 300 };
 
@@ -12,10 +13,12 @@ export default async function handler(req, res) {
     const runId = String(req.query?.runId || req.body?.runId || "").trim().slice(0, 200);
     if (req.method === "GET") return res.status(200).json(await listDeliveryJobs(userId, projectId, runId));
     const action = String(req.body?.action || "prepare");
-    if (action === "execute") return res.status(200).json(await executeDeliveryJob(userId, String(req.body?.id || "").slice(0, 100)));
+    const userApiEnv = await loadUserApiEnv(userId);
+    if (action === "execute") return res.status(200).json(await executeDeliveryJob(userId, String(req.body?.id || "").slice(0, 100), userApiEnv));
     if (action === "cancel") return res.status(200).json(await cancelDeliveryJob(userId, String(req.body?.id || "").slice(0, 100)));
     if (!runId) return res.status(400).json({ error: "Choose approved work first." });
-    return res.status(200).json(await prepareDeliveryJobs(userId, projectId, runId, await loadUserApiEnv(userId)));
+    await consumeAiUsage(userId, "delivery", userApiEnv);
+    return res.status(200).json(await prepareDeliveryJobs(userId, projectId, runId, userApiEnv));
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message || "Delivery action failed." });
   }

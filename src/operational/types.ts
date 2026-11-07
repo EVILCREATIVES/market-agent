@@ -142,6 +142,27 @@ export interface ApiCredentialStatus {
   credentials: Record<ApiProvider, ApiCredentialConnection>;
 }
 
+export interface BillingStatus {
+  checked: boolean;
+  configured: boolean;
+  paypalConfigured: boolean;
+  platformApisConfigured: boolean;
+  active: boolean;
+  status: string;
+  subscriptionId: string;
+  payerEmail: string;
+  planName: string;
+  price: string;
+  currency: string;
+  mediaIncluded: boolean;
+  collaborationReady: boolean;
+  trial: {
+    active: boolean;
+    daysRemaining: number;
+    endsAt: string;
+  };
+}
+
 export type MediaJobStatus = "awaiting_budget" | "approved" | "running" | "complete" | "failed" | "cancelled";
 
 export interface MediaJob {

@@ -1,6 +1,7 @@
 import { appendRunForUser, listScheduledStates, loadStateForUser, saveStateForUser } from "../server/db.mjs";
 import { createRunRecord, runMarketingAgent } from "../server/agent.mjs";
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
+import { consumeAiUsage } from "../server/billing.mjs";
 
 export const config = { maxDuration: 300 };
 
@@ -19,6 +20,7 @@ export default async function handler(req, res) {
     if (schedule.lastRunAt?.slice(0, 10) === today) continue;
     try {
       const userApiEnv = await loadUserApiEnv(entry.userId);
+      await consumeAiUsage(entry.userId, "cron", userApiEnv);
       const result = await runMarketingAgent({
         action: schedule.action || "research",
         prompt: schedule.prompt || "Create today's market pulse.",

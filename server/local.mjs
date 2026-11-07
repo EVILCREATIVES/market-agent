@@ -5,6 +5,7 @@ import { approveAssetProposal, cancelAssetProposal, listProjectAssets, registerL
 import { requireUser } from "./auth.mjs";
 import { appendRunForUser, enforceRunBudget, loadStateForUser, saveStateForUser } from "./db.mjs";
 import { approveMediaJob, cancelMediaJob, listMediaJobs, prepareMediaJob } from "./media.mjs";
+import { cancelManagedSubscription, consumeAiUsage, createManagedSubscription, getManagedSubscriptionStatus } from "./billing.mjs";
 import {
   deleteUserApiCredential,
   getUserApiCredentialStatus,
@@ -56,6 +57,18 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (["GET", "POST"].includes(req.method) && req.url === "/api/billing") {
+    try {
+      const { userId } = await requireUser(req);
+      if (req.method === "GET") return json(res, 200, await getManagedSubscriptionStatus(userId));
+      const payload = await readJson(req);
+      if (payload.action === "cancel") return json(res, 200, await cancelManagedSubscription(userId));
+      return json(res, 200, await createManagedSubscription(userId, `http://127.0.0.1:${port}`));
+    } catch (error) {
+      return json(res, error.statusCode || 500, { error: error.message || "Billing request failed." });
+    }
+  }
+
   if (req.method === "POST" && req.url === "/api/asset-upload") {
     try {
       const { userId } = await requireUser(req);
@@ -91,8 +104,11 @@ const server = http.createServer(async (req, res) => {
     try {
       const { userId } = await requireUser(req);
       const payload = await readJson(req);
-      await enforceRunBudget(userId, payload.mode || "single");
-      const result = await runMarketingAgent(payload, await loadUserApiEnv(userId));
+      const mode = payload.mode || "single";
+      const userApiEnv = await loadUserApiEnv(userId);
+      await enforceRunBudget(userId, mode);
+      await consumeAiUsage(userId, mode === "panel" ? "panel" : "agent", userApiEnv);
+      const result = await runMarketingAgent(payload, userApiEnv);
       const run = createRunRecord(result, payload.action || "chat", payload.prompt || "", payload.projectId || "project-default");
       await appendRunForUser(userId, run);
       return json(res, 200, { ...result, run });
@@ -104,7 +120,9 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && req.url === "/api/chat") {
     try {
       const { userId } = await requireUser(req);
-      return json(res, 200, await runProjectConversation(await readJson(req), await loadUserApiEnv(userId)));
+      const userApiEnv = await loadUserApiEnv(userId);
+      await consumeAiUsage(userId, "chat", userApiEnv);
+      return json(res, 200, await runProjectConversation(await readJson(req), userApiEnv));
     } catch (error) {
       return json(res, error.statusCode || 500, { error: error.message || "The project assistant could not reply." });
     }
@@ -113,7 +131,9 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && req.url === "/api/onboard") {
     try {
       const { userId } = await requireUser(req);
-      return json(res, 200, await buildProductBrain(await readJson(req), await loadUserApiEnv(userId)));
+      const userApiEnv = await loadUserApiEnv(userId);
+      await consumeAiUsage(userId, "workspace", userApiEnv);
+      return json(res, 200, await buildProductBrain(await readJson(req), userApiEnv));
     } catch (error) {
       return json(res, error.statusCode || 500, { error: error.message || "Project onboarding failed." });
     }
@@ -122,7 +142,9 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && req.url === "/api/refine") {
     try {
       const { userId } = await requireUser(req);
-      return json(res, 200, await refineProductBrain(await readJson(req), await loadUserApiEnv(userId)));
+      const userApiEnv = await loadUserApiEnv(userId);
+      await consumeAiUsage(userId, "workspace", userApiEnv);
+      return json(res, 200, await refineProductBrain(await readJson(req), userApiEnv));
     } catch (error) {
       return json(res, error.statusCode || 500, { error: error.message || "The product brain could not be updated." });
     }
@@ -143,6 +165,7 @@ const server = http.createServer(async (req, res) => {
       const { userId } = await requireUser(req);
       const payload = await readJson(req);
       const userApiEnv = await loadUserApiEnv(userId);
+      if (payload.action !== "cancel-proposal") await consumeAiUsage(userId, "workspace", userApiEnv);
       if (payload.action === "prepare") return json(res, 200, await prepareMediaJob(userId, payload, userApiEnv));
       if (payload.action === "approve") return json(res, 200, await approveMediaJob(userId, payload, userApiEnv));
       if (payload.action === "cancel") return json(res, 200, await cancelMediaJob(userId, payload));

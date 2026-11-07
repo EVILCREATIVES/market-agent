@@ -15,6 +15,8 @@ import {
   disconnectAnalytics,
   selectAnalyticsProperty,
 } from "../server/analytics.mjs";
+import { connectorAllowedForAccess } from "../server/billing.mjs";
+import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 
 export default async function handler(req, res) {
   if (!["GET", "POST", "DELETE"].includes(req.method)) {
@@ -33,6 +35,13 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, ...(await getConnectionStatus(userId, projectId)) });
     }
     const provider = String(req.body?.provider || "google-gmail");
+    const accessEnv = await loadUserApiEnv(userId);
+    if (!connectorAllowedForAccess(accessEnv, provider)) {
+      const message = accessEnv.MARKET_AGENT_ACCESS_MODE === "trial"
+        ? "LinkedIn is the only delivery connector included in the 10-day demo. Connect your APIs or activate the managed plan to unlock the others."
+        : "Connect your APIs or activate the managed plan before connecting delivery accounts.";
+      return res.status(403).json({ error: message });
+    }
     if (provider === "google-analytics" && req.body?.propertyId) {
       await selectAnalyticsProperty(userId, projectId, req.body.propertyId);
       return res.status(200).json({ ok: true, ...(await getConnectionStatus(userId, projectId)) });

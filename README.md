@@ -19,6 +19,9 @@ It starts empty on purpose. There are no fictional prospects, campaigns, replies
 - Per-project Gmail, LinkedIn, Instagram, TikTok, and X authorization
 - A server-backed delivery queue with an explicit approval before every real send or publish action
 - Optional daily cloud automation that creates a draft without publishing it
+- A 10-day text-only demo with document analysis, campaign reasoning, and LinkedIn access
+- A $29.99/month PayPal-managed text plan with server-enforced entitlements and usage limits
+- A bring-your-own-API path for full capabilities, including image and video where supported
 - Gitless Vercel deployment; the owner computer does not need to stay on
 
 Direct delivery is available only after the relevant account is connected, the required platform permission is present, the saved work is approved, and the user approves the individual queue item.
@@ -42,22 +45,23 @@ npm run build
 vercel deploy --prod
 ```
 
-The application calls each AI provider directly. Add all three keys as encrypted Production environment variables in Vercel, then redeploy.
+The deployment's three AI keys fund only the limited demo and active managed subscriptions. Users who connect their own APIs run exclusively on their encrypted account-level credentials. Managed and demo access is text-only; media generation is available only through a user's own APIs.
 
 ## Required environment
 
 - `DATABASE_URL` — injected by the Neon Marketplace integration
 - `NEON_AUTH_BASE_URL` and `VITE_NEON_AUTH_URL` — injected by Neon Auth
 - `CRON_SECRET` — protects the daily automation endpoint
-- `OPENAI_API_KEY` — OpenAI generation, research, and synthesis
-- `GOOGLE_GENERATIVE_AI_API_KEY` — Gemini's independent panel analysis
-- `ANTHROPIC_API_KEY` — Claude's independent panel analysis
+- `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, and `ANTHROPIC_API_KEY` — platform-funded demo and managed text access; never a fallback for BYOK users
 - `OPENAI_MODEL`, `GOOGLE_MODEL`, and `ANTHROPIC_MODEL` — optional model overrides
 - `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `CONNECTION_ENCRYPTION_KEY` — Gmail and Google Analytics OAuth plus encrypted token storage
 - `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` — LinkedIn OAuth and posting
 - `INSTAGRAM_APP_ID` and `INSTAGRAM_APP_SECRET` — Instagram professional-account OAuth and publishing
 - `TIKTOK_CLIENT_KEY` and `TIKTOK_CLIENT_SECRET` — TikTok Login Kit and Content Posting API
 - `X_CLIENT_ID` and `X_CLIENT_SECRET` — X OAuth 2.0 posting
+- `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, and `PAYPAL_PLAN_ID` — $29.99 monthly subscription checkout
+- `PAYPAL_WEBHOOK_ID` — signature-verified subscription lifecycle updates
+- `PAYPAL_ENVIRONMENT` — `sandbox` while testing; set to `live` only for the production PayPal app and plan
 
 The Google Cloud project must enable Gmail API, Google Analytics Admin API, and Google Analytics Data API. Add these production redirect URIs to the Google OAuth client:
 
@@ -66,11 +70,13 @@ The Google Cloud project must enable Gmail API, Google Analytics Admin API, and 
 
 Each social developer app must likewise register `https://market-agent-lime-gamma.vercel.app/api/social-callback` and obtain its required publishing scope.
 
+The PayPal app must send subscription webhooks to `https://market-agent-lime-gamma.vercel.app/api/paypal-webhook`. Subscribe to subscription activated, updated, suspended, cancelled, expired, and payment-failed events, plus subscription payment completed, refunded, and reversed events.
+
 ## Social publishing boundary
 
 Content generation works. Direct publishing requires separate authorization and platform approval:
 
-- LinkedIn: OAuth and Community Management API approval
+- LinkedIn: personal-profile posting through `w_member_social`; company-page posting additionally requires Community Management API approval
 - Instagram: professional account and Meta/Instagram OAuth
 - TikTok: OAuth, `video.publish`, and Content Posting API audit
 - X: developer app, funded API access, and user OAuth
@@ -84,5 +90,6 @@ Publishing is behind explicit per-item approval and a database audit record. A d
 - `server/auth.mjs` — Neon JWT verification and user authentication
 - `server/db.mjs` — cloud persistence and migration helpers
 - `server/agent.mjs` — direct OpenAI, Gemini, and Claude runtime
+- `server/billing.mjs` — trial, PayPal subscription, entitlement, and shared-key usage enforcement
 - `api/` — Vercel Functions for state, AI runs, health, and daily automation
 - `server/migrations/` — versioned database schema

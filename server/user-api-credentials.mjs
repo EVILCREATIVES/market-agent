@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { getPool } from "./db.mjs";
+import { getManagedSubscriptionStatus } from "./billing.mjs";
 
 export const API_PROVIDERS = ["openai", "google", "anthropic"];
 
@@ -87,14 +88,27 @@ export async function loadUserApiEnv(userId, env = process.env) {
     }
   }
 
+  const subscription = await getManagedSubscriptionStatus(userId, env);
+  const hasPrivateCore = Boolean(keys.openai || keys.google);
+  const accessMode = hasPrivateCore ? "byok" : subscription.active ? "managed" : subscription.trial.active ? "trial" : "expired";
+  const platformKeys = {
+    openai: String(env.OPENAI_API_KEY || ""),
+    google: String(env.GOOGLE_GENERATIVE_AI_API_KEY || ""),
+    anthropic: String(env.ANTHROPIC_API_KEY || ""),
+  };
+  const usePlatformWorkKeys = accessMode === "managed" || accessMode === "trial";
+
   // These explicit assignments are the isolation boundary: a deployment owner's
-  // credentials can never become a fallback for a signed-in user.
+  // credentials become available for work only during the demo or an active paid
+  // managed plan. Users with their own core API always run exclusively on their keys.
   return {
     ...env,
-    STARTER_OPENAI_API_KEY: env.STARTER_OPENAI_API_KEY || env.OPENAI_API_KEY || "",
-    [ENVIRONMENT_KEYS.openai]: keys.openai,
-    [ENVIRONMENT_KEYS.google]: keys.google,
-    [ENVIRONMENT_KEYS.anthropic]: keys.anthropic,
+    STARTER_OPENAI_API_KEY: platformKeys.openai,
+    [ENVIRONMENT_KEYS.openai]: hasPrivateCore ? keys.openai : usePlatformWorkKeys ? platformKeys.openai : "",
+    [ENVIRONMENT_KEYS.google]: hasPrivateCore ? keys.google : usePlatformWorkKeys ? platformKeys.google : "",
+    [ENVIRONMENT_KEYS.anthropic]: hasPrivateCore ? keys.anthropic : usePlatformWorkKeys ? platformKeys.anthropic : "",
+    MARKET_AGENT_ACCESS_MODE: accessMode,
+    MARKET_AGENT_TEXT_ONLY: accessMode === "managed" || accessMode === "trial" ? "true" : "false",
   };
 }
 

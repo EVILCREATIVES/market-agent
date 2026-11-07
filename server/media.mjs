@@ -29,12 +29,13 @@ export async function listMediaJobs(userId, projectId, env = process.env) {
   return {
     jobs,
     summary: await mediaBudgetSummary(userId, safeProjectId, env),
-    configured: Boolean(env.GOOGLE_GENERATIVE_AI_API_KEY || env.OPENAI_API_KEY),
-    videoConfigured: Boolean(env.GOOGLE_GENERATIVE_AI_API_KEY),
+    configured: !textOnlyAccess(env) && Boolean(env.GOOGLE_GENERATIVE_AI_API_KEY || env.OPENAI_API_KEY),
+    videoConfigured: !textOnlyAccess(env) && Boolean(env.GOOGLE_GENERATIVE_AI_API_KEY),
   };
 }
 
 export async function prepareMediaJob(userId, payload, env = process.env) {
+  if (textOnlyAccess(env)) throw httpError(403, "Image and video creation require your own connected API. The demo and managed plan are text-only.");
   const projectId = requiredText(payload?.projectId, "Choose a project first.", 200);
   const kind = payload?.kind === "video" ? "video" : payload?.kind === "image" ? "image" : "";
   if (!kind) throw httpError(400, "Choose image or video.");
@@ -79,6 +80,7 @@ export async function prepareMediaJob(userId, payload, env = process.env) {
 }
 
 export async function approveMediaJob(userId, payload, env = process.env) {
+  if (textOnlyAccess(env)) throw httpError(403, "Image and video creation require your own connected API. The demo and managed plan are text-only.");
   const id = requiredText(payload?.id, "The media request is missing.", 100);
   const approvedBudgetCents = Number(payload?.approvedBudgetCents);
   const pool = getPool(env);
@@ -138,6 +140,10 @@ export async function approveMediaJob(userId, payload, env = process.env) {
 
   const job = await executeApprovedJob(row, env);
   return { job, summary: await mediaBudgetSummary(userId, row.project_id, env) };
+}
+
+function textOnlyAccess(env) {
+  return env.MARKET_AGENT_TEXT_ONLY === "true";
 }
 
 export async function cancelMediaJob(userId, payload, env = process.env) {

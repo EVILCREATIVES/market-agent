@@ -9,6 +9,7 @@ import {
   ChevronDown,
   Cloud,
   CircleAlert,
+  CircleDollarSign,
   FileCheck2,
   FileText,
   Globe2,
@@ -40,7 +41,7 @@ import { createDefaultSchedule, createEmptyProject, loadState, saveState } from 
 import { prepareLogo, prepareMaterial, type PreparedMaterial } from "./operational/materials";
 import { upload } from "@vercel/blob/client";
 import { apiFetch, getAccessToken } from "./auth";
-import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, ConnectionStatus, DeliveryJob, HealthState, MediaBudgetSummary, MediaJob, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, RunStatus, SourceMediaAsset } from "./operational/types";
+import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, BillingStatus, ConnectionStatus, DeliveryJob, HealthState, MediaBudgetSummary, MediaJob, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, RunStatus, SourceMediaAsset } from "./operational/types";
 
 type Page = "agent" | "brain" | "research" | "campaigns" | "content" | "analytics" | "integrations";
 type CampaignIntensity = "careful" | "assertive" | "aggressive";
@@ -85,6 +86,23 @@ const emptyApiCredentials = (): ApiCredentialStatus => ({
   },
 });
 
+const emptyBilling = (): BillingStatus => ({
+  checked: false,
+  configured: false,
+  paypalConfigured: false,
+  platformApisConfigured: false,
+  active: false,
+  status: "none",
+  subscriptionId: "",
+  payerEmail: "",
+  planName: "Managed text plan",
+  price: "29.99",
+  currency: "USD",
+  mediaIncluded: false,
+  collaborationReady: false,
+  trial: { active: false, daysRemaining: 0, endsAt: "" },
+});
+
 export default function OperationalApp({ userId, userEmail, onSignOut }: { userId: string; userEmail: string; onSignOut: () => Promise<void> }) {
   const [state, setState] = useState<AppState>(() => loadState(userId));
   const [page, setPage] = useState<Page>("agent");
@@ -98,6 +116,10 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
   const [cloudSaving, setCloudSaving] = useState(false);
   const [connections, setConnections] = useState<ConnectionStatus>(() => emptyConnections());
   const [apiCredentials, setApiCredentials] = useState<ApiCredentialStatus>(() => emptyApiCredentials());
+  const [apiCredentialsChecked, setApiCredentialsChecked] = useState(false);
+  const [billing, setBilling] = useState<BillingStatus>(() => emptyBilling());
+  const [accessChoiceOpen, setAccessChoiceOpen] = useState(false);
+  const [billingBusy, setBillingBusy] = useState(false);
   const [projectChatOpen, setProjectChatOpen] = useState(false);
 
   const refreshConnections = async (projectId = state.activeProjectId) => {
@@ -169,8 +191,28 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
         if (!response.ok) throw new Error(data.error || "Private API connections could not be checked.");
         setApiCredentials(data as ApiCredentialStatus);
       })
-      .catch(() => setApiCredentials(emptyApiCredentials()));
+      .catch(() => setApiCredentials(emptyApiCredentials()))
+      .finally(() => setApiCredentialsChecked(true));
   }, [cloudReady]);
+
+  const refreshBilling = async () => {
+    const response = await apiFetch("/api/billing");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Plan status could not be checked.");
+    setBilling(data as BillingStatus);
+    return data as BillingStatus;
+  };
+
+  useEffect(() => {
+    if (!cloudReady) return;
+    refreshBilling().catch(() => setBilling({ ...emptyBilling(), checked: true }));
+  }, [cloudReady]);
+
+  useEffect(() => {
+    if (!cloudReady || !apiCredentialsChecked || !billing.checked || apiCredentials.ready || billing.active) return;
+    const remembered = window.localStorage.getItem(`market-agent-access-choice:${userId}`);
+    if (!billing.trial.active || !remembered) setAccessChoiceOpen(true);
+  }, [cloudReady, apiCredentialsChecked, apiCredentials.ready, billing.checked, billing.active, billing.trial.active, userId]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -191,7 +233,9 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
   const activeProject = state.projects.find((project) => project.id === state.activeProjectId) || state.projects[0];
   const projectRuns = state.runs.filter((run) => run.projectId === activeProject.id);
   const activeSchedule = state.schedules[activeProject.id] || createDefaultSchedule();
-  const runtimeReady = apiCredentials.ready;
+  const runtimeReady = apiCredentials.ready || billing.active || billing.trial.active;
+  const automationReady = apiCredentials.ready || billing.active;
+  const accessMode = apiCredentials.ready ? "byok" : billing.active ? "managed" : billing.trial.active ? "trial" : "expired";
 
   const updateWorkspace = (workspace: ProductWorkspace) => setState((current) => ({
     ...current,
@@ -238,6 +282,40 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
   };
 
   const navigate = (next: Page) => { setPage(next); setMobileOpen(false); setSelectedRunId(null); };
+  const rememberAccessChoice = (choice: "trial" | "byok" | "managed") => {
+    window.localStorage.setItem(`market-agent-access-choice:${userId}`, choice);
+    setAccessChoiceOpen(false);
+  };
+  const startManagedSubscription = async () => {
+    setBillingBusy(true);
+    try {
+      const response = await apiFetch("/api/billing", { method: "POST", body: JSON.stringify({ action: "create" }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Subscription checkout could not start.");
+      if (data.active) { await refreshBilling(); setAccessChoiceOpen(false); return; }
+      if (!data.approvalUrl) throw new Error("PayPal did not return a checkout link.");
+      window.location.assign(data.approvalUrl);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Subscription checkout could not start.");
+    } finally {
+      setBillingBusy(false);
+    }
+  };
+  const cancelManagedPlan = async () => {
+    if (!window.confirm("Cancel the $29.99 monthly managed text plan? Access continues only through your own connected APIs or any remaining demo period.")) return;
+    setBillingBusy(true);
+    try {
+      const response = await apiFetch("/api/billing", { method: "POST", body: JSON.stringify({ action: "cancel" }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The subscription could not be cancelled.");
+      setBilling(data as BillingStatus);
+      notify("Managed plan cancelled.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The subscription could not be cancelled.");
+    } finally {
+      setBillingBusy(false);
+    }
+  };
   const completeness = workspaceCompleteness(activeProject);
 
   if (cloudError && !cloudReady) {
@@ -258,11 +336,11 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
           {projectMenuOpen && <div className="op-project-menu"><div className="op-project-menu__head"><span>Projects</span><small>{state.projects.length}</small></div>{state.projects.map((project) => <button key={project.id} className={project.id === activeProject.id ? "active" : ""} onClick={() => switchProject(project.id)}><span>{projectInitials(project.name)}</span><div><strong>{project.name || "Unnamed project"}</strong><small>{project.id === activeProject.id ? "Active" : "Switch project"}</small></div>{project.id === activeProject.id && <Check size={14} />}</button>)}<button className="op-project-add" onClick={createProject}><Plus size={14} /> Create new project</button></div>}
         </div>
         <nav>{nav.map((item) => { const Icon = item.icon; const count = item.id === "research" ? projectRuns.filter((r) => ["research", "audience"].includes(r.action)).length : item.id === "campaigns" ? projectRuns.filter((r) => r.action === "campaign").length : item.id === "content" ? projectRuns.filter((r) => r.action === "social").length : 0; return <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => navigate(item.id)}><Icon size={17} /><span>{item.label}</span>{count > 0 && <em>{count}</em>}</button>; })}</nav>
-        <div className="op-sidebar__bottom"><div className={`op-api-dot ${runtimeReady ? "ready" : ""}`} /><div><strong>{runtimeReady ? "Agent ready" : "Connect your APIs"}</strong><small>{runtimeReady ? "Private analysis service" : "Open Connections"}</small></div></div>
+        <div className="op-sidebar__bottom"><div className={`op-api-dot ${runtimeReady ? "ready" : ""}`} /><div><strong>{runtimeReady ? "Agent ready" : "Choose access"}</strong><small>{accessMode === "byok" ? "Your private APIs" : accessMode === "managed" ? "Managed text plan" : accessMode === "trial" ? `${billing.trial.daysRemaining}-day demo remaining` : "Connect APIs or subscribe"}</small></div></div>
       </aside>
 
       <main className="op-main">
-        <header className="op-topbar"><button className="op-mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={20} /></button><div className="op-product-state"><span className={completeness >= 60 ? "good" : ""}>{completeness}%</span><div><strong>Product brain</strong><small>{completeness >= 60 ? "Ready for grounded work" : "Needs product context"}</small></div></div><div className="op-topbar__right"><span className={`op-status ${runtimeReady ? "op-status--ready" : ""}`}><i />{runtimeReady ? "Live agent" : "Connect your APIs"}</span><span className="op-cloud-state"><Cloud size={14} />{cloudSaving ? "Saving…" : cloudError ? "Save issue" : "Saved"}</span><button className="op-user-button" title={userEmail} onClick={() => void onSignOut()}><LogOut size={15} /> Sign out</button></div></header>
+        <header className="op-topbar"><button className="op-mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={20} /></button><div className="op-product-state"><span className={completeness >= 60 ? "good" : ""}>{completeness}%</span><div><strong>Product brain</strong><small>{completeness >= 60 ? "Ready for grounded work" : "Needs product context"}</small></div></div><div className="op-topbar__right"><span className={`op-status ${runtimeReady ? "op-status--ready" : ""}`}><i />{runtimeReady ? accessMode === "trial" ? "Demo active" : "Live agent" : "Choose access"}</span><span className="op-cloud-state"><Cloud size={14} />{cloudSaving ? "Saving…" : cloudError ? "Save issue" : "Saved"}</span><button className="op-user-button" title={userEmail} onClick={() => void onSignOut()}><LogOut size={15} /> Sign out</button></div></header>
 
         <div className="op-page">
           {selectedRunId ? <RunDetail run={state.runs.find((run) => run.id === selectedRunId)!} connections={connections} onBack={() => setSelectedRunId(null)} onConnect={() => navigate("integrations")} onStatus={updateRunStatus} onOutput={updateRunOutput} onDelete={deleteRun} notify={notify} /> : <>
@@ -272,15 +350,29 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
             {page === "campaigns" && <RunLibrary title="Campaigns" description="Campaign plans become real project records here—never fictional performance." empty="No campaigns have been generated for this project yet." runs={projectRuns.filter((run) => run.action === "campaign")} onOpen={setSelectedRunId} onStart={() => navigate("agent")} />}
             {page === "content" && <ContentLibrary userId={userId} workspace={activeProject} runs={projectRuns.filter((run) => run.action === "social")} mediaConfigured={apiCredentials.mediaReady} videoConfigured={apiCredentials.videoReady} onOpen={setSelectedRunId} onStart={() => navigate("agent")} notify={notify} />}
             {page === "analytics" && <AnalyticsDashboard projectId={activeProject.id} connection={connections.analytics} onConnect={() => navigate("integrations")} />}
-            {page === "integrations" && <OperationalIntegrations projectId={activeProject.id} userEmail={userEmail} health={{ ...health, agentConfigured: runtimeReady, mediaConfigured: apiCredentials.mediaReady }} apiCredentials={apiCredentials} onApiCredentials={setApiCredentials} connections={connections} onConnections={setConnections} schedule={activeSchedule} onSchedule={updateSchedule} notify={notify} />}
+            {page === "integrations" && <OperationalIntegrations projectId={activeProject.id} userEmail={userEmail} health={{ ...health, agentConfigured: runtimeReady, mediaConfigured: apiCredentials.mediaReady }} apiCredentials={apiCredentials} onApiCredentials={setApiCredentials} billing={billing} accessMode={accessMode} automationReady={automationReady} billingBusy={billingBusy} onSubscribe={() => void startManagedSubscription()} onCancelPlan={() => void cancelManagedPlan()} connections={connections} onConnections={setConnections} schedule={activeSchedule} onSchedule={updateSchedule} notify={notify} />}
           </>}
         </div>
       </main>
       {mobileOpen && <button className="op-scrim" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
       <ProjectChat workspace={activeProject} open={projectChatOpen} onOpen={() => setProjectChatOpen(true)} onClose={() => setProjectChatOpen(false)} onSave={updateWorkspace} notify={notify} />
+      {accessChoiceOpen && <AccessChoice billing={billing} busy={billingBusy} onDemo={() => rememberAccessChoice("trial")} onApis={() => { rememberAccessChoice("byok"); navigate("integrations"); }} onSubscribe={() => { rememberAccessChoice("managed"); void startManagedSubscription(); }} onClose={() => setAccessChoiceOpen(false)} />}
       {toast && <div className="op-toast"><Sparkles size={15} />{toast}<button onClick={() => setToast(null)}><X size={14} /></button></div>}
     </div>
   );
+}
+
+function AccessChoice({ billing, busy, onDemo, onApis, onSubscribe, onClose }: { billing: BillingStatus; busy: boolean; onDemo: () => void; onApis: () => void; onSubscribe: () => void; onClose: () => void }) {
+  return <><button className="op-access-scrim" aria-label="Close access choices" onClick={onClose} /><aside className="op-access-choice" aria-label="Choose Market Agent access">
+    <header><span><Sparkles size={19} /></span><div><small>WELCOME TO MARKET AGENT</small><strong>Choose how you want the agent to work</strong></div><button onClick={onClose} aria-label="Close"><X size={17} /></button></header>
+    <p className="op-access-intro">Start with the demo, connect your own APIs for full capabilities, or use the managed text plan.</p>
+    <div className="op-access-options">
+      {billing.trial.active && <article className="recommended"><em>RECOMMENDED TO START</em><span><Bot size={19} /></span><h2>10-day demo</h2><strong>$0</strong><p>Upload documents, test project analysis and campaign reasoning, and connect LinkedIn.</p><ul><li><Check size={13} />{billing.trial.daysRemaining} days remaining</li><li><Check size={13} />Limited smart text work</li><li><Check size={13} />LinkedIn connector only</li><li><X size={13} />No image or video creation</li></ul><button onClick={onDemo}>Start the demo <ArrowRight size={14} /></button></article>}
+      <article><span><KeyRound size={19} /></span><h2>Use your APIs</h2><strong>Provider costs only</strong><p>Connect your private services and pay them directly. Market Agent never shares your keys with another user.</p><ul><li><Check size={13} />Full reasoning access</li><li><Check size={13} />Image and video where supported</li><li><Check size={13} />All available connectors</li><li><Check size={13} />Your provider billing</li></ul><button onClick={onApis}>Connect my APIs <ArrowRight size={14} /></button></article>
+      <article><span><CircleDollarSign size={19} /></span><h2>Managed text plan</h2><strong>$29.99 <small>USD / month</small></strong><p>Use Market Agent’s managed services for ongoing research, strategy, campaigns, writing, and balanced review.</p><ul><li><Check size={13} />Three-way text strategy review</li><li><Check size={13} />Ongoing campaign reasoning</li><li><Check size={13} />All available connectors</li><li><X size={13} />No image or video creation</li></ul><button onClick={onSubscribe} disabled={busy || !billing.configured}>{busy ? "Opening PayPal…" : billing.configured ? "Subscribe with PayPal" : "PayPal setup pending"} <ArrowRight size={14} /></button></article>
+    </div>
+    {!billing.trial.active && <button className="op-access-later" onClick={onClose}>Use the setup assistant for now</button>}
+  </aside></>;
 }
 
 function ProjectChat({ workspace, open, onOpen, onClose, onSave, notify }: { workspace: ProductWorkspace; open: boolean; onOpen: () => void; onClose: () => void; onSave: (workspace: ProductWorkspace) => void; notify: (message: string) => void }) {
@@ -1346,7 +1438,7 @@ function sourceDisplayName(source: AgentRun["sources"][number]) {
   }
 }
 
-function OperationalIntegrations({ projectId, userEmail, health, apiCredentials, onApiCredentials, connections, onConnections, schedule, onSchedule, notify }: { projectId: string; userEmail: string; health: HealthState; apiCredentials: ApiCredentialStatus; onApiCredentials: (status: ApiCredentialStatus) => void; connections: ConnectionStatus; onConnections: (status: ConnectionStatus) => void; schedule: AgentSchedule; onSchedule: (schedule: AgentSchedule) => void; notify: (message: string) => void }) {
+function OperationalIntegrations({ projectId, userEmail, health, apiCredentials, onApiCredentials, billing, accessMode, automationReady, billingBusy, onSubscribe, onCancelPlan, connections, onConnections, schedule, onSchedule, notify }: { projectId: string; userEmail: string; health: HealthState; apiCredentials: ApiCredentialStatus; onApiCredentials: (status: ApiCredentialStatus) => void; billing: BillingStatus; accessMode: "byok" | "managed" | "trial" | "expired"; automationReady: boolean; billingBusy: boolean; onSubscribe: () => void; onCancelPlan: () => void; connections: ConnectionStatus; onConnections: (status: ConnectionStatus) => void; schedule: AgentSchedule; onSchedule: (schedule: AgentSchedule) => void; notify: (message: string) => void }) {
   const [connecting, setConnecting] = useState("");
   const [savingProvider, setSavingProvider] = useState<ApiProvider | "">("");
   const [keyDrafts, setKeyDrafts] = useState<Record<ApiProvider, string>>({ openai: "", google: "", anthropic: "" });
@@ -1452,16 +1544,18 @@ function OperationalIntegrations({ projectId, userEmail, health, apiCredentials,
     { id: "tiktok", name: "TikTok", detail: connections.tiktok.connected ? `Authorized account: ${connections.tiktok.accountLabel}` : "Videos and photo posts; public publishing follows platform review", credential: "TikTok direct-post authorization", ready: connections.tiktok.canPublish, configured: connections.tiktok.configured, connected: connections.tiktok.connected, core: false },
     { id: "x", name: "X", detail: connections.x.connected ? `Authorized account: ${connections.x.accountLabel}` : "Text posts from the approved action queue", credential: "X write authorization", ready: connections.x.canPublish, configured: connections.x.configured, connected: connections.x.connected, core: false },
   ];
-  const readyToAuthorize = connectors.filter((connector) => connector.id && connector.configured && !connector.ready);
+  const connectorAllowed = (id?: ConnectionProvider) => !id || accessMode === "byok" || accessMode === "managed" || (accessMode === "trial" && id === "linkedin");
+  const readyToAuthorize = connectors.filter((connector) => connector.id && connector.configured && !connector.ready && connectorAllowed(connector.id));
   return <div className="op-stack">
     <div className="op-heading"><div className="op-eyebrow">Private services and distribution</div><h1>Connections</h1><p>Connect your own private APIs once for every project in your account. Delivery channels remain connected separately for each project.</p></div>
-    <section className={`op-runtime ${health.agentConfigured ? "ready" : ""}`}><span>{health.agentConfigured ? <Check size={21} /> : <KeyRound size={21} />}</span><div><strong>{apiCredentials.collaborationReady ? "Three-agent strategy review is ready" : health.agentConfigured ? `${apiCredentials.connectedCount} private ${apiCredentials.connectedCount === 1 ? "API is" : "APIs are"} connected` : "Connect OpenAI or Gemini to begin"}</strong><p>{apiCredentials.collaborationReady ? "All three independent agents will work together on strategy and produce a balanced final recommendation." : health.agentConfigured ? "Real work is enabled. Add the remaining APIs for stronger cross-checking and better-balanced strategy." : "One core API unlocks reasoning and image creation. Connect all three for the best strategic performance."}</p></div></section>
-    {!health.agentConfigured && <section className="op-starter-guide"><span><Sparkles size={19} /></span><div><small>STARTER ASSISTANT</small><strong>I’ll help you connect the right services.</strong><p>Start with either OpenAI or Gemini. That is enough to unlock real reasoning and image creation. Claude adds an independent reviewer. When all three are connected, three agents work together on each balanced strategy.</p></div></section>}
+    <section className={`op-runtime ${health.agentConfigured ? "ready" : ""}`}><span>{health.agentConfigured ? <Check size={21} /> : <KeyRound size={21} />}</span><div><strong>{accessMode === "managed" ? "Managed text plan is active" : accessMode === "trial" ? `10-day demo · ${billing.trial.daysRemaining} days remaining` : apiCredentials.collaborationReady ? "Three-way strategy review is ready" : health.agentConfigured ? `${apiCredentials.connectedCount} private ${apiCredentials.connectedCount === 1 ? "API is" : "APIs are"} connected` : "Choose an access option to begin"}</strong><p>{accessMode === "managed" ? "Research, strategy, campaigns, writing, and balanced review are active. Image and video creation require your own APIs." : accessMode === "trial" ? "Document analysis, campaign reasoning, and LinkedIn are available within demo limits. Image and video creation are excluded." : apiCredentials.collaborationReady ? "Three independent analyses can be combined into one balanced recommendation." : health.agentConfigured ? "Real work is enabled. Add the remaining private APIs for stronger cross-checking." : "Connect your APIs for full capabilities or activate the $29.99 monthly managed text plan."}</p></div></section>
+    <section className={`op-managed-plan ${billing.active ? "active" : ""}`}><div className="op-managed-plan__icon"><CircleDollarSign size={21} /></div><div><small>MANAGED TEXT ACCESS</small><h2>{billing.active ? "Your $29.99 monthly plan is active" : "Use Market Agent’s managed APIs"}</h2><p>Text research, strategy, campaigns, writing, and three-way review. Image and video creation are not included.</p><ul><li><Check size={13} />Pay monthly through PayPal</li><li><Check size={13} />Usage limits protect service costs</li><li><X size={13} />No image or video generation</li></ul></div>{billing.active ? <button className="danger" onClick={onCancelPlan} disabled={billingBusy}>{billingBusy ? "Updating…" : "Cancel plan"}</button> : <button onClick={onSubscribe} disabled={billingBusy || !billing.configured}>{billingBusy ? "Opening PayPal…" : billing.configured ? "Subscribe · $29.99/month" : "PayPal setup pending"}</button>}</section>
+    {!health.agentConfigured && <section className="op-starter-guide"><span><Sparkles size={19} /></span><div><small>STARTER ASSISTANT</small><strong>I’ll help you choose and connect the right access.</strong><p>The setup assistant remains available. Real project work requires an active demo, your own APIs, or the managed text plan.</p></div></section>}
     {userEmail.toLowerCase() === "unleash@evilcreatives.com" && !apiCredentials.collaborationReady && <section className="op-owner-restore"><KeyRound size={19} /><div><strong>Your deployment already has three private keys</strong><p>Transfer them directly from Vercel into this account’s encrypted vault. They will never be displayed or sent to the browser.</p></div><button onClick={() => void restoreOwnerCredentials()} disabled={Boolean(savingProvider)}>{savingProvider ? "Connecting…" : "Connect my stored keys"}</button></section>}
     <section className="op-api-vault"><div className="op-api-vault__head"><div><small>ACCOUNT-WIDE API VAULT</small><h2>Your private analysis connections</h2><p>One core API is required. Two improve coverage. All three unlock the strongest collaborative review. Your keys are isolated to your signed-in account.</p></div><span><ShieldCheck size={17} /> Encrypted</span></div><div className="op-api-vault__grid">{apiOptions.map((option) => { const saved = apiCredentials.credentials[option.provider]; const busy = savingProvider === option.provider; return <article key={option.provider} className={saved.connected ? "connected" : ""}><div className="op-api-card__title"><span><KeyRound size={16} /></span><div><strong>{option.name}</strong><small>{option.account}</small></div><em>{saved.connected ? "Saved" : option.provider === "anthropic" ? "Optional" : "Core"}</em></div><p>{option.detail}</p><a className="op-api-help" href={option.helpUrl} target="_blank" rel="noreferrer">Create or find key in {option.tier} <ArrowRight size={11} /></a>{saved.connected ? <div className="op-api-saved"><code>Key ending ••••{saved.hint}</code><div><button className="danger" onClick={() => void disconnectApiCredential(option.provider)} disabled={busy}>{busy ? "Removing…" : "Disconnect"}</button></div></div> : null}<label><span>{saved.connected ? "Paste a new key to replace it" : "Paste API key"}</span><div><input type="password" value={keyDrafts[option.provider]} onChange={(event) => setKeyDrafts((current) => ({ ...current, [option.provider]: event.target.value }))} placeholder="Your private API key" autoComplete="off" spellCheck={false} /><button onClick={() => void saveApiCredential(option.provider)} disabled={busy || !keyDrafts[option.provider].trim()}>{busy ? "Saving…" : saved.connected ? "Replace" : "Connect"}</button></div></label></article>; })}</div><div className="op-api-how"><div><strong>OpenAI</strong><p>Open the API keys page, create a secret key, copy it once, and paste it above.</p></div><div><strong>Gemini</strong><p>In Google Cloud, enable the Gemini API, open APIs &amp; Services → Credentials, create an API key, restrict it to that API, and paste it above.</p></div><div><strong>Claude</strong><p>Open the Anthropic Console key settings, create a key, copy it, and paste it above.</p></div></div><small className="op-api-vault__note">Keys are used only on the server for this account’s requests and scheduled work. The browser never stores them, and the interface shows only the final four characters after saving.</small></section>
     {readyToAuthorize.length > 0 && <section className="op-connection-blocker"><CircleAlert size={21} /><div><strong>{readyToAuthorize.length} {readyToAuthorize.length === 1 ? "account is" : "accounts are"} ready for your approval</strong><p>Choose Connect on a channel below, sign in, and approve access.</p></div></section>}
-    <section className="op-schedule-card"><div><span><Bot size={18} /></span><div><strong>Daily autonomous market pulse</strong><p>Runs each morning Eastern time in the cloud, creates a new draft, and never publishes it.</p></div><label className="op-switch"><input type="checkbox" checked={schedule.enabled} disabled={!apiCredentials.ready} onChange={(event) => onSchedule({ ...schedule, enabled: event.target.checked })} /><i /></label></div><div className="op-schedule-fields"><label><span>Workflow</span><select value={schedule.action} onChange={(event) => onSchedule({ ...schedule, action: event.target.value as AgentSchedule["action"] })}><option value="research">Market research</option><option value="audience">Audience analysis</option><option value="campaign">30-day campaign</option><option value="social">Social content pack</option></select></label><label className="wide"><span>Direction</span><textarea value={schedule.prompt} onChange={(event) => onSchedule({ ...schedule, prompt: event.target.value })} /></label></div><small>{!apiCredentials.ready ? "Connect OpenAI or Gemini to enable automatic work." : schedule.lastRunAt ? `Last automatic run: ${new Date(schedule.lastRunAt).toLocaleString()}` : "No automatic run has happened yet."}</small></section>
-    <div className="op-connector-grid">{connectors.map((connector) => <article key={connector.name}><div><span>{connector.name.slice(0, 2)}</span><div><strong>{connector.name}</strong><small>{connector.core ? "Cloud core" : connector.id === "google-analytics" ? "Measurement" : "Delivery channel"}</small></div><em className={connector.ready ? "ready" : ""}>{connector.ready ? "Operational" : connector.authorized ? "Choose property" : connector.connected ? "Permission missing" : connector.configured ? "Ready to connect" : "Developer setup required"}</em></div><p>{connector.detail}</p><code>{connector.credential}</code>{connector.id === "google-analytics" && connector.authorized && !connector.ready && connections.analytics.properties.length > 0 && <div className="op-property-picker"><label><span>Property for this project</span><select aria-label="Google Analytics property" value={analyticsProperty} onChange={(event) => setAnalyticsProperty(event.target.value)}>{connections.analytics.properties.map((property) => <option key={property.id} value={property.id}>{property.account ? `${property.account} · ` : ""}{property.name} · {property.id}</option>)}</select></label><button onClick={() => void chooseAnalyticsProperty()} disabled={!analyticsProperty || Boolean(connecting)}>{connecting === "google-analytics" ? "Verifying property…" : "Use selected property"}</button></div>}{connector.id && !connector.ready && !(connector.id === "google-analytics" && connector.authorized) && <button className="op-connect-button" onClick={() => void connectAccount(connector.id!)} disabled={!connector.configured || Boolean(connecting)}>{connector.configured ? (connecting === connector.id ? `Opening ${connector.name}…` : connector.connected ? `Reconnect ${connector.name}` : `Connect ${connector.name}`) : "Developer setup required"}</button>}{connector.id && connector.ready && <button className="op-disconnect-button" onClick={() => void disconnectAccount(connector.id!, connector.name)} disabled={Boolean(connecting)}>{connecting === connector.id ? "Disconnecting…" : "Disconnect"}</button>}</article>)}</div>
+    <section className="op-schedule-card"><div><span><Bot size={18} /></span><div><strong>Daily autonomous market pulse</strong><p>Runs each morning Eastern time in the cloud, creates a new draft, and never publishes it.</p></div><label className="op-switch"><input type="checkbox" checked={schedule.enabled} disabled={!automationReady} onChange={(event) => onSchedule({ ...schedule, enabled: event.target.checked })} /><i /></label></div><div className="op-schedule-fields"><label><span>Workflow</span><select value={schedule.action} onChange={(event) => onSchedule({ ...schedule, action: event.target.value as AgentSchedule["action"] })}><option value="research">Market research</option><option value="audience">Audience analysis</option><option value="campaign">30-day campaign</option><option value="social">Social content pack</option></select></label><label className="wide"><span>Direction</span><textarea value={schedule.prompt} onChange={(event) => onSchedule({ ...schedule, prompt: event.target.value })} /></label></div><small>{!automationReady ? "Automation is available with your own APIs or the managed plan." : schedule.lastRunAt ? `Last automatic run: ${new Date(schedule.lastRunAt).toLocaleString()}` : "No automatic run has happened yet."}</small></section>
+    <div className="op-connector-grid">{connectors.map((connector) => { const allowed = connectorAllowed(connector.id); return <article key={connector.name} className={!allowed ? "locked" : ""}><div><span>{connector.name.slice(0, 2)}</span><div><strong>{connector.name}</strong><small>{connector.core ? "Cloud core" : connector.id === "google-analytics" ? "Measurement" : "Delivery channel"}</small></div><em className={connector.ready ? "ready" : ""}>{!allowed ? "Upgrade required" : connector.ready ? "Operational" : connector.authorized ? "Choose property" : connector.connected ? "Permission missing" : connector.configured ? "Ready to connect" : "Developer setup required"}</em></div><p>{!allowed ? (accessMode === "trial" ? "Only LinkedIn is included in the 10-day demo." : "Connect your APIs or activate the managed plan to use this connector.") : connector.detail}</p><code>{connector.credential}</code>{allowed && connector.id === "google-analytics" && connector.authorized && !connector.ready && connections.analytics.properties.length > 0 && <div className="op-property-picker"><label><span>Property for this project</span><select aria-label="Google Analytics property" value={analyticsProperty} onChange={(event) => setAnalyticsProperty(event.target.value)}>{connections.analytics.properties.map((property) => <option key={property.id} value={property.id}>{property.account ? `${property.account} · ` : ""}{property.name} · {property.id}</option>)}</select></label><button onClick={() => void chooseAnalyticsProperty()} disabled={!analyticsProperty || Boolean(connecting)}>{connecting === "google-analytics" ? "Verifying property…" : "Use selected property"}</button></div>}{allowed && connector.id && !connector.ready && !(connector.id === "google-analytics" && connector.authorized) && <button className="op-connect-button" onClick={() => void connectAccount(connector.id!)} disabled={!connector.configured || Boolean(connecting)}>{connector.configured ? (connecting === connector.id ? `Opening ${connector.name}…` : connector.connected ? `Reconnect ${connector.name}` : `Connect ${connector.name}`) : "Developer setup required"}</button>}{connector.id && connector.ready && <button className="op-disconnect-button" onClick={() => void disconnectAccount(connector.id!, connector.name)} disabled={Boolean(connecting)}>{connecting === connector.id ? "Disconnecting…" : "Disconnect"}</button>}</article>; })}</div>
     <section className="op-truth-card"><ShieldCheck size={20} /><div><strong>Nothing publishes without a real account</strong><p>The agent can prepare targets, copy, schedules, and assets now. Sending and publishing become available only after the relevant account confirms authorization and the platform grants the required permission.</p></div></section>
   </div>;
 }

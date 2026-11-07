@@ -31,7 +31,7 @@ export async function prepareDeliveryJobs(userId, projectId, runId, userApiEnv, 
   if (!run || !workspace) throw deliveryError("The approved project work could not be found.", 404);
   if (run.status !== "Approved") throw deliveryError("Approve the saved work before preparing external actions.", 409);
   const connections = await getConnectionStatus(userId, projectId, env);
-  const channels = operationalChannels(connections);
+  const channels = operationalChannels(connections).filter((channel) => channelAllowedForAccess(channel, userApiEnv));
   if (!channels.length) throw deliveryError("Connect an operational email or social channel first.", 409);
   const plan = await generateDeliveryPlan({ run, workspace, channels }, userApiEnv);
   const safeItems = normalizeDeliveryItems(plan?.items, channels, workspace);
@@ -46,7 +46,7 @@ export async function prepareDeliveryJobs(userId, projectId, runId, userApiEnv, 
   return listDeliveryJobs(userId, projectId, runId, env);
 }
 
-export async function executeDeliveryJob(userId, id, env = process.env) {
+export async function executeDeliveryJob(userId, id, userApiEnv, env = process.env) {
   await ensureDeliveryTable(env);
   const pool = getPool(env);
   const client = await pool.connect();
@@ -56,6 +56,9 @@ export async function executeDeliveryJob(userId, id, env = process.env) {
     const result = await client.query("SELECT * FROM market_agent_delivery_jobs WHERE id = $1 AND user_id = $2 FOR UPDATE", [id, userId]);
     row = result.rows[0];
     if (!row) throw deliveryError("The delivery item was not found.", 404);
+    if (!channelAllowedForAccess(row.channel, userApiEnv)) {
+      throw deliveryError("This delivery channel is not included in the current access level.", 403);
+    }
     if (row.status !== "awaiting_approval") throw deliveryError("This delivery item is no longer waiting for approval.", 409);
     const claimed = await client.query(
       "UPDATE market_agent_delivery_jobs SET status = 'running', approved_at = NOW(), updated_at = NOW() WHERE id = $1 AND user_id = $2 RETURNING *",
@@ -108,6 +111,12 @@ function operationalChannels(connections) {
   if (connections.gmail?.connected && connections.gmail.canSend) channels.push("gmail");
   for (const provider of ["linkedin", "instagram", "tiktok", "x"]) if (connections[provider]?.connected && connections[provider].canPublish) channels.push(provider);
   return channels;
+}
+
+function channelAllowedForAccess(channel, accessEnv) {
+  const mode = String(accessEnv?.MARKET_AGENT_ACCESS_MODE || "expired");
+  if (mode === "byok" || mode === "managed") return true;
+  return mode === "trial" && channel === "linkedin";
 }
 
 function normalizeDeliveryItems(values, channels, workspace) {
