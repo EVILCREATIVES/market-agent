@@ -17,6 +17,11 @@ import {
 } from "../server/analytics.mjs";
 import { connectorAllowedForAccess } from "../server/billing.mjs";
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
+import {
+  createMailchimpAuthorizationUrl,
+  disconnectMailchimp,
+  selectMailchimpAudience,
+} from "../server/newsletters.mjs";
 
 export default async function handler(req, res) {
   if (!["GET", "POST", "DELETE"].includes(req.method)) {
@@ -31,6 +36,7 @@ export default async function handler(req, res) {
       const provider = String(req.query?.provider || req.body?.provider || "google-gmail");
       if (provider === "google-gmail") await disconnectGoogleMailbox(userId, projectId);
       else if (provider === "google-analytics") await disconnectAnalytics(userId, projectId);
+      else if (provider === "mailchimp") await disconnectMailchimp(userId, projectId);
       else await disconnectSocialConnection(userId, projectId, provider);
       return res.status(200).json({ ok: true, ...(await getConnectionStatus(userId, projectId)) });
     }
@@ -46,9 +52,15 @@ export default async function handler(req, res) {
       await selectAnalyticsProperty(userId, projectId, req.body.propertyId);
       return res.status(200).json({ ok: true, ...(await getConnectionStatus(userId, projectId)) });
     }
+    if (provider === "mailchimp" && req.body?.audienceId) {
+      await selectMailchimpAudience(userId, projectId, req.body.audienceId);
+      return res.status(200).json({ ok: true, ...(await getConnectionStatus(userId, projectId)) });
+    }
     const origin = requestOrigin(req);
     const authorizationUrl = provider === "google-analytics"
       ? await createAnalyticsAuthorizationUrl({ userId, projectId, origin })
+      : provider === "mailchimp"
+        ? await createMailchimpAuthorizationUrl({ userId, projectId, origin })
       : SOCIAL_PROVIDERS.includes(provider)
         ? await createSocialAuthorizationUrl({ provider, userId, projectId, origin })
         : await createGoogleAuthorizationUrl({ userId, projectId, appEmail: email, origin });

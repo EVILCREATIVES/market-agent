@@ -235,6 +235,7 @@ export interface AssetProposal {
 
 export interface ConnectionStatus {
   analytics: AnalyticsConnectionStatus;
+  mailchimp: MailchimpConnectionStatus;
   gmail: {
     configured: boolean;
     connected: boolean;
@@ -247,6 +248,74 @@ export interface ConnectionStatus {
   instagram: SocialConnectionStatus;
   tiktok: SocialConnectionStatus;
   x: SocialConnectionStatus;
+}
+
+export interface MailchimpConnectionStatus {
+  configured: boolean;
+  connected: boolean;
+  accountLabel: string;
+  accountEmail: string;
+  audiences: Array<{ id: string; name: string; memberCount: number }>;
+  audienceId: string;
+  audienceName: string;
+  connectedAt: string | null;
+  canManage: boolean;
+}
+
+export interface NewsletterDraft {
+  id: string;
+  projectId: string;
+  direction: string;
+  content: {
+    subject: string;
+    previewText: string;
+    headline: string;
+    introduction: string;
+    sections: Array<{ heading: string; body: string }>;
+    ctaLabel: string;
+    ctaUrl: string;
+    closing: string;
+  };
+  html: string;
+  status: "draft" | "preparing" | "scheduled" | "sent" | "failed";
+  externalId: string;
+  archiveUrl: string;
+  error: string;
+  approvedAt: string | null;
+  scheduledFor: string | null;
+  sentAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NewsletterDashboard {
+  audience: {
+    id: string;
+    name: string;
+    memberCount: number;
+    unsubscribeCount: number;
+    cleanedCount: number;
+    openRate: number;
+    clickRate: number;
+  };
+  members: Array<{ id: string; email: string; firstName: string; lastName: string; status: string; confirmedAt: string | null }>;
+  campaigns: Array<{
+    id: string;
+    title: string;
+    subject: string;
+    status: string;
+    archiveUrl: string;
+    sendTime: string | null;
+    emailsSent: number;
+    uniqueOpens: number;
+    openRate: number;
+    uniqueClicks: number;
+    clickRate: number;
+    unsubscribed: number;
+    bounces: number;
+  }>;
+  drafts: NewsletterDraft[];
+  fetchedAt: string;
 }
 
 export interface AnalyticsConnectionStatus {

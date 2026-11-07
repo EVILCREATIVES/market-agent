@@ -16,7 +16,8 @@ It starts empty on purpose. There are no fictional prospects, campaigns, replies
 - Market research, audience analysis, campaign, social-pack, and custom workflows
 - Saved and editable drafts with approval states and source links
 - Per-project Google Analytics connection with verified live GA4 reports
-- Per-project Gmail, LinkedIn, Instagram, TikTok, and X authorization
+- Per-project Gmail, Mailchimp, LinkedIn, Instagram, TikTok, and X authorization
+- In-app newsletter drafting, branded HTML preview, consent-based subscriber registration, approved send/schedule, and live campaign reporting
 - A server-backed delivery queue with an explicit approval before every real send or publish action
 - Optional daily cloud automation that creates a draft without publishing it
 - A 10-day text-only demo with document analysis, campaign reasoning, and LinkedIn access
@@ -59,6 +60,7 @@ The deployment's three AI keys fund only the limited demo and active managed sub
 - `INSTAGRAM_APP_ID` and `INSTAGRAM_APP_SECRET` — Instagram professional-account OAuth and publishing
 - `TIKTOK_CLIENT_KEY` and `TIKTOK_CLIENT_SECRET` — TikTok Login Kit and Content Posting API
 - `X_CLIENT_ID` and `X_CLIENT_SECRET` — X OAuth 2.0 posting
+- `MAILCHIMP_CLIENT_ID` and `MAILCHIMP_CLIENT_SECRET` — per-user Mailchimp OAuth for audiences, newsletters, subscribers, and campaign reports
 - `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, and `PAYPAL_PLAN_ID` — $29.99 monthly subscription checkout
 - `PAYPAL_WEBHOOK_ID` — signature-verified subscription lifecycle updates
 - `PAYPAL_ENVIRONMENT` — `sandbox` while testing; set to `live` only for the production PayPal app and plan
@@ -69,6 +71,8 @@ The Google Cloud project must enable Gmail API, Google Analytics Admin API, and 
 - `https://market-agent-lime-gamma.vercel.app/api/google-analytics-callback`
 
 Each social developer app must likewise register `https://market-agent-lime-gamma.vercel.app/api/social-callback` and obtain its required publishing scope.
+
+The Mailchimp registered app must use `https://market-agent-lime-gamma.vercel.app/api/mailchimp-callback` as its OAuth redirect URI. Users authorize their own Mailchimp account; its plan limits and delivery charges remain on that user.
 
 The PayPal app must send subscription webhooks to `https://market-agent-lime-gamma.vercel.app/api/paypal-webhook`. Subscribe to subscription activated, updated, suspended, cancelled, expired, and payment-failed events, plus subscription payment completed, refunded, and reversed events.
 

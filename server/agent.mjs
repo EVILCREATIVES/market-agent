@@ -112,6 +112,38 @@ Create only items that are immediately executable. For social channels, select t
   });
 }
 
+export async function generateNewsletterDraft(payload, env = process.env) {
+  if (!env.OPENAI_API_KEY && !env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    const error = new Error("Connect your private analysis APIs or activate the managed plan before creating a newsletter.");
+    error.statusCode = 503;
+    throw error;
+  }
+  const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
+  const direction = String(payload?.direction || "").trim().slice(0, 12_000);
+  const approvedWork = Array.isArray(payload?.approvedWork)
+    ? payload.approvedWork.slice(0, 5).map((run) => ({ title: run?.title, prompt: run?.prompt, output: String(run?.output || "").slice(0, 12_000) }))
+    : [];
+  const prompt = `Create a finished email newsletter for this project.
+
+PROJECT CONTEXT
+${buildContext(workspace)}
+
+USER DIRECTION
+${direction || "Choose the strongest timely, useful newsletter topic supported by the project context and approved work."}
+
+RECENT APPROVED WORK
+${approvedWork.length ? JSON.stringify(approvedWork, null, 2) : "No approved campaign record was supplied."}
+
+Return final subscriber-facing copy, not advice or a production brief. Keep it concise, useful, and specific. The subject must be under 100 characters and the preview text under 150 characters. Use 2–4 short sections. Use only product claims supported by the project context. The call-to-action URL must be the supplied project website or another supplied source URL; leave it empty if no safe URL exists. Do not mention internal systems, analysis services, or the drafting process.`;
+  return generateStructuredObject({
+    env,
+    name: "newsletter_draft",
+    system: "You are a senior email editor. Produce accurate, polished newsletter copy grounded only in the supplied project facts. Return only structured data.",
+    prompt,
+    schema: newsletterDraftSchema(),
+  });
+}
+
 export async function runProjectConversation(payload, env = process.env) {
   const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
   const message = String(payload?.message || "").trim().slice(0, 12_000);
@@ -529,6 +561,37 @@ function deliveryPlanSchema() {
           },
         },
       },
+    },
+  };
+}
+
+function newsletterDraftSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["subject", "previewText", "headline", "introduction", "sections", "ctaLabel", "ctaUrl", "closing"],
+    properties: {
+      subject: { type: "string" },
+      previewText: { type: "string" },
+      headline: { type: "string" },
+      introduction: { type: "string" },
+      sections: {
+        type: "array",
+        minItems: 2,
+        maxItems: 4,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["heading", "body"],
+          properties: {
+            heading: { type: "string" },
+            body: { type: "string" },
+          },
+        },
+      },
+      ctaLabel: { type: "string" },
+      ctaUrl: { type: "string" },
+      closing: { type: "string" },
     },
   };
 }

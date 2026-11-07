@@ -3,6 +3,7 @@ import { EncryptJWT, jwtDecrypt } from "jose";
 import { getPool } from "./db.mjs";
 import { getSocialConnectionStatus } from "./social-connections.mjs";
 import { getAnalyticsConnectionStatus } from "./analytics.mjs";
+import { getMailchimpConnectionStatus } from "./newsletters.mjs";
 
 const GOOGLE_SCOPES = [
   "openid",
@@ -14,11 +15,12 @@ let connectionsTableReady = false;
 
 export async function getConnectionStatus(userId, projectId = "project-default", env = process.env) {
   const configured = googleConnectorConfigured(env);
-  const [social, analytics] = await Promise.all([
+  const [social, analytics, mailchimp] = await Promise.all([
     getSocialConnectionStatus(userId, projectId, env),
     getAnalyticsConnectionStatus(userId, projectId, env),
+    getMailchimpConnectionStatus(userId, projectId, env),
   ]);
-  if (!env.DATABASE_URL) return { ...emptyStatus(configured), analytics, ...social };
+  if (!env.DATABASE_URL) return { ...emptyStatus(configured), analytics, mailchimp, ...social };
   await ensureConnectionsTable(env);
   const result = await getPool(env).query(
     `SELECT account_email, scopes, status, connected_at, updated_at
@@ -28,7 +30,7 @@ export async function getConnectionStatus(userId, projectId = "project-default",
     [userId, projectId],
   );
   const row = result.rows[0];
-  if (!row || row.status !== "connected") return { ...emptyStatus(configured), analytics, ...social };
+  if (!row || row.status !== "connected") return { ...emptyStatus(configured), analytics, mailchimp, ...social };
   return {
     gmail: {
       configured,
@@ -39,6 +41,7 @@ export async function getConnectionStatus(userId, projectId = "project-default",
       canSend: Array.isArray(row.scopes) && row.scopes.includes("https://www.googleapis.com/auth/gmail.send"),
     },
     analytics,
+    mailchimp,
     ...social,
   };
 }
