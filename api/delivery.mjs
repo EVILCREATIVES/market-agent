@@ -1,5 +1,5 @@
 import { requireUser } from "../server/auth.mjs";
-import { cancelDeliveryJob, executeDeliveryJob, listDeliveryJobs, prepareDeliveryJobs } from "../server/delivery.mjs";
+import { cancelDeliveryJob, executeDeliveryJob, getDeliveryPublishingOptions, listDeliveryJobs, prepareDeliveryJobs } from "../server/delivery.mjs";
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 import { consumeAiUsage } from "../server/billing.mjs";
 
@@ -14,7 +14,8 @@ export default async function handler(req, res) {
     if (req.method === "GET") return res.status(200).json(await listDeliveryJobs(userId, projectId, runId));
     const action = String(req.body?.action || "prepare");
     const userApiEnv = await loadUserApiEnv(userId);
-    if (action === "execute") return res.status(200).json(await executeDeliveryJob(userId, String(req.body?.id || "").slice(0, 100), userApiEnv));
+    if (action === "options") return res.status(200).json(await getDeliveryPublishingOptions(userId, String(req.body?.id || "").slice(0, 100)));
+    if (action === "execute") return res.status(200).json(await executeDeliveryJob(userId, String(req.body?.id || "").slice(0, 100), userApiEnv, req.body?.approval || {}));
     if (action === "cancel") return res.status(200).json(await cancelDeliveryJob(userId, String(req.body?.id || "").slice(0, 100)));
     if (!runId) return res.status(400).json({ error: "Choose approved work first." });
     await consumeAiUsage(userId, "delivery", userApiEnv);

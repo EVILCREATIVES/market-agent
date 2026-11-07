@@ -41,7 +41,7 @@ import { createDefaultSchedule, createEmptyProject, loadState, saveState } from 
 import { prepareLogo, prepareMaterial, type PreparedMaterial } from "./operational/materials";
 import { upload } from "@vercel/blob/client";
 import { apiFetch, getAccessToken } from "./auth";
-import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, BillingStatus, ConnectionStatus, DeliveryJob, HealthState, MediaBudgetSummary, MediaJob, NewsletterDashboard, NewsletterDraft, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, RunStatus, SourceMediaAsset } from "./operational/types";
+import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, BillingStatus, ConnectionStatus, DeliveryJob, HealthState, MediaBudgetSummary, MediaJob, NewsletterDashboard, NewsletterDraft, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, RunStatus, SourceMediaAsset, TikTokPublishingOptions } from "./operational/types";
 
 type Page = "agent" | "brain" | "research" | "campaigns" | "content" | "analytics" | "integrations";
 type CampaignIntensity = "careful" | "assertive" | "aggressive";
@@ -976,7 +976,10 @@ function compactMaterialsForUpload(materials: PreparedMaterial[]) {
 
 function ContentLibrary({ userId, workspace, runs, mediaConfigured, videoConfigured, onOpen, onStart, notify }: { userId: string; workspace: ProductWorkspace; runs: AgentRun[]; mediaConfigured: boolean; videoConfigured: boolean; onOpen: (id: string) => void; onStart: () => void; notify: (message: string) => void }) {
   const [jobs, setJobs] = useState<MediaJob[]>([]);
-  const [summary, setSummary] = useState<MediaBudgetSummary>({ monthlyCapCents: 2500, approvedThisMonthCents: 0, actualThisMonthCents: 0 });
+  const [summary, setSummary] = useState<MediaBudgetSummary>({ monthlyCapCents: 2500, approvedThisMonthCents: 0, actualThisMonthCents: 0, billingOwner: "user" });
+  const [budgetDraft, setBudgetDraft] = useState("25.00");
+  const [budgetSaving, setBudgetSaving] = useState(false);
+  const budgetDirty = useRef(false);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState("");
   const [direction, setDirection] = useState("");
@@ -989,7 +992,10 @@ function ContentLibrary({ userId, workspace, runs, mediaConfigured, videoConfigu
   const applyMediaResponse = (data: { job?: MediaJob; jobs?: MediaJob[]; summary?: MediaBudgetSummary }) => {
     if (data.jobs) setJobs(data.jobs);
     if (data.job) setJobs((current) => [data.job!, ...current.filter((job) => job.id !== data.job!.id)]);
-    if (data.summary) setSummary(data.summary);
+    if (data.summary) {
+      setSummary(data.summary);
+      if (!budgetDirty.current) setBudgetDraft((data.summary.monthlyCapCents / 100).toFixed(2));
+    }
   };
   const applyAssetResponse = (data: { assets?: ProjectAsset[]; proposals?: AssetProposal[] }) => {
     if (data.assets) setAssets(data.assets);
@@ -1223,6 +1229,25 @@ function ContentLibrary({ userId, workspace, runs, mediaConfigured, videoConfigu
     }
   };
 
+  const saveBudget = async () => {
+    const dollars = Number(budgetDraft);
+    if (!Number.isFinite(dollars) || dollars < 0) { notify("Enter a valid monthly amount."); return; }
+    const monthlyCapCents = Math.round(dollars * 100);
+    setBudgetSaving(true);
+    try {
+      const response = await apiFetch("/api/media", { method: "POST", body: JSON.stringify({ action: "set-budget", monthlyCapCents }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The monthly limit could not be saved.");
+      budgetDirty.current = false;
+      applyMediaResponse(data);
+      notify(`Monthly creative-production limit set to ${money(monthlyCapCents)} across your account.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The monthly limit could not be saved.");
+    } finally {
+      setBudgetSaving(false);
+    }
+  };
+
   const activeJobs = jobs.filter((job) => job.status !== "cancelled");
   const waiting = activeJobs.filter((job) => job.status === "awaiting_budget");
   const completed = activeJobs.filter((job) => job.status === "complete");
@@ -1247,9 +1272,9 @@ function ContentLibrary({ userId, workspace, runs, mediaConfigured, videoConfigu
     {producedProposals.length > 0 && <section className="op-proposal-section"><div className="op-section-title"><div><small>APPROVED DELIVERABLES</small><h2>Created documents and decks</h2></div><em>{producedProposals.length}</em></div><div className="op-produced-list">{producedProposals.map((proposal) => <article key={proposal.id}><span>{proposal.kind === "deck" ? <LayoutDashboard size={18} /> : <FileText size={18} />}</span><div><strong>{proposal.title}</strong><small>{proposal.kind === "deck" ? "Presentation deck · PDF" : "PDF document"}</small></div><button onClick={() => void downloadProjectFile(proposal.id, "proposal", `${proposal.title}.pdf`)} disabled={assetWorking === proposal.id}><ArrowRight size={14} />{assetWorking === proposal.id ? "Downloading…" : "Download"}</button></article>)}</div></section>}
 
     <section className="op-media-budget">
-      <div><span><ShieldCheck size={20} /></span><div><small>HARD MONTHLY CEILING</small><strong>{money(summary.monthlyCapCents)} per project</strong><p>{money(summary.actualThisMonthCents)} spent · {money(summary.approvedThisMonthCents)} approved maximum · {money(remaining)} still available</p></div></div>
+      <div><span><ShieldCheck size={20} /></span><div><small>YOUR HARD MONTHLY CEILING</small><strong>{money(summary.monthlyCapCents)} across all projects</strong><p>{money(summary.actualThisMonthCents)} spent · {money(summary.approvedThisMonthCents)} approved maximum · {money(remaining)} still available</p></div><label className="op-budget-edit"><span>Monthly maximum</span><div><i>$</i><input type="number" min="0" max="10000" step="1" value={budgetDraft} onChange={(event) => { budgetDirty.current = true; setBudgetDraft(event.target.value); }} /><button onClick={() => void saveBudget()} disabled={budgetSaving}>{budgetSaving ? "Saving…" : "Save limit"}</button></div></label></div>
       <div className="op-budget-meter"><i style={{ width: `${Math.min(100, Math.round((summary.approvedThisMonthCents / Math.max(1, summary.monthlyCapCents)) * 100))}%` }} /></div>
-      <small>Every asset needs a separate approval. The app will not start requests whose approved estimates exceed this ceiling; your connected provider calculates the final charge.</small>
+      <small>Image and video requests use your private API connection, so the provider charges your account—not Market Agent’s. Every asset still needs separate approval, and the app blocks requests above this limit.</small>
     </section>
 
     <section className="op-media-create">
@@ -1495,12 +1520,33 @@ function RunDetail({ run, connections, onBack, onConnect, onStatus, onOutput, on
   const [output, setOutput] = useState(run.output);
   const [deliveryJobs, setDeliveryJobs] = useState<DeliveryJob[]>([]);
   const [deliveryWorking, setDeliveryWorking] = useState("");
+  const [tiktokOptions, setTikTokOptions] = useState<Record<string, TikTokPublishingOptions>>({});
+  const tiktokOptionsRequested = useRef(new Set<string>());
   const operationalChannels = [connections.gmail.canSend && "Email", connections.linkedin.canPublish && "LinkedIn", connections.instagram.canPublish && "Instagram", connections.tiktok.canPublish && "TikTok", connections.x.canPublish && "X"].filter(Boolean) as string[];
   useEffect(() => {
     apiFetch(`/api/delivery?projectId=${encodeURIComponent(run.projectId)}&runId=${encodeURIComponent(run.id)}`)
       .then(async (response) => { const data = await response.json(); if (response.ok) setDeliveryJobs(Array.isArray(data.jobs) ? data.jobs : []); })
       .catch(() => undefined);
   }, [run.id, run.projectId]);
+  useEffect(() => {
+    for (const job of deliveryJobs) {
+      if (job.channel !== "tiktok" || job.status !== "awaiting_approval" || tiktokOptionsRequested.current.has(job.id)) continue;
+      tiktokOptionsRequested.current.add(job.id);
+      apiFetch("/api/delivery", { method: "POST", body: JSON.stringify({ action: "options", projectId: run.projectId, id: job.id }) })
+        .then(async (response) => {
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "TikTok publishing settings could not be verified.");
+          const options = data as TikTokPublishingOptions;
+          setTikTokOptions((current) => ({ ...current, [job.id]: options }));
+          setDeliveryJobs((current) => current.map((item) => {
+            if (item.id !== job.id || options.privacyLevelOptions.includes(item.payload.privacyLevel)) return item;
+            const privacyLevel = options.privacyLevelOptions.includes("SELF_ONLY") ? "SELF_ONLY" : options.privacyLevelOptions[0];
+            return { ...item, payload: { ...item.payload, privacyLevel } };
+          }));
+        })
+        .catch((error) => notify(error instanceof Error ? error.message : "TikTok publishing settings could not be verified."));
+    }
+  }, [deliveryJobs, notify, run.projectId]);
   const prepareDelivery = async () => {
     setDeliveryWorking("prepare");
     try {
@@ -1513,11 +1559,12 @@ function RunDetail({ run, connections, onBack, onConnect, onStatus, onOutput, on
     finally { setDeliveryWorking(""); }
   };
   const executeDelivery = async (job: DeliveryJob) => {
-    const action = job.channel === "gmail" ? `send this email to ${job.payload.recipient}` : `publish this post to ${deliveryChannelLabel(job.channel)}`;
+    if (job.channel === "tiktok" && !tiktokOptions[job.id]) { notify("TikTok publishing settings are still being verified."); return; }
+    const action = job.channel === "gmail" ? `send this email to ${job.payload.recipient}` : `publish this post to ${deliveryChannelLabel(job.channel)}${job.channel === "tiktok" ? ` with ${tiktokPrivacyLabel(job.payload.privacyLevel).toLowerCase()} visibility` : ""}`;
     if (!window.confirm(`Approve and ${action}? This will perform the real external action now.`)) return;
     setDeliveryWorking(job.id);
     try {
-      const response = await apiFetch("/api/delivery", { method: "POST", body: JSON.stringify({ action: "execute", projectId: run.projectId, id: job.id }) });
+      const response = await apiFetch("/api/delivery", { method: "POST", body: JSON.stringify({ action: "execute", projectId: run.projectId, id: job.id, approval: job.channel === "tiktok" ? job.payload : undefined }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The external action failed.");
       setDeliveryJobs((current) => current.map((item) => item.id === data.job.id ? data.job : item));
@@ -1535,6 +1582,9 @@ function RunDetail({ run, connections, onBack, onConnect, onStatus, onOutput, on
     } catch (error) { notify(error instanceof Error ? error.message : "The delivery item could not be cancelled."); }
     finally { setDeliveryWorking(""); }
   };
+  const updateTikTokApproval = (jobId: string, changes: Partial<DeliveryJob["payload"]>) => {
+    setDeliveryJobs((current) => current.map((item) => item.id === jobId ? { ...item, payload: { ...item.payload, ...changes } } : item));
+  };
   const saveEdit = () => { onOutput(run.id, output); setEditing(false); notify("Changes saved."); };
   const distributionRun = run.action === "campaign" || run.action === "social" || run.action === "chat";
   return <div className="op-stack">
@@ -1542,7 +1592,7 @@ function RunDetail({ run, connections, onBack, onConnect, onStatus, onOutput, on
     <section className="op-run-detail">
       <header><div><div className="op-eyebrow">{actionMeta[run.action].title} · {new Date(run.createdAt).toLocaleString()}</div><h1>{run.title}</h1><p>{run.prompt || actionMeta[run.action].description}</p></div><div><span className={`op-review-state ${run.status === "Approved" ? "approved" : ""}`}>{run.status === "Approved" && <Check size={13} />}{run.status}</span><button className="op-more" onClick={() => { if (window.confirm("Delete this saved agent run?")) onDelete(run.id); }}><Trash2 size={16} /></button></div></header>
       {distributionRun && <div className={`op-execution-state ${operationalChannels.length ? "connected" : ""}`}><span>{operationalChannels.length ? <Check size={19} /> : <Send size={19} />}</span><div><small>EXECUTION STATUS</small><strong>{operationalChannels.length ? `${operationalChannels.join(", ")} operational — nothing sent yet` : "Prepared — not launched"}</strong><p>{operationalChannels.length ? "Approve the saved work, then let the agent create the exact send/publish queue. Each external action still requires your confirmation." : "No operational delivery channel is connected, so nothing can be sent or published."}</p></div><button onClick={onConnect}>{operationalChannels.length ? "Manage connections" : "Connection setup"} <ArrowRight size={14} /></button></div>}
-      {distributionRun && operationalChannels.length > 0 && <section className="op-delivery-queue"><div className="op-section-title"><div><small>REAL EXTERNAL ACTIONS</small><h2>Approval queue</h2><p>The agent prepares these from the approved run. Nothing leaves the app until you approve an individual item.</p></div>{run.status === "Approved" && deliveryJobs.length === 0 && <button onClick={() => void prepareDelivery()} disabled={deliveryWorking === "prepare"}>{deliveryWorking === "prepare" ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}{deliveryWorking === "prepare" ? "Preparing…" : "Prepare actions"}</button>}</div>{run.status !== "Approved" && <div className="op-delivery-empty"><CircleAlert size={16} /> Mark this work approved before creating external actions.</div>}{deliveryJobs.length > 0 && <div className="op-delivery-list">{deliveryJobs.map((job) => <article key={job.id} className={`status-${job.status}`}><header><strong>{deliveryChannelLabel(job.channel)}</strong><em>{deliveryStatusLabel(job.status)}</em></header>{job.payload.recipient && <small>TO · {job.payload.recipient}</small>}{job.channel === "tiktok" && <small>VISIBILITY · {job.payload.privacyLevel === "SELF_ONLY" ? "Private — only me" : job.payload.privacyLevel}</small>}{job.payload.subject && <h3>{job.payload.subject}</h3>}<p>{job.payload.text}</p>{job.payload.mediaUrl && <a href={job.payload.mediaUrl} target="_blank" rel="noreferrer">Approved {job.payload.mediaKind} <ArrowRight size={11} /></a>}<blockquote>{job.payload.rationale}</blockquote>{job.error && <div className="op-delivery-error">{job.error}</div>}{job.externalId && <code>Platform receipt: {job.externalId}</code>}{job.status === "awaiting_approval" && <footer><button onClick={() => void executeDelivery(job)} disabled={Boolean(deliveryWorking)}>{deliveryWorking === job.id ? <LoaderCircle className="spin" size={13} /> : <Send size={13} />}Approve &amp; {job.channel === "gmail" ? "send" : "publish"}</button><button className="secondary" onClick={() => void cancelDelivery(job)} disabled={Boolean(deliveryWorking)}>Cancel</button></footer>}</article>)}</div>}</section>}
+      {distributionRun && operationalChannels.length > 0 && <section className="op-delivery-queue"><div className="op-section-title"><div><small>REAL EXTERNAL ACTIONS</small><h2>Approval queue</h2><p>The agent prepares these from the approved run. Nothing leaves the app until you approve an individual item.</p></div>{run.status === "Approved" && deliveryJobs.length === 0 && <button onClick={() => void prepareDelivery()} disabled={deliveryWorking === "prepare"}>{deliveryWorking === "prepare" ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}{deliveryWorking === "prepare" ? "Preparing…" : "Prepare actions"}</button>}</div>{run.status !== "Approved" && <div className="op-delivery-empty"><CircleAlert size={16} /> Mark this work approved before creating external actions.</div>}{deliveryJobs.length > 0 && <div className="op-delivery-list">{deliveryJobs.map((job) => <article key={job.id} className={`status-${job.status}`}><header><strong>{deliveryChannelLabel(job.channel)}</strong><em>{deliveryStatusLabel(job.status)}</em></header>{job.payload.recipient && <small>TO · {job.payload.recipient}</small>}{job.channel === "tiktok" && job.status === "awaiting_approval" && <TikTokApprovalControls job={job} options={tiktokOptions[job.id]} onChange={(changes) => updateTikTokApproval(job.id, changes)} />}{job.payload.subject && <h3>{job.payload.subject}</h3>}<p>{job.payload.text}</p>{job.payload.mediaUrl && <a href={job.payload.mediaUrl} target="_blank" rel="noreferrer">Approved {job.payload.mediaKind} <ArrowRight size={11} /></a>}<blockquote>{job.payload.rationale}</blockquote>{job.error && <div className="op-delivery-error">{job.error}</div>}{job.externalId && <code>Platform receipt: {job.externalId}</code>}{job.status === "awaiting_approval" && <footer><button onClick={() => void executeDelivery(job)} disabled={Boolean(deliveryWorking) || (job.channel === "tiktok" && !tiktokOptions[job.id])}>{deliveryWorking === job.id ? <LoaderCircle className="spin" size={13} /> : <Send size={13} />}Approve &amp; {job.channel === "gmail" ? "send" : "publish"}</button><button className="secondary" onClick={() => void cancelDelivery(job)} disabled={Boolean(deliveryWorking)}>Cancel</button></footer>}</article>)}</div>}</section>}
       <div className="op-detail-grid">
         <article className="op-output-card">{editing ? <textarea value={output} onChange={(e) => setOutput(e.target.value)} /> : <MarkdownLite value={run.output} hideAction={distributionRun} />}</article>
         <aside>
@@ -1553,6 +1603,15 @@ function RunDetail({ run, connections, onBack, onConnect, onStatus, onOutput, on
       </div>
     </section>
   </div>;
+}
+
+function TikTokApprovalControls({ job, options, onChange }: { job: DeliveryJob; options?: TikTokPublishingOptions; onChange: (changes: Partial<DeliveryJob["payload"]>) => void }) {
+  if (!options) return <div className="op-tiktok-settings loading"><LoaderCircle className="spin" size={14} /> Verifying the connected account’s publishing choices…</div>;
+  return <div className="op-tiktok-settings"><div><strong>Publish as {options.accountLabel}</strong><small>Review once, then approve the real post.</small></div><label><span>Visibility</span><select value={job.payload.privacyLevel} onChange={(event) => onChange({ privacyLevel: event.target.value })}>{options.privacyLevelOptions.map((level) => <option key={level} value={level}>{tiktokPrivacyLabel(level)}</option>)}</select></label><div className="op-tiktok-switches"><label><input type="checkbox" checked={!job.payload.disableComment && !options.commentDisabled} disabled={options.commentDisabled} onChange={(event) => onChange({ disableComment: !event.target.checked })} /> Comments</label>{job.payload.mediaKind === "video" && <><label><input type="checkbox" checked={!job.payload.disableDuet && !options.duetDisabled} disabled={options.duetDisabled} onChange={(event) => onChange({ disableDuet: !event.target.checked })} /> Duet</label><label><input type="checkbox" checked={!job.payload.disableStitch && !options.stitchDisabled} disabled={options.stitchDisabled} onChange={(event) => onChange({ disableStitch: !event.target.checked })} /> Stitch</label></>}<label><input type="checkbox" checked={job.payload.brandContentToggle} onChange={(event) => onChange({ brandContentToggle: event.target.checked })} /> Paid partnership</label></div>{job.payload.aiGenerated && <small>AI-generated media label will be sent to TikTok.</small>}</div>;
+}
+
+function tiktokPrivacyLabel(value: string) {
+  return ({ PUBLIC_TO_EVERYONE: "Public", MUTUAL_FOLLOW_FRIENDS: "Friends", FOLLOWER_OF_CREATOR: "Followers", SELF_ONLY: "Private — only me" } as Record<string, string>)[value] || value.replaceAll("_", " ").toLowerCase();
 }
 
 function deliveryChannelLabel(channel: DeliveryJob["channel"]) {

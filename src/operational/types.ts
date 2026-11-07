@@ -191,6 +191,7 @@ export interface MediaBudgetSummary {
   monthlyCapCents: number;
   approvedThisMonthCents: number;
   actualThisMonthCents: number;
+  billingOwner: "user";
 }
 
 export interface ProjectAsset {
@@ -355,6 +356,11 @@ export interface DeliveryJob {
     mediaKind: "" | "image" | "video";
     privacyLevel: string;
     aiGenerated: boolean;
+    disableComment: boolean;
+    disableDuet: boolean;
+    disableStitch: boolean;
+    brandOrganicToggle: boolean;
+    brandContentToggle: boolean;
     rationale: string;
   };
   status: DeliveryJobStatus;
@@ -365,6 +371,17 @@ export interface DeliveryJob {
   completedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TikTokPublishingOptions {
+  id: string;
+  provider: "tiktok";
+  accountLabel: string;
+  privacyLevelOptions: string[];
+  commentDisabled: boolean;
+  duetDisabled: boolean;
+  stitchDisabled: boolean;
+  maxVideoDurationSec: number;
 }
 
 export interface AnalyticsReport {

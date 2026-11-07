@@ -957,6 +957,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-delivery-list footer button.secondary { flex: none; background: #efede8; color: #625f59; }
 .op-delivery-list footer button:disabled { opacity: .45; cursor: default; }
 .op-delivery-error { margin-top: 8px; padding: 8px; border-radius: 7px; background: #fff0ee; color: #9a443d; font-size: 7.5px; line-height: 1.45; }
+.op-tiktok-settings { display: grid; gap: 10px; padding: 12px; border: 1px solid #dedbd3; border-radius: 10px; background: #faf9f6; }
+.op-tiktok-settings.loading { display: flex; align-items: center; gap: 8px; color: #6f6b63; font-size: 12px; }
+.op-tiktok-settings > div:first-child { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.op-tiktok-settings > div:first-child small { color: #706c64; }
+.op-tiktok-settings > label { display: grid; grid-template-columns: 90px 1fr; align-items: center; gap: 10px; font-size: 12px; }
+.op-tiktok-settings select { width: 100%; min-height: 36px; border: 1px solid #d8d4cb; border-radius: 8px; background: white; padding: 0 9px; }
+.op-tiktok-switches { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.op-tiktok-switches label { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .op-detail-grid { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) minmax(220px,250px); }
 .op-output-card { min-width: 0; padding: 29px; border-right: 1px solid #e5e4dd; min-height: 600px; }
 .op-output-card > textarea { width: 100%; min-height: 540px; resize: vertical; border: 1px solid #dad8d0; background: white; border-radius: 8px; padding: 15px; font: 10.5px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -1221,6 +1229,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-media-budget p { margin: 0; color: #688071; font-size: 8.5px; }
 .op-budget-meter { height: 6px; margin: 13px 0 9px; overflow: hidden; border-radius: 999px; background: #d9e8df; }
 .op-budget-meter i { display: block; height: 100%; border-radius: inherit; background: #4d9a75; transition: width .25s ease; }
+.op-budget-edit { margin-left: auto; min-width: 250px; display: grid; gap: 5px; }
+.op-budget-edit > span { color: #668071; font-size: 7.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.op-budget-edit > div { display: flex; align-items: center; gap: 7px; }
+.op-budget-edit i { font-style: normal; color: #5f7568; }
+.op-budget-edit input { width: 92px; min-height: 34px; border: 1px solid #bfd4c6; border-radius: 8px; padding: 0 9px; background: white; }
+.op-budget-edit button { min-height: 34px; white-space: nowrap; }
 .op-media-create { padding: 17px; border: 1px solid #ddd8f2; border-radius: 13px; background: linear-gradient(135deg,#f6f3ff,#fbfbf8); box-shadow: var(--shadow); }
 .op-media-create__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .op-media-create__head > div { display: flex; align-items: center; gap: 11px; }

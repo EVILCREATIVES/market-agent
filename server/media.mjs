@@ -2,10 +2,10 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { Readable } from "node:stream";
 import { get, put } from "@vercel/blob";
 import { getPool } from "./db.mjs";
+import { getMediaBudgetSummary, getUserMediaBudgetCents, updateUserMediaBudget } from "./media-budget.mjs";
 
 const IMAGE_ESTIMATE_CENTS = 8;
 const VIDEO_ESTIMATE_CENTS = 110;
-const DEFAULT_MONTHLY_CAP_CENTS = 2500;
 
 export async function listMediaJobs(userId, projectId, env = process.env) {
   const safeProjectId = requiredText(projectId, "Choose a project first.", 200);
@@ -28,7 +28,7 @@ export async function listMediaJobs(userId, projectId, env = process.env) {
 
   return {
     jobs,
-    summary: await mediaBudgetSummary(userId, safeProjectId, env),
+    summary: await getMediaBudgetSummary(userId, env),
     configured: !textOnlyAccess(env) && Boolean(env.GOOGLE_GENERATIVE_AI_API_KEY || env.OPENAI_API_KEY),
     videoConfigured: !textOnlyAccess(env) && Boolean(env.GOOGLE_GENERATIVE_AI_API_KEY),
   };
@@ -76,7 +76,7 @@ export async function prepareMediaJob(userId, payload, env = process.env) {
     [job.id, job.userId, job.projectId, job.kind, job.title, job.prompt, job.aspectRatio,
       job.resolution, job.durationSeconds, job.estimatedCostCents, job.sourceAssetId],
   );
-  return { job: serializeJob(result.rows[0], env), summary: await mediaBudgetSummary(userId, projectId, env) };
+  return { job: serializeJob(result.rows[0], env), summary: await getMediaBudgetSummary(userId, env) };
 }
 
 export async function approveMediaJob(userId, payload, env = process.env) {
@@ -107,19 +107,19 @@ export async function approveMediaJob(userId, payload, env = process.env) {
       throw httpError(400, "Approve the exact maximum shown for this request.");
     }
 
+    const monthlyCapCents = await getUserMediaBudgetCents(userId, env, client, true);
     const total = await client.query(
       `SELECT
         (SELECT COALESCE(SUM(approved_budget_cents), 0) FROM market_agent_media_jobs
-          WHERE user_id = $1 AND project_id = $2 AND approved_at >= date_trunc('month', NOW()) AND status <> 'cancelled')
+          WHERE user_id = $1 AND approved_at >= date_trunc('month', NOW()) AND status <> 'cancelled')
         +
         (SELECT COALESCE(SUM(approved_budget_cents), 0) FROM market_agent_asset_proposals
-          WHERE user_id = $1 AND project_id = $2 AND approved_at >= date_trunc('month', NOW()) AND status <> 'cancelled')
+          WHERE user_id = $1 AND approved_at >= date_trunc('month', NOW()) AND status <> 'cancelled')
         AS cents`,
-      [userId, row.project_id],
+      [userId],
     );
-    const monthlyCapCents = mediaMonthlyCapCents(env);
     if (Number(total.rows[0]?.cents || 0) + approvedBudgetCents > monthlyCapCents) {
-      throw httpError(409, `This would exceed the project's $${(monthlyCapCents / 100).toFixed(2)} monthly media ceiling.`);
+      throw httpError(409, `This would exceed your $${(monthlyCapCents / 100).toFixed(2)} monthly creative-production limit.`);
     }
 
     const updated = await client.query(
@@ -139,11 +139,11 @@ export async function approveMediaJob(userId, payload, env = process.env) {
   }
 
   const job = await executeApprovedJob(row, env);
-  return { job, summary: await mediaBudgetSummary(userId, row.project_id, env) };
+  return { job, summary: await getMediaBudgetSummary(userId, env) };
 }
 
 function textOnlyAccess(env) {
-  return env.MARKET_AGENT_TEXT_ONLY === "true";
+  return env.MARKET_AGENT_TEXT_ONLY === "true" || env.MARKET_AGENT_MEDIA_BILLING_OWNER !== "user";
 }
 
 export async function cancelMediaJob(userId, payload, env = process.env) {
@@ -158,8 +158,13 @@ export async function cancelMediaJob(userId, payload, env = process.env) {
   if (!result.rows[0]) throw httpError(409, "Only an unapproved media request can be cancelled.");
   return {
     job: serializeJob(result.rows[0], env),
-    summary: await mediaBudgetSummary(userId, result.rows[0].project_id, env),
+    summary: await getMediaBudgetSummary(userId, env),
   };
+}
+
+export async function setMediaBudget(userId, payload, env = process.env) {
+  await updateUserMediaBudget(userId, payload?.monthlyCapCents, env);
+  return { summary: await getMediaBudgetSummary(userId, env) };
 }
 
 async function executeApprovedJob(row, env) {
@@ -390,40 +395,6 @@ function calculateActualCost(kind, usage = {}, fallback) {
   return Math.max(1, Math.ceil(dollars * 100));
 }
 
-async function mediaBudgetSummary(userId, projectId, env) {
-  const result = await getPool(env).query(
-    `SELECT
-       (
-         SELECT COALESCE(SUM(approved_budget_cents), 0)
-         FROM market_agent_media_jobs
-         WHERE user_id = $1 AND project_id = $2
-           AND approved_at >= date_trunc('month', NOW()) AND status <> 'cancelled'
-       ) + (
-         SELECT COALESCE(SUM(approved_budget_cents), 0)
-         FROM market_agent_asset_proposals
-         WHERE user_id = $1 AND project_id = $2
-           AND approved_at >= date_trunc('month', NOW()) AND status <> 'cancelled'
-       ) AS approved_cents,
-       (
-         SELECT COALESCE(SUM(actual_cost_cents), 0)
-         FROM market_agent_media_jobs
-         WHERE user_id = $1 AND project_id = $2
-           AND approved_at >= date_trunc('month', NOW()) AND status = 'complete'
-       ) + (
-         SELECT COALESCE(SUM(actual_cost_cents), 0)
-         FROM market_agent_asset_proposals
-         WHERE user_id = $1 AND project_id = $2
-           AND approved_at >= date_trunc('month', NOW()) AND status = 'complete'
-       ) AS actual_cents`,
-    [userId, projectId],
-  );
-  return {
-    monthlyCapCents: mediaMonthlyCapCents(env),
-    approvedThisMonthCents: Number(result.rows[0]?.approved_cents || 0),
-    actualThisMonthCents: Number(result.rows[0]?.actual_cents || 0),
-  };
-}
-
 function buildMediaPrompt(kind, workspace, recentRuns, direction) {
   const brand = workspace.brand && typeof workspace.brand === "object" ? workspace.brand : {};
   const latestContent = recentRuns
@@ -545,11 +516,6 @@ function assetSignature(id, pathname, expires, env) {
   const key = env.CONNECTION_ENCRYPTION_KEY || env.CRON_SECRET;
   if (!key) throw httpError(503, "Secure media delivery is not configured yet.");
   return createHmac("sha256", key).update(`${id}.${pathname}.${expires}`).digest("base64url");
-}
-
-function mediaMonthlyCapCents(env) {
-  const value = Number(env.MEDIA_MONTHLY_BUDGET_CENTS || DEFAULT_MONTHLY_CAP_CENTS);
-  return Number.isInteger(value) && value > 0 ? value : DEFAULT_MONTHLY_CAP_CENTS;
 }
 
 function imageEstimateCents(env, sourceAssetId) {

@@ -1,5 +1,5 @@
 import { requireUser } from "../server/auth.mjs";
-import { approveMediaJob, cancelMediaJob, listMediaJobs, prepareMediaJob } from "../server/media.mjs";
+import { approveMediaJob, cancelMediaJob, listMediaJobs, prepareMediaJob, setMediaBudget } from "../server/media.mjs";
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 
 export const config = { maxDuration: 300 };
@@ -13,6 +13,7 @@ export default async function handler(req, res) {
       return res.status(200).json(await listMediaJobs(userId, req.query?.projectId, userApiEnv));
     }
     const action = req.body?.action;
+    if (action === "set-budget") return res.status(200).json(await setMediaBudget(userId, req.body));
     if (action === "prepare") return res.status(200).json(await prepareMediaJob(userId, req.body, userApiEnv));
     if (action === "approve") return res.status(200).json(await approveMediaJob(userId, req.body, userApiEnv));
     if (action === "cancel") return res.status(200).json(await cancelMediaJob(userId, req.body));

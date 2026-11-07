@@ -109,6 +109,7 @@ export async function loadUserApiEnv(userId, env = process.env) {
     [ENVIRONMENT_KEYS.anthropic]: hasPrivateCore ? keys.anthropic : usePlatformWorkKeys ? platformKeys.anthropic : "",
     MARKET_AGENT_ACCESS_MODE: accessMode,
     MARKET_AGENT_TEXT_ONLY: accessMode === "managed" || accessMode === "trial" ? "true" : "false",
+    MARKET_AGENT_MEDIA_BILLING_OWNER: hasPrivateCore ? "user" : "disabled",
   };
 }
 

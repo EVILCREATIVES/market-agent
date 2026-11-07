@@ -5,6 +5,7 @@ import fontkit from "@pdf-lib/fontkit";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { analyzeProjectAsset, generateProjectDocument, safeFetchPublic } from "./agent.mjs";
 import { getPool } from "./db.mjs";
+import { getUserMediaBudgetCents } from "./media-budget.mjs";
 
 let tablesReady = false;
 
@@ -145,19 +146,19 @@ export async function approveAssetProposal(userId, payload, env = process.env) {
     if (!Number.isInteger(approvedBudgetCents) || approvedBudgetCents !== Number(row.estimated_cost_cents)) {
       throw httpError(400, "Approve the exact maximum estimate shown.");
     }
+    const monthlyCapCents = await getUserMediaBudgetCents(userId, env, client, true);
     const monthly = await client.query(
       `SELECT
         (SELECT COALESCE(SUM(approved_budget_cents), 0) FROM market_agent_media_jobs
-          WHERE user_id = $1 AND project_id = $2 AND approved_at >= date_trunc('month', NOW()) AND status <> 'cancelled')
+          WHERE user_id = $1 AND approved_at >= date_trunc('month', NOW()) AND status <> 'cancelled')
         +
         (SELECT COALESCE(SUM(approved_budget_cents), 0) FROM market_agent_asset_proposals
-          WHERE user_id = $1 AND project_id = $2 AND approved_at >= date_trunc('month', NOW()) AND status <> 'cancelled')
+          WHERE user_id = $1 AND approved_at >= date_trunc('month', NOW()) AND status <> 'cancelled')
         AS cents`,
-      [userId, row.project_id],
+      [userId],
     );
-    const monthlyCapCents = Number(env.MEDIA_MONTHLY_BUDGET_CENTS || 2500);
     if (Number(monthly.rows[0]?.cents || 0) + approvedBudgetCents > monthlyCapCents) {
-      throw httpError(409, `This would exceed the project's $${(monthlyCapCents / 100).toFixed(2)} monthly production ceiling.`);
+      throw httpError(409, `This would exceed your $${(monthlyCapCents / 100).toFixed(2)} monthly creative-production limit.`);
     }
     const updated = await client.query(
       `UPDATE market_agent_asset_proposals

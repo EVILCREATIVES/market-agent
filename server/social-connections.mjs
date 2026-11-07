@@ -57,7 +57,7 @@ export async function createSocialAuthorizationUrl({ provider, userId, projectId
   }
   if (provider === "instagram") {
     return authorizationUrl("https://www.instagram.com/oauth/authorize", {
-      enable_fb_login: "0",
+      enable_fb_login: "false",
       force_authentication: "1",
       client_id: env.INSTAGRAM_APP_ID,
       redirect_uri: redirectUri,
@@ -118,10 +118,55 @@ export async function publishSocialPost(userId, projectId, provider, payload, en
   const accessToken = await validSocialAccessToken(userId, projectId, provider, credentials, env);
   const text = String(payload?.text || "").trim();
   if (!text) throw connectionError("The approved post has no copy.", 400);
-  if (provider === "linkedin") return publishLinkedIn(row, accessToken, text, env);
+  if (provider === "linkedin") return publishLinkedIn(row, accessToken, { ...payload, text }, env);
   if (provider === "instagram") return publishInstagram(row, accessToken, { ...payload, text }, env);
   if (provider === "tiktok") return publishTikTok(row, accessToken, { ...payload, text });
   return publishX(row, accessToken, text);
+}
+
+export async function getSocialPublishingOptions(userId, projectId, provider, env = process.env) {
+  if (provider !== "tiktok") throw connectionError("Publishing options are not required for this channel.", 400);
+  const row = await readSocialConnection(userId, projectId, provider, env);
+  if (!row || row.status !== "connected") throw connectionError("Connect TikTok before reviewing publishing settings.", 409);
+  const scopes = Array.isArray(row.scopes) ? row.scopes : [];
+  if (!providerCanPublish(provider, scopes)) throw connectionError("Reconnect TikTok and approve publishing access.", 403);
+  const credentials = decryptCredentials(row.encrypted_credentials, env);
+  const accessToken = await validSocialAccessToken(userId, projectId, provider, credentials, env);
+  const creator = await readTikTokCreatorInfo(accessToken);
+  return {
+    provider,
+    accountLabel: row.account_label || "TikTok account",
+    privacyLevelOptions: creator.privacyLevelOptions,
+    commentDisabled: creator.commentDisabled,
+    duetDisabled: creator.duetDisabled,
+    stitchDisabled: creator.stitchDisabled,
+    maxVideoDurationSec: creator.maxVideoDurationSec,
+  };
+}
+
+export async function getSocialPostStatus(userId, projectId, provider, externalId, env = process.env) {
+  if (provider !== "tiktok") throw connectionError("Post status is not available for this channel.", 400);
+  const row = await readSocialConnection(userId, projectId, provider, env);
+  if (!row || row.status !== "connected") throw connectionError("Reconnect TikTok to check this post.", 409);
+  const credentials = decryptCredentials(row.encrypted_credentials, env);
+  const accessToken = await validSocialAccessToken(userId, projectId, provider, credentials, env);
+  const response = await fetch("https://open.tiktokapis.com/v2/post/publish/status/fetch/", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json; charset=UTF-8" },
+    body: JSON.stringify({ publish_id: String(externalId || "") }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || (body.error?.code && body.error.code !== "ok")) throw connectionError(providerError("TikTok", body), response.status === 401 ? 401 : 502);
+  const providerStatus = String(body.data?.status || "");
+  const publicIds = Array.isArray(body.data?.publicaly_available_post_id) ? body.data.publicaly_available_post_id.map(String) : [];
+  return {
+    status: providerStatus === "PUBLISH_COMPLETE" ? "complete" : providerStatus === "FAILED" ? "failed" : "submitted",
+    providerStatus,
+    failReason: String(body.data?.fail_reason || ""),
+    publicPostIds: publicIds,
+    uploadedBytes: Number(body.data?.uploaded_bytes || 0),
+    downloadedBytes: Number(body.data?.downloaded_bytes || 0),
+  };
 }
 
 export function socialConnectorConfigured(provider, env = process.env) {
@@ -375,8 +420,20 @@ async function validSocialAccessToken(userId, projectId, provider, credentials, 
   return credentials.accessToken;
 }
 
-async function publishLinkedIn(row, accessToken, text, env) {
+async function publishLinkedIn(row, accessToken, payload, env) {
+  const text = payload.text;
   if (text.length > 3000) throw connectionError("LinkedIn copy exceeds 3,000 characters.", 400);
+  const mediaUrl = payload.mediaKind === "image" ? validMediaUrl(payload.mediaUrl) : "";
+  const imageUrn = mediaUrl ? await uploadLinkedInImage(row, accessToken, mediaUrl, env) : "";
+  const postBody = {
+    author: `urn:li:person:${row.account_id}`,
+    commentary: text,
+    visibility: "PUBLIC",
+    distribution: { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] },
+    lifecycleState: "PUBLISHED",
+    isReshareDisabledByAuthor: false,
+  };
+  if (imageUrn) postBody.content = { media: { id: imageUrn } };
   const response = await fetch("https://api.linkedin.com/rest/posts", {
     method: "POST",
     headers: {
@@ -385,19 +442,46 @@ async function publishLinkedIn(row, accessToken, text, env) {
       "X-Restli-Protocol-Version": "2.0.0",
       "Linkedin-Version": env.LINKEDIN_VERSION || "202609",
     },
-    body: JSON.stringify({
-      author: `urn:li:person:${row.account_id}`,
-      commentary: text,
-      visibility: "PUBLIC",
-      distribution: { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] },
-      lifecycleState: "PUBLISHED",
-      isReshareDisabledByAuthor: false,
-    }),
+    body: JSON.stringify(postBody),
   });
   const body = await response.text();
   if (!response.ok) throw connectionError(providerError("LinkedIn", parseProviderBody(body)), response.status === 401 ? 401 : 502);
   const externalId = response.headers.get("x-restli-id") || parseProviderBody(body)?.id || "";
   return { provider: "linkedin", externalId: String(externalId), accountLabel: row.account_label, publishedAt: new Date().toISOString() };
+}
+
+async function uploadLinkedInImage(row, accessToken, mediaUrl, env) {
+  const version = env.LINKEDIN_VERSION || "202609";
+  const owner = `urn:li:person:${row.account_id}`;
+  const initializeResponse = await fetch("https://api.linkedin.com/rest/images?action=initializeUpload", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      "X-Restli-Protocol-Version": "2.0.0",
+      "Linkedin-Version": version,
+    },
+    body: JSON.stringify({ initializeUploadRequest: { owner } }),
+  });
+  const initialized = await initializeResponse.json().catch(() => ({}));
+  const uploadUrl = initialized.value?.uploadUrl;
+  const imageUrn = initialized.value?.image;
+  if (!initializeResponse.ok || !uploadUrl || !imageUrn) throw connectionError(providerError("LinkedIn", initialized), initializeResponse.status === 401 ? 401 : 502);
+  const source = await fetch(mediaUrl, { redirect: "follow" });
+  if (!source.ok || !source.body) throw connectionError("The approved LinkedIn image could not be downloaded for publishing.", 502);
+  const contentType = String(source.headers.get("content-type") || "image/jpeg").split(";")[0].trim().toLowerCase();
+  if (!["image/jpeg", "image/png", "image/gif"].includes(contentType)) throw connectionError("LinkedIn accepts approved JPG, PNG, or GIF images for this post.", 400);
+  const uploadResponse = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": contentType },
+    body: source.body,
+    duplex: "half",
+  });
+  if (!uploadResponse.ok) {
+    const detail = await uploadResponse.text().catch(() => "");
+    throw connectionError(detail ? `LinkedIn could not receive the approved image: ${detail.slice(0, 300)}` : "LinkedIn could not receive the approved image.", 502);
+  }
+  return String(imageUrn);
 }
 
 async function publishX(row, accessToken, text) {
@@ -450,30 +534,44 @@ async function publishInstagram(row, accessToken, payload, env) {
 
 async function publishTikTok(row, accessToken, payload) {
   const mediaUrl = validMediaUrl(payload.mediaUrl);
-  if (!mediaUrl) throw connectionError("TikTok publishing requires an approved public image or video URL from a verified domain.", 400);
-  const creatorResponse = await fetch("https://open.tiktokapis.com/v2/post/publish/creator_info/query/", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json; charset=UTF-8" },
-  });
-  const creator = await creatorResponse.json().catch(() => ({}));
-  if (!creatorResponse.ok || (creator.error?.code && creator.error.code !== "ok")) throw connectionError(providerError("TikTok", creator), creatorResponse.status === 401 ? 401 : 502);
-  const privacyOptions = Array.isArray(creator.data?.privacy_level_options) ? creator.data.privacy_level_options : ["SELF_ONLY"];
+  if (!mediaUrl) throw connectionError("TikTok publishing requires an approved public image or video.", 400);
+  const creator = await readTikTokCreatorInfo(accessToken);
+  const privacyOptions = creator.privacyLevelOptions;
   const requestedPrivacy = String(payload.privacyLevel || "SELF_ONLY");
-  const privacyLevel = privacyOptions.includes(requestedPrivacy) ? requestedPrivacy : privacyOptions.includes("SELF_ONLY") ? "SELF_ONLY" : privacyOptions[0];
+  if (!privacyOptions.includes(requestedPrivacy)) {
+    throw connectionError("TikTok's available visibility options changed. Review this item again before publishing.", 409);
+  }
+  const privacyLevel = requestedPrivacy;
+  const disableComment = creator.commentDisabled ? true : Boolean(payload.disableComment);
+  const disableDuet = creator.duetDisabled ? true : Boolean(payload.disableDuet);
+  const disableStitch = creator.stitchDisabled ? true : Boolean(payload.disableStitch);
   const mediaKind = payload.mediaKind === "image" ? "image" : "video";
   const endpoint = mediaKind === "image"
     ? "https://open.tiktokapis.com/v2/post/publish/content/init/"
     : "https://open.tiktokapis.com/v2/post/publish/video/init/";
+  let videoSource = null;
+  let videoSize = 0;
+  let videoContentType = "video/mp4";
+  if (mediaKind === "video") {
+    videoSource = await fetch(mediaUrl, { redirect: "follow" });
+    if (!videoSource.ok || !videoSource.body) throw connectionError("The approved TikTok video could not be downloaded for publishing.", 502);
+    videoSize = Number(videoSource.headers.get("content-length") || 0);
+    if (!Number.isSafeInteger(videoSize) || videoSize <= 0) throw connectionError("The approved TikTok video host did not provide its file size.", 400);
+    if (videoSize > 64 * 1024 * 1024) throw connectionError("TikTok video delivery currently supports approved files up to 64 MB.", 400);
+    const returnedType = String(videoSource.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    if (["video/mp4", "video/quicktime", "video/webm"].includes(returnedType)) videoContentType = returnedType;
+  }
   const body = mediaKind === "image"
     ? {
-        post_info: { title: payload.text.slice(0, 90), description: payload.text.slice(0, 2200), disable_comment: Boolean(creator.data?.comment_disabled), privacy_level: privacyLevel, auto_add_music: true, brand_organic_toggle: true, brand_content_toggle: false },
+        post_info: { title: payload.text.slice(0, 90), description: payload.text.slice(0, 4000), disable_comment: disableComment, privacy_level: privacyLevel, auto_add_music: true, brand_organic_toggle: payload.brandOrganicToggle !== false, brand_content_toggle: Boolean(payload.brandContentToggle) },
         source_info: { source: "PULL_FROM_URL", photo_cover_index: 0, photo_images: [mediaUrl] },
         post_mode: "DIRECT_POST",
         media_type: "PHOTO",
+        is_aigc: Boolean(payload.aiGenerated),
       }
     : {
-        post_info: { title: payload.text.slice(0, 2200), privacy_level: privacyLevel, disable_duet: Boolean(creator.data?.duet_disabled), disable_comment: Boolean(creator.data?.comment_disabled), disable_stitch: Boolean(creator.data?.stitch_disabled), is_aigc: Boolean(payload.aiGenerated), brand_organic_toggle: true, brand_content_toggle: false },
-        source_info: { source: "PULL_FROM_URL", video_url: mediaUrl },
+        post_info: { title: payload.text.slice(0, 2200), privacy_level: privacyLevel, disable_duet: disableDuet, disable_comment: disableComment, disable_stitch: disableStitch, is_aigc: Boolean(payload.aiGenerated), brand_organic_toggle: payload.brandOrganicToggle !== false, brand_content_toggle: Boolean(payload.brandContentToggle) },
+        source_info: { source: "FILE_UPLOAD", video_size: videoSize, chunk_size: videoSize, total_chunk_count: 1 },
       };
   const response = await fetch(endpoint, {
     method: "POST",
@@ -482,7 +580,46 @@ async function publishTikTok(row, accessToken, payload) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || (data.error?.code && data.error.code !== "ok") || !data.data?.publish_id) throw connectionError(providerError("TikTok", data), response.status === 401 ? 401 : 502);
+  if (mediaKind === "video") {
+    if (!data.data?.upload_url || !videoSource?.body) throw connectionError("TikTok did not return a video upload destination.", 502);
+    const uploadResponse = await fetch(data.data.upload_url, {
+      method: "PUT",
+      headers: {
+        "Content-Type": videoContentType,
+        "Content-Length": String(videoSize),
+        "Content-Range": `bytes 0-${videoSize - 1}/${videoSize}`,
+      },
+      body: videoSource.body,
+      duplex: "half",
+    });
+    if (uploadResponse.status !== 201) {
+      const detail = await uploadResponse.text().catch(() => "");
+      throw connectionError(detail ? `TikTok could not receive the approved video: ${detail.slice(0, 300)}` : "TikTok could not receive the approved video.", 502);
+    }
+  }
   return { provider: "tiktok", externalId: String(data.data.publish_id), accountLabel: row.account_label, status: "processing", publishedAt: new Date().toISOString() };
+}
+
+async function readTikTokCreatorInfo(accessToken) {
+  const response = await fetch("https://open.tiktokapis.com/v2/post/publish/creator_info/query/", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json; charset=UTF-8" },
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || (body.error?.code && body.error.code !== "ok")) {
+    throw connectionError(providerError("TikTok", body), response.status === 401 ? 401 : 502);
+  }
+  const privacyLevelOptions = Array.isArray(body.data?.privacy_level_options)
+    ? body.data.privacy_level_options.map(String).filter(Boolean)
+    : [];
+  if (!privacyLevelOptions.length) throw connectionError("TikTok did not return any available visibility option for this account.", 409);
+  return {
+    privacyLevelOptions,
+    commentDisabled: Boolean(body.data?.comment_disabled),
+    duetDisabled: Boolean(body.data?.duet_disabled),
+    stitchDisabled: Boolean(body.data?.stitch_disabled),
+    maxVideoDurationSec: Math.max(0, Number(body.data?.max_video_post_duration_sec || 0)),
+  };
 }
 
 async function ensureSocialTable(env) {

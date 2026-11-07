@@ -1,14 +1,17 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { generateDeliveryPlan } from "./agent.mjs";
 import { getConnectionStatus } from "./connections.mjs";
 import { loadStateForUser, getPool } from "./db.mjs";
 import { sendGmailMessage } from "./connections.mjs";
 import { publishSocialPost } from "./social-connections.mjs";
+import { getSocialPublishingOptions } from "./social-connections.mjs";
+import { getSocialPostStatus } from "./social-connections.mjs";
 
 let deliveryTableReady = false;
 
 export async function listDeliveryJobs(userId, projectId, runId = "", env = process.env) {
   await ensureDeliveryTable(env);
+  await refreshSubmittedTikTokJobs(userId, projectId, runId, env);
   const values = [userId, projectId];
   const runFilter = runId ? " AND run_id = $3" : "";
   if (runId) values.push(runId);
@@ -19,6 +22,34 @@ export async function listDeliveryJobs(userId, projectId, runId = "", env = proc
     values,
   );
   return { jobs: result.rows.map(serializeDeliveryJob) };
+}
+
+async function refreshSubmittedTikTokJobs(userId, projectId, runId, env) {
+  const values = [userId, projectId];
+  const runFilter = runId ? " AND run_id = $3" : "";
+  if (runId) values.push(runId);
+  const result = await getPool(env).query(
+    `SELECT id, project_id, external_id FROM market_agent_delivery_jobs
+      WHERE user_id = $1 AND project_id = $2${runFilter}
+        AND channel = 'tiktok' AND status = 'submitted'
+        AND updated_at < NOW() - INTERVAL '5 seconds'
+      ORDER BY updated_at ASC LIMIT 5`,
+    values,
+  );
+  for (const row of result.rows) {
+    try {
+      const providerResult = await getSocialPostStatus(userId, row.project_id, "tiktok", row.external_id, env);
+      if (providerResult.status === "submitted") {
+        await getPool(env).query("UPDATE market_agent_delivery_jobs SET result = $3::jsonb, updated_at = NOW() WHERE id = $1 AND user_id = $2", [row.id, userId, JSON.stringify(providerResult)]);
+      } else if (providerResult.status === "complete") {
+        await getPool(env).query("UPDATE market_agent_delivery_jobs SET status = 'complete', result = $3::jsonb, completed_at = NOW(), updated_at = NOW() WHERE id = $1 AND user_id = $2", [row.id, userId, JSON.stringify(providerResult)]);
+      } else {
+        await getPool(env).query("UPDATE market_agent_delivery_jobs SET status = 'failed', result = $3::jsonb, error = $4, updated_at = NOW() WHERE id = $1 AND user_id = $2", [row.id, userId, JSON.stringify(providerResult), providerResult.failReason ? `TikTok could not publish this item: ${providerResult.failReason}` : "TikTok could not publish this item."]);
+      }
+    } catch {
+      // Keep the job submitted; a later user refresh can retry the provider status check.
+    }
+  }
 }
 
 export async function prepareDeliveryJobs(userId, projectId, runId, userApiEnv, env = process.env) {
@@ -46,7 +77,20 @@ export async function prepareDeliveryJobs(userId, projectId, runId, userApiEnv, 
   return listDeliveryJobs(userId, projectId, runId, env);
 }
 
-export async function executeDeliveryJob(userId, id, userApiEnv, env = process.env) {
+export async function getDeliveryPublishingOptions(userId, id, env = process.env) {
+  await ensureDeliveryTable(env);
+  const result = await getPool(env).query(
+    "SELECT id, project_id, channel, status FROM market_agent_delivery_jobs WHERE id = $1 AND user_id = $2 LIMIT 1",
+    [id, userId],
+  );
+  const row = result.rows[0];
+  if (!row) throw deliveryError("The delivery item was not found.", 404);
+  if (row.channel !== "tiktok") throw deliveryError("This delivery item does not need additional publishing settings.", 400);
+  if (row.status !== "awaiting_approval") throw deliveryError("This delivery item is no longer waiting for approval.", 409);
+  return { id: row.id, ...(await getSocialPublishingOptions(userId, row.project_id, row.channel, env)) };
+}
+
+export async function executeDeliveryJob(userId, id, userApiEnv, approval = {}, env = process.env) {
   await ensureDeliveryTable(env);
   const pool = getPool(env);
   const client = await pool.connect();
@@ -60,9 +104,10 @@ export async function executeDeliveryJob(userId, id, userApiEnv, env = process.e
       throw deliveryError("This delivery channel is not included in the current access level.", 403);
     }
     if (row.status !== "awaiting_approval") throw deliveryError("This delivery item is no longer waiting for approval.", 409);
+    const payload = row.channel === "tiktok" ? prepareTikTokPayload(row.id, mergeTikTokApproval(row.payload, approval), env) : row.payload;
     const claimed = await client.query(
-      "UPDATE market_agent_delivery_jobs SET status = 'running', approved_at = NOW(), updated_at = NOW() WHERE id = $1 AND user_id = $2 RETURNING *",
-      [id, userId],
+      "UPDATE market_agent_delivery_jobs SET status = 'running', payload = $3::jsonb, approved_at = NOW(), updated_at = NOW() WHERE id = $1 AND user_id = $2 RETURNING *",
+      [id, userId, JSON.stringify(payload || {})],
     );
     row = claimed.rows[0];
     await client.query("COMMIT");
@@ -93,6 +138,20 @@ export async function executeDeliveryJob(userId, id, userApiEnv, env = process.e
     );
     return { job: serializeDeliveryJob(updated.rows[0]) };
   }
+}
+
+export async function readDeliveryMedia(token, env = process.env) {
+  await ensureDeliveryTable(env);
+  const parsed = verifyDeliveryMediaToken(token, env);
+  const result = await getPool(env).query(
+    `SELECT payload FROM market_agent_delivery_jobs
+      WHERE id = $1 AND status IN ('running','submitted','complete') LIMIT 1`,
+    [parsed.id],
+  );
+  const payload = result.rows[0]?.payload || {};
+  const mediaUrl = validExternalMediaUrl(payload.sourceMediaUrl);
+  if (!mediaUrl) throw deliveryError("This media link is no longer available.", 404);
+  return { mediaUrl, mediaKind: payload.mediaKind === "video" ? "video" : "image" };
 }
 
 export async function cancelDeliveryJob(userId, id, env = process.env) {
@@ -128,7 +187,9 @@ function normalizeDeliveryItems(values, channels, workspace) {
     if (!channels.includes(channel)) continue;
     const text = String(value?.text || "").trim().slice(0, channel === "x" ? 280 : channel === "linkedin" ? 3000 : channel === "gmail" ? 100_000 : 2200);
     if (!text) continue;
-    const mediaUrl = allowedMedia.has(value?.mediaUrl) ? String(value.mediaUrl) : "";
+    const requestedMediaKind = value?.mediaKind === "video" ? "video" : "image";
+    const channelAcceptsMedia = channel === "instagram" || channel === "tiktok" || (channel === "linkedin" && requestedMediaKind === "image");
+    const mediaUrl = channelAcceptsMedia && allowedMedia.has(value?.mediaUrl) ? String(value.mediaUrl) : "";
     if ((channel === "instagram" || channel === "tiktok") && !mediaUrl) continue;
     const recipient = channel === "gmail" ? validRecipientList(value?.recipient) : "";
     if (channel === "gmail" && !recipient) continue;
@@ -140,14 +201,77 @@ function normalizeDeliveryItems(values, channels, workspace) {
       subject,
       text,
       mediaUrl,
-      mediaKind: mediaUrl && value?.mediaKind === "video" ? "video" : mediaUrl ? "image" : "",
+      mediaKind: mediaUrl ? requestedMediaKind : "",
       privacyLevel: channel === "tiktok" ? "SELF_ONLY" : "",
       aiGenerated: Boolean(value?.aiGenerated),
+      disableComment: false,
+      disableDuet: false,
+      disableStitch: false,
+      brandOrganicToggle: channel === "tiktok",
+      brandContentToggle: false,
       rationale: String(value?.rationale || "Prepared from the approved run.").trim().slice(0, 1000),
     });
     if (items.length >= 12) break;
   }
   return items;
+}
+
+function mergeTikTokApproval(payload, approval) {
+  const privacyLevel = String(approval?.privacyLevel || payload?.privacyLevel || "").trim();
+  if (!/^(PUBLIC_TO_EVERYONE|MUTUAL_FOLLOW_FRIENDS|FOLLOWER_OF_CREATOR|SELF_ONLY)$/.test(privacyLevel)) {
+    throw deliveryError("Choose an available TikTok visibility option before publishing.", 400);
+  }
+  return {
+    ...(payload || {}),
+    privacyLevel,
+    disableComment: Boolean(approval?.disableComment),
+    disableDuet: Boolean(approval?.disableDuet),
+    disableStitch: Boolean(approval?.disableStitch),
+    brandOrganicToggle: approval?.brandOrganicToggle !== false,
+    brandContentToggle: Boolean(approval?.brandContentToggle),
+  };
+}
+
+function prepareTikTokPayload(id, payload, env) {
+  if (payload?.mediaKind !== "image") return payload;
+  const sourceMediaUrl = validExternalMediaUrl(payload.mediaUrl);
+  if (!sourceMediaUrl) throw deliveryError("The approved TikTok image is not a public HTTPS asset.", 400);
+  const origin = String(env.APP_BASE_URL || "").replace(/\/$/, "");
+  if (!/^https:\/\//i.test(origin)) throw deliveryError("The public app address is not configured for TikTok photo delivery.", 503);
+  const expiresAt = Math.floor(Date.now() / 1000) + 2 * 60 * 60;
+  const unsigned = `${expiresAt}.${id}`;
+  const signature = createHmac("sha256", deliveryMediaSecret(env)).update(unsigned).digest("base64url");
+  return { ...payload, sourceMediaUrl, mediaUrl: `${origin}/api/delivery-media?token=${encodeURIComponent(`${unsigned}.${signature}`)}` };
+}
+
+function verifyDeliveryMediaToken(value, env) {
+  const [expiresValue, id, signature] = String(value || "").split(".");
+  const expiresAt = Number(expiresValue);
+  if (!expiresAt || expiresAt < Math.floor(Date.now() / 1000) || !id || !signature) throw deliveryError("This media link expired.", 410);
+  const expected = createHmac("sha256", deliveryMediaSecret(env)).update(`${expiresValue}.${id}`).digest("base64url");
+  const receivedBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (receivedBuffer.length !== expectedBuffer.length || !timingSafeEqual(receivedBuffer, expectedBuffer)) throw deliveryError("This media link is invalid.", 403);
+  return { id, expiresAt };
+}
+
+function deliveryMediaSecret(env) {
+  const secret = String(env.CONNECTION_ENCRYPTION_KEY || "");
+  if (secret.length < 32) throw deliveryError("Secure media delivery is not configured.", 503);
+  return secret;
+}
+
+function validExternalMediaUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    const host = url.hostname.toLowerCase();
+    if (url.protocol !== "https:" || url.username || url.password || host === "localhost" || host.endsWith(".local") || /^(127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(host)) return "";
+    const match = host.match(/^172\.(\d{1,3})\./);
+    if (match && Number(match[1]) >= 16 && Number(match[1]) <= 31) return "";
+    return url.toString();
+  } catch {
+    return "";
+  }
 }
 
 function validRecipientList(value) {
