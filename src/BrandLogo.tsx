@@ -3,5 +3,5 @@ type BrandLogoProps = {
 };
 
 export default function BrandLogo({ className = "" }: BrandLogoProps) {
-  return <img className={className} src="/market-agent-mark.svg" alt="" aria-hidden="true" />;
+  return <img className={className} src="/market-agent-mark.svg?v=logo2b" alt="" aria-hidden="true" />;
 }
