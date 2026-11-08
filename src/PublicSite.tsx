@@ -1,4 +1,5 @@
-import { ArrowRight, BarChart3, Check, CircleAlert, FileLock2, Mail, Megaphone, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowRight, BarChart3, Check, CircleAlert, FileLock2, Mail, Megaphone, ShieldCheck } from "lucide-react";
+import BrandLogo from "./BrandLogo";
 
 const updated = "November 7, 2026";
 
@@ -57,7 +58,7 @@ function ConnectionResult() {
 function PublicHeader() {
   return (
     <header className="public-header">
-      <a className="public-brand" href="/about"><span><Sparkles size={18} /></span><strong>Market Agent</strong></a>
+      <a className="public-brand" href="/about"><BrandLogo /><strong>Market Agent</strong></a>
       <nav aria-label="Public navigation">
         <a href="/about">Product</a>
         <a href="/privacy">Privacy</a>
@@ -71,7 +72,7 @@ function PublicHeader() {
 function PublicFooter() {
   return (
     <footer className="public-footer">
-      <span><strong>Market Agent</strong><small>© 2026 Evil Creatives. All rights reserved.</small></span>
+      <span><span className="public-footer-brand"><BrandLogo /><strong>Market Agent</strong></span><small>© 2026 Evil Creatives. All rights reserved.</small></span>
       <div><a href="/about">Product</a><a href="/privacy">Privacy Policy</a><a href="/terms">Terms of Service</a></div>
       <a href="mailto:unleash@evilcreatives.com">unleash@evilcreatives.com</a>
     </footer>
@@ -112,7 +113,7 @@ function AboutMarketAgent() {
           <ul><li><Check size={15} />Private credentials are stored server-side</li><li><Check size={15} />Connections are scoped to the signed-in user and project</li><li><Check size={15} />Disconnect access at any time</li><li><Check size={15} />No fabricated recipients or account permissions</li></ul>
         </section>
 
-        <section className="public-cta"><span><Sparkles size={22} /></span><div><small>READY WHEN YOU ARE</small><h2>Build the first project workspace.</h2></div><a href="/">Sign in or create an account <ArrowRight size={15} /></a></section>
+        <section className="public-cta"><BrandLogo /><div><small>READY WHEN YOU ARE</small><h2>Build the first project workspace.</h2></div><a href="/">Sign in or create an account <ArrowRight size={15} /></a></section>
       </main>
       <PublicFooter />
     </div>

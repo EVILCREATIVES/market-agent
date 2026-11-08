@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { LoaderCircle, LockKeyhole, Sparkles } from "lucide-react";
+import { LoaderCircle, LockKeyhole } from "lucide-react";
+import BrandLogo from "./BrandLogo";
 import OperationalApp from "./OperationalApp";
 import PublicSite, { isPublicRoute } from "./PublicSite";
 import { authClient, authUrl } from "./auth";
@@ -53,7 +54,7 @@ function AuthScreen() {
 
   return (
     <div className="auth-shell">
-      <div className="auth-brand"><span><Sparkles size={20} /></span><strong>Market Agent</strong></div>
+      <div className="auth-brand"><BrandLogo /><strong>Market Agent</strong></div>
       <section className="auth-card">
         <div className="auth-lock"><LockKeyhole size={23} /></div>
         <div><small>MULTI-PROJECT MARKETING WORKSPACE</small><h1>{mode === "sign-in" ? "Welcome back" : "Create your account"}</h1><p>Sign in to manage research, campaigns, and content across your projects. Data is stored securely in your private cloud workspace.</p></div>

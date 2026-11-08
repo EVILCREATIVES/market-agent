@@ -587,7 +587,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-shell { min-height: 100vh; color: #1d1d1b; background: #f4f4ef; }
 .op-sidebar { position: fixed; inset: 0 auto 0 0; width: 245px; z-index: 50; background: #20201f; color: #f4f4ef; padding: 18px 13px; display: flex; flex-direction: column; }
 .op-brand { height: 38px; padding: 0 7px; display: flex; align-items: center; gap: 10px; }
-.op-brand > span { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 9px; background: #7856ff; }
+.op-brand > img { width: 29px; height: 29px; display: block; border-radius: 8px; }
 .op-brand strong { font-size: 15px; letter-spacing: -.02em; }
 .op-brand button { display: none; margin-left: auto; border: 0; background: transparent; color: #aaa9a2; }
 .op-project-switcher { position: relative; margin: 19px 0 15px; }
@@ -1286,7 +1286,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-empty--media { min-height: 155px; }
 .auth-shell, .full-message { min-height: 100vh; display: flex; align-items: center; justify-content: center; flex-direction: column; padding: 28px; background: radial-gradient(circle at 50% 10%, #ece7ff 0, #f4f4ef 36%, #f4f4ef 100%); }
 .auth-brand { position: fixed; top: 25px; left: 27px; display: flex; align-items: center; gap: 9px; }
-.auth-brand > span { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 9px; background: #7856ff; color: white; }
+.auth-brand > img { width: 31px; height: 31px; display: block; border-radius: 9px; }
 .auth-brand strong { font-size: 14px; }
 .auth-card { width: min(440px,100%); padding: 31px; border: 1px solid #dfddd4; border-radius: 16px; background: rgba(251,251,248,.96); box-shadow: 0 18px 55px rgba(34,30,50,.11); }
 .auth-lock { width: 45px; height: 45px; display: grid; place-items: center; border-radius: 12px; background: #eee9ff; color: #6548cb; margin-bottom: 19px; }
@@ -1317,7 +1317,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .connection-result em { display: block; margin-top: 18px; color: #908d84; font-size: 9px; font-style: normal; line-height: 1.5; }
 .public-header { position: sticky; top: 0; z-index: 20; min-height: 68px; padding: 0 clamp(24px,5vw,78px); border-bottom: 1px solid rgba(63,61,55,.13); background: rgba(246,245,239,.92); backdrop-filter: blur(16px); display: flex; align-items: center; justify-content: space-between; gap: 24px; }
 .public-brand { display: inline-flex; align-items: center; gap: 10px; color: inherit; text-decoration: none; }
-.public-brand > span { width: 34px; height: 34px; border-radius: 10px; background: #7454e8; color: white; display: grid; place-items: center; }
+.public-brand > img { width: 34px; height: 34px; display: block; border-radius: 10px; }
 .public-brand strong { font-size: 14px; }
 .public-header nav { display: flex; align-items: center; gap: clamp(12px,2vw,28px); }
 .public-header nav a { color: #626059; font-size: 10px; text-decoration: none; }
@@ -1353,11 +1353,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .public-controls li { color: #deddd6; display: flex; align-items: center; gap: 9px; font-size: 10px; }
 .public-controls li svg { color: #9b84ef; }
 .public-cta { margin-bottom: 90px; padding: 34px; border: 1px solid #d9d5ca; border-radius: 17px; background: #fbfaf6; display: grid; grid-template-columns: 48px 1fr auto; align-items: center; gap: 18px; }
-.public-cta > span { width: 48px; height: 48px; border-radius: 13px; background: #eee9ff; color: #6848d6; display: grid; place-items: center; }
+.public-cta > img { width: 48px; height: 48px; display: block; border-radius: 13px; }
 .public-cta h2 { margin: 5px 0 0; font-size: 22px; }
 .public-footer { min-height: 110px; padding: 28px clamp(24px,5vw,78px); border-top: 1px solid #dddacf; color: #6c6962; display: grid; grid-template-columns: 1fr auto 1fr; gap: 25px; align-items: center; font-size: 9px; }
 .public-footer > span { color: #2f2e2a; display: flex; flex-direction: column; gap: 5px; }
 .public-footer > span strong { font-weight: 800; }
+.public-footer-brand { display: flex; align-items: center; gap: 7px; }
+.public-footer-brand img { width: 24px; height: 24px; border-radius: 7px; }
 .public-footer > span small { color: #78756e; font-size: 8px; font-weight: 500; line-height: 1.5; }
 .public-footer > div { display: flex; gap: 20px; }
 .public-footer a { color: inherit; text-decoration: none; }

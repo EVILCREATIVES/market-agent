@@ -41,6 +41,7 @@ import { createDefaultSchedule, createEmptyProject, loadState, saveState } from 
 import { prepareLogo, prepareMaterial, type PreparedMaterial } from "./operational/materials";
 import { upload } from "@vercel/blob/client";
 import { apiFetch, getAccessToken } from "./auth";
+import BrandLogo from "./BrandLogo";
 import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, BillingStatus, ConnectionStatus, DeliveryJob, HealthState, MediaBudgetSummary, MediaJob, NewsletterDashboard, NewsletterDraft, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, RunStatus, SourceMediaAsset, TikTokPublishingOptions } from "./operational/types";
 
 type Page = "agent" | "brain" | "research" | "campaigns" | "content" | "analytics" | "integrations";
@@ -331,7 +332,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
   return (
     <div className="op-shell">
       <aside className={`op-sidebar ${mobileOpen ? "op-sidebar--open" : ""}`}>
-        <div className="op-brand"><span><Sparkles size={18} /></span><strong>Market Agent</strong><button onClick={() => setMobileOpen(false)} aria-label="Close navigation"><X size={18} /></button></div>
+        <div className="op-brand"><BrandLogo /><strong>Market Agent</strong><button onClick={() => setMobileOpen(false)} aria-label="Close navigation"><X size={18} /></button></div>
         <div className="op-project-switcher">
           <button className="op-workspace" onClick={() => setProjectMenuOpen((open) => !open)} aria-expanded={projectMenuOpen}>
             <span>{projectInitials(activeProject.name)}</span><div><small>Active project</small><strong>{activeProject.name || "Unnamed project"}</strong></div><ChevronDown size={15} />
