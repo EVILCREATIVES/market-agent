@@ -13,6 +13,6 @@ export default async function handler(req, res) {
     await consumeAiUsage(userId, "workspace", userApiEnv);
     return res.status(200).json(await refineProductBrain(req.body, userApiEnv));
   } catch (error) {
-    return res.status(error.statusCode || 500).json({ error: error.message || "The product brain could not be updated." });
+    return res.status(error.statusCode || 500).json({ error: error.message || "The Brand could not be updated." });
   }
 }

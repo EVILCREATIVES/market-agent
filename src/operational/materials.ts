@@ -9,6 +9,16 @@ export interface PreparedMaterial {
   text: string;
   images: string[];
   detail: string;
+  typographySystems?: PreparedTypographySystem[];
+}
+
+export interface PreparedTypographySystem {
+  source: "deck" | "document";
+  sourceLabel: string;
+  usage: string;
+  families: string[];
+  sample: string;
+  verified: boolean;
 }
 
 const MAX_FILE_BYTES = 150 * 1024 * 1024;
@@ -87,13 +97,17 @@ async function prepareZipDocument(file: File, type: "presentation" | "document")
   const pattern = isPresentation ? /^ppt\/slides\/slide\d+\.xml$/ : /^word\/document\.xml$/;
   const entries = Object.keys(zip.files).filter((name) => pattern.test(name)).sort(numericNameSort);
   const textParts: string[] = [];
+  const deckFonts = new Set<string>();
 
   for (const [index, name] of entries.entries()) {
     const xml = await zip.file(name)?.async("text");
     if (!xml) continue;
+    if (isPresentation) for (const family of extractOfficeTypefaceNames(xml)) deckFonts.add(family);
     const text = extractXmlText(xml);
     if (text) textParts.push(isPresentation ? `Slide ${index + 1}\n${text}` : text);
   }
+
+  if (isPresentation && deckFonts.size) textParts.unshift(`VERIFIED TYPOGRAPHY — UPLOADED DECK\nSource: ${file.name}\nEvidence: typefaces explicitly assigned in slide content (theme-only and fallback fonts excluded).\nFont families: ${[...deckFonts].join(", ")}`);
 
   const mediaPattern = isPresentation ? /^ppt\/media\// : /^word\/media\//;
   const mediaNames = Object.keys(zip.files).filter((name) => mediaPattern.test(name) && !zip.files[name].dir).slice(0, 10);
@@ -120,6 +134,7 @@ async function prepareZipDocument(file: File, type: "presentation" | "document")
     text,
     images,
     detail: isPresentation ? `${entries.length} slides read` : `${text.length.toLocaleString()} characters read`,
+    typographySystems: isPresentation && deckFonts.size ? [{ source: "deck", sourceLabel: file.name, usage: "Typefaces explicitly used in slide content.", families: [...deckFonts], sample: "Research → Meaning → Identity → Story → Art", verified: true }] : [],
   };
 }
 
@@ -179,6 +194,16 @@ function extractXmlText(xml: string) {
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function extractOfficeTypefaceNames(xml: string) {
+  const families = new Set<string>();
+  for (const match of String(xml || "").matchAll(/\btypeface\s*=\s*["']([^"']+)["']/gi)) {
+    const family = match[1].trim();
+    if (!family || /^\+(?:mj|mn)-/i.test(family) || /^(none|inherit)$/i.test(family)) continue;
+    families.add(family);
+  }
+  return [...families].slice(0, 12);
 }
 
 function representativeIndices(total: number, maximum: number) {

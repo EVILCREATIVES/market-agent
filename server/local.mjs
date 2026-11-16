@@ -1,7 +1,7 @@
 import http from "node:http";
 import { handleUpload } from "@vercel/blob/client";
-import { buildProductBrain, createRunRecord, refineProductBrain, runMarketingAgent, runProjectConversation } from "./agent.mjs";
-import { approveAssetProposal, cancelAssetProposal, listProjectAssets, registerLinkedAsset, registerUploadedAsset, serveProjectFile } from "./assets.mjs";
+import { buildProductBrain, createRunRecord, readConnectedSourceMetadata, refineProductBrain, runMarketingAgent, runProjectConversation } from "./agent.mjs";
+import { approveAssetProposal, cancelAssetProposal, deleteProjectAsset, getProjectAssetPreviewUrl, listProjectAssets, registerLinkedAsset, registerUploadedAsset, serveProjectFile } from "./assets.mjs";
 import { requireUser } from "./auth.mjs";
 import { appendRunForUser, enforceRunBudget, loadStateForUser, saveStateForUser } from "./db.mjs";
 import { approveMediaJob, cancelMediaJob, listMediaJobs, prepareMediaJob } from "./media.mjs";
@@ -12,6 +12,9 @@ import {
   loadUserApiEnv,
   saveUserApiCredential,
 } from "./user-api-credentials.mjs";
+import { createNewsletterDraft, deliverNewsletter, getContactImportDetails, getNewsletterDashboard, getSubscriberDetails, importContactList, registerSubscriber, stageContactImport, updateNewsletterDraft, updateNewsletterSettings } from "./newsletters.mjs";
+import { getAgentPerformanceContext } from "./growth.mjs";
+import { getConnectionStatus } from "./connections.mjs";
 
 const port = Number(process.env.PORT || 8787);
 
@@ -93,10 +96,11 @@ const server = http.createServer(async (req, res) => {
     try {
       const { userId } = await requireUser(req);
       if (req.method === "GET") return json(res, 200, await loadStateForUser(userId));
-      const state = await saveStateForUser(userId, (await readJson(req)).state);
-      return json(res, 200, { ok: true, state });
+      const payload = await readJson(req);
+      const saved = await saveStateForUser(userId, payload.state, process.env, payload.baseRevision);
+      return json(res, 200, { ok: true, ...saved });
     } catch (error) {
-      return json(res, error.statusCode || 500, { error: error.message || "Cloud workspace request failed." });
+      return json(res, error.statusCode || 500, { error: error.message || "Cloud workspace request failed.", ...(error.current || {}) });
     }
   }
 
@@ -108,7 +112,12 @@ const server = http.createServer(async (req, res) => {
       const userApiEnv = await loadUserApiEnv(userId);
       await enforceRunBudget(userId, mode);
       await consumeAiUsage(userId, mode === "panel" ? "panel" : "agent", userApiEnv);
-      const result = await runMarketingAgent(payload, userApiEnv);
+      const projectId = payload.projectId || "project-default";
+      const [connections, performanceContext] = await Promise.all([
+        getConnectionStatus(userId, projectId),
+        getAgentPerformanceContext(userId, projectId).catch(() => ""),
+      ]);
+      const result = await runMarketingAgent({ ...payload, workspace: { ...(payload.workspace || {}), performanceContext }, connections }, userApiEnv);
       const run = createRunRecord(result, payload.action || "chat", payload.prompt || "", payload.projectId || "project-default");
       await appendRunForUser(userId, run);
       return json(res, 200, { ...result, run });
@@ -139,6 +148,49 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (req.method === "POST" && req.url === "/api/source-metadata") {
+    try {
+      await requireUser(req);
+      const payload = await readJson(req);
+      const links = Array.isArray(payload.links) ? payload.links.map(String).slice(0, 15) : [];
+      return json(res, 200, { sources: await readConnectedSourceMetadata(links) });
+    } catch (error) {
+      return json(res, error.statusCode || 500, { error: error.message || "Source details could not be read." });
+    }
+  }
+
+  if (["GET", "POST"].includes(req.method) && req.url?.startsWith("/api/newsletters")) {
+    try {
+      const { userId } = await requireUser(req);
+      const url = new URL(req.url, `http://127.0.0.1:${port}`);
+      const payload = req.method === "POST" ? await readJson(req) : {};
+      const projectId = String(url.searchParams.get("projectId") || payload.projectId || "project-default").trim().slice(0, 200);
+      if (req.method === "GET") return json(res, 200, await getNewsletterDashboard(userId, projectId));
+      const userApiEnv = await loadUserApiEnv(userId);
+      if (payload.action === "stage-contact-import") {
+        const staged = await stageContactImport(userId, projectId, payload);
+        let draft = null;
+        let draftError = "";
+        if (payload.createDraft) {
+          try { ({ draft } = await createNewsletterDraft(userId, projectId, payload.direction, userApiEnv)); }
+          catch (error) { draftError = String(error?.message || "The newsletter draft could not be created."); }
+        }
+        return json(res, 200, { ...staged, draft, draftError });
+      }
+      if (payload.action === "import-contact-list") return json(res, 200, await importContactList(userId, projectId, payload));
+      if (payload.action === "contact-import-details") return json(res, 200, await getContactImportDetails(userId, projectId, payload));
+      if (payload.action === "subscriber-details") return json(res, 200, await getSubscriberDetails(userId, projectId, payload));
+      if (payload.action === "update-welcome-settings") return json(res, 200, await updateNewsletterSettings(userId, projectId, payload));
+      if (payload.action === "register-subscriber") return json(res, 200, await registerSubscriber(userId, projectId, payload));
+      if (payload.action === "create-draft") return json(res, 200, await createNewsletterDraft(userId, projectId, payload.direction, userApiEnv));
+      if (payload.action === "update-draft") return json(res, 200, await updateNewsletterDraft(userId, projectId, String(payload.id || ""), payload.changes || {}));
+      if (["send", "schedule"].includes(payload.action)) return json(res, 200, await deliverNewsletter(userId, projectId, String(payload.id || ""), payload.action, payload.scheduleTime));
+      return json(res, 400, { error: "Choose a newsletter action." });
+    } catch (error) {
+      return json(res, error.statusCode || 500, { error: error.message || "Newsletter action failed.", draft: error.newsletter || undefined });
+    }
+  }
+
   if (req.method === "POST" && req.url === "/api/refine") {
     try {
       const { userId } = await requireUser(req);
@@ -146,7 +198,7 @@ const server = http.createServer(async (req, res) => {
       await consumeAiUsage(userId, "workspace", userApiEnv);
       return json(res, 200, await refineProductBrain(await readJson(req), userApiEnv));
     } catch (error) {
-      return json(res, error.statusCode || 500, { error: error.message || "The product brain could not be updated." });
+      return json(res, error.statusCode || 500, { error: error.message || "The Brand could not be updated." });
     }
   }
 
@@ -187,6 +239,7 @@ const server = http.createServer(async (req, res) => {
       if (payload.action === "add-link") return json(res, 200, await registerLinkedAsset(userId, payload, userApiEnv));
       if (payload.action === "approve-proposal") return json(res, 200, await approveAssetProposal(userId, payload, userApiEnv));
       if (payload.action === "cancel-proposal") return json(res, 200, await cancelAssetProposal(userId, payload, userApiEnv));
+      if (payload.action === "delete-asset") return json(res, 200, await deleteProjectAsset(userId, payload, userApiEnv));
       return json(res, 400, { error: "Unknown asset action." });
     } catch (error) {
       return json(res, error.statusCode || 500, { error: error.message || "Project asset request failed." });
@@ -198,6 +251,7 @@ const server = http.createServer(async (req, res) => {
       const { userId } = await requireUser(req);
       const url = new URL(req.url, `http://127.0.0.1:${port}`);
       req.query = Object.fromEntries(url.searchParams.entries());
+      if (req.query.mode === "preview-url") return json(res, 200, await getProjectAssetPreviewUrl(userId, req.query.id));
       return await serveProjectFile(userId, req, res);
     } catch (error) {
       return json(res, error.statusCode || 500, { error: error.message || "File could not be downloaded." });

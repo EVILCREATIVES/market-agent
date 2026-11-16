@@ -1,4 +1,5 @@
 import { Readable } from "node:stream";
+import { safeFetchPublic } from "../server/agent.mjs";
 import { readDeliveryMedia } from "../server/delivery.mjs";
 
 export const config = { maxDuration: 300 };
@@ -9,7 +10,7 @@ export default async function handler(req, res) {
     const { mediaUrl, mediaKind } = await readDeliveryMedia(req.query?.token);
     const headers = {};
     if (req.headers.range) headers.Range = req.headers.range;
-    const upstream = await fetch(mediaUrl, { headers, redirect: "follow" });
+    const upstream = await safeFetchPublic(mediaUrl, { headers, signal: AbortSignal.timeout(60_000) });
     if (!upstream.ok || !upstream.body) return res.status(upstream.status || 502).send("Media unavailable");
     res.status(upstream.status);
     res.setHeader("Content-Type", upstream.headers.get("content-type") || (mediaKind === "video" ? "video/mp4" : "image/jpeg"));

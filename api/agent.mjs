@@ -5,6 +5,7 @@ import { appendRunForUser, enforceRunBudget } from "../server/db.mjs";
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 import { getConnectionStatus } from "../server/connections.mjs";
 import { consumeAiUsage } from "../server/billing.mjs";
+import { getAgentPerformanceContext } from "../server/growth.mjs";
 
 export const config = { maxDuration: 300 };
 
@@ -18,7 +19,9 @@ export default async function handler(req, res) {
     await consumeAiUsage(userId, mode === "panel" ? "panel" : "agent", userApiEnv);
     const projectId = req.body?.projectId || "project-default";
     const connections = await getConnectionStatus(userId, projectId);
-    const result = await runMarketingAgent({ ...req.body, connections }, userApiEnv);
+    const performanceContext = await getAgentPerformanceContext(userId, projectId).catch(() => "");
+    const workspace = { ...(req.body?.workspace || {}), performanceContext };
+    const result = await runMarketingAgent({ ...req.body, workspace, connections }, userApiEnv);
     const run = createRunRecord(result, req.body?.action || "chat", req.body?.prompt || "", projectId);
     await appendRunForUser(userId, run);
     return res.status(200).json({ ...result, run });

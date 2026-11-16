@@ -240,6 +240,7 @@ export async function consumeAiUsage(userId, purpose, accessEnv, env = process.e
 
 export function connectorAllowedForAccess(accessEnv, provider) {
   const mode = String(accessEnv?.MARKET_AGENT_ACCESS_MODE || "expired");
+  if (provider === "x") return mode === "managed";
   if (mode === "byok" || mode === "managed") return true;
   if (mode === "trial") return provider === "linkedin";
   return false;

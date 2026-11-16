@@ -1,17 +1,41 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { EncryptJWT, jwtDecrypt } from "jose";
+import { safeFetchPublic } from "./agent.mjs";
 import { getPool } from "./db.mjs";
 
-export const SOCIAL_PROVIDERS = ["linkedin", "instagram", "tiktok", "x", "discord", "reddit"];
+export const SOCIAL_PROVIDERS = ["linkedin", "instagram", "tiktok", "youtube", "x", "discord", "reddit"];
 
 const SOCIAL_SCOPES = {
   linkedin: ["openid", "profile", "email", "w_member_social"],
-  instagram: ["instagram_business_basic", "instagram_business_content_publish"],
+  instagram: ["instagram_basic", "pages_read_engagement", "instagram_content_publish", "instagram_manage_insights"],
   tiktok: ["user.info.basic", "video.publish"],
+  youtube: [
+    "openid",
+    "email",
+    "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
+  ],
   x: ["tweet.read", "tweet.write", "users.read", "media.write", "offline.access"],
   discord: ["identify", "guilds", "webhook.incoming"],
   reddit: ["identity", "read", "submit", "mysubreddits"],
 };
+
+function tiktokCredentials(env) {
+  const useSandbox = String(env.TIKTOK_ENVIRONMENT || "").toLowerCase() === "sandbox";
+  return {
+    clientKey: useSandbox && env.TIKTOK_SANDBOX_CLIENT_KEY ? env.TIKTOK_SANDBOX_CLIENT_KEY : env.TIKTOK_CLIENT_KEY,
+    clientSecret: useSandbox && env.TIKTOK_SANDBOX_CLIENT_SECRET ? env.TIKTOK_SANDBOX_CLIENT_SECRET : env.TIKTOK_CLIENT_SECRET,
+  };
+}
+
+function linkedinScopes(env) {
+  const scopes = [...SOCIAL_SCOPES.linkedin];
+  if (String(env.LINKEDIN_ORGANIZATION_ACCESS || "").toLowerCase() === "true") {
+    scopes.push("rw_organization_admin", "r_organization_social", "w_organization_social");
+  }
+  return scopes;
+}
 
 let socialTableReady = false;
 
@@ -28,6 +52,21 @@ export async function getSocialConnectionStatus(userId, projectId = "project-def
   for (const row of result.rows) {
     if (row.status !== "connected" || !SOCIAL_PROVIDERS.includes(row.provider)) continue;
     const scopes = Array.isArray(row.scopes) ? row.scopes : [];
+    const approvalRequired = row.provider === "reddit" && !redditAccessApproved(env);
+    const destinationCredentials = ["linkedin", "instagram"].includes(row.provider) ? decryptCredentials(row.encrypted_credentials, env) : null;
+    const linkedInCredentials = row.provider === "linkedin" ? destinationCredentials : null;
+    const linkedInDestinations = row.provider === "linkedin" ? normalizeLinkedInDestinations(linkedInCredentials?.destinations, row) : [];
+    const linkedInDestinationId = row.provider === "linkedin" ? String(linkedInCredentials?.destinationId || "") : "";
+    const linkedInDestination = linkedInDestinations.find((destination) => destination.id === linkedInDestinationId);
+    const instagramCredentials = row.provider === "instagram" ? destinationCredentials : null;
+    const instagramDestinations = row.provider === "instagram" ? normalizeInstagramDestinations(instagramCredentials?.destinations) : [];
+    const instagramDestinationId = row.provider === "instagram" ? String(instagramCredentials?.destinationId || "") : "";
+    const instagramDestination = instagramDestinations.find((destination) => destination.id === instagramDestinationId);
+    const destinationReady = row.provider === "linkedin"
+      ? Boolean(linkedInDestination)
+      : row.provider === "instagram"
+        ? Boolean(instagramDestination)
+        : true;
     status[row.provider] = {
       configured: socialConnectorConfigured(row.provider, env),
       connected: true,
@@ -35,10 +74,14 @@ export async function getSocialConnectionStatus(userId, projectId = "project-def
       accountLabel: row.account_label || row.account_email || "",
       scopes,
       connectedAt: row.connected_at || row.updated_at || null,
-      canPublish: providerCanPublish(row.provider, scopes, row),
-      destinations: row.provider === "reddit" ? safeRedditCommunities(row, env) : [],
-      destinationId: row.provider === "reddit" ? String(row.account_email || "") : "",
-      destinationName: row.provider === "reddit" && row.account_email ? `r/${row.account_email}` : "",
+      canPublish: !approvalRequired && providerCanPublish(row.provider, scopes, row) && destinationReady,
+      destinations: row.provider === "reddit" ? safeRedditCommunities(row, env) : row.provider === "linkedin" ? linkedInDestinations : row.provider === "instagram" ? instagramDestinations : [],
+      destinationId: row.provider === "reddit" ? String(row.account_email || "") : row.provider === "linkedin" ? linkedInDestinationId : row.provider === "instagram" ? instagramDestinationId : "",
+      destinationName: row.provider === "reddit" && row.account_email ? `r/${row.account_email}` : row.provider === "linkedin" ? String(linkedInDestination?.name || "") : row.provider === "instagram" ? String(instagramDestination?.name || "") : "",
+      ...(row.provider === "reddit" ? {
+        approvalRequired,
+        approvalStatus: approvalRequired ? "pending_approval" : "approved",
+      } : {}),
     };
   }
   return status;
@@ -47,7 +90,7 @@ export async function getSocialConnectionStatus(userId, projectId = "project-def
 export async function createSocialAuthorizationUrl({ provider, userId, projectId, origin }, env = process.env) {
   if (!SOCIAL_PROVIDERS.includes(provider)) throw connectionError("That social connection is not supported.", 400);
   requireSocialConnector(provider, env);
-  const redirectUri = `${normalizeOrigin(origin)}/api/social-callback`;
+  const redirectUri = `${normalizeOrigin(origin)}${provider === "youtube" ? "/api/youtube-callback" : "/api/social-callback"}`;
   const codeVerifier = provider === "x" ? randomBytes(48).toString("base64url") : "";
   const state = await createConnectionState({ userId, projectId, provider, redirectUri, codeVerifier }, env);
 
@@ -57,28 +100,43 @@ export async function createSocialAuthorizationUrl({ provider, userId, projectId
       client_id: env.LINKEDIN_CLIENT_ID,
       redirect_uri: redirectUri,
       state,
-      scope: SOCIAL_SCOPES.linkedin.join(" "),
+      scope: linkedinScopes(env).join(" "),
     });
   }
   if (provider === "instagram") {
-    return authorizationUrl("https://www.instagram.com/oauth/authorize", {
-      enable_fb_login: "false",
-      force_authentication: "1",
+    return authorizationUrl("https://www.facebook.com/dialog/oauth", {
       client_id: env.INSTAGRAM_APP_ID,
+      config_id: env.INSTAGRAM_CONFIG_ID,
+      override_default_response_type: "true",
       redirect_uri: redirectUri,
       response_type: "code",
       scope: SOCIAL_SCOPES.instagram.join(","),
+      prompt: "login",
       state,
     });
   }
   if (provider === "tiktok") {
+    const { clientKey } = tiktokCredentials(env);
     return authorizationUrl("https://www.tiktok.com/v2/auth/authorize/", {
-      client_key: env.TIKTOK_CLIENT_KEY,
+      client_key: clientKey,
       response_type: "code",
       scope: SOCIAL_SCOPES.tiktok.join(","),
       redirect_uri: redirectUri,
       state,
       disable_auto_auth: "1",
+    });
+  }
+
+  if (provider === "youtube") {
+    return authorizationUrl("https://accounts.google.com/o/oauth2/v2/auth", {
+      client_id: env.GOOGLE_OAUTH_CLIENT_ID,
+      redirect_uri: redirectUri,
+      response_type: "code",
+      scope: SOCIAL_SCOPES.youtube.join(" "),
+      access_type: "offline",
+      include_granted_scopes: "true",
+      prompt: "consent select_account",
+      state,
     });
   }
 
@@ -136,10 +194,40 @@ export async function disconnectSocialConnection(userId, projectId, provider, en
 }
 
 export async function selectSocialDestination(userId, projectId, provider, destinationId, env = process.env) {
-  if (provider !== "reddit") throw connectionError("This connection does not require a destination selection.", 400);
+  if (!["linkedin", "instagram", "reddit"].includes(provider)) throw connectionError("This connection does not require a destination selection.", 400);
+  requireSocialConnector(provider, env);
   const row = await readSocialConnection(userId, projectId, provider, env);
-  if (!row || row.status !== "connected") throw connectionError("Connect Reddit before choosing a community.", 409);
+  if (!row || row.status !== "connected") throw connectionError(`Connect ${providerLabel(provider)} before choosing a destination.`, 409);
   const credentials = decryptCredentials(row.encrypted_credentials, env);
+  if (provider === "linkedin") {
+    const destinations = normalizeLinkedInDestinations(credentials.destinations, row);
+    const selected = destinations.find((item) => item.id === String(destinationId || ""));
+    if (!selected) throw connectionError("Choose one of the LinkedIn destinations returned by the connected account.", 400);
+    const scopes = Array.isArray(row.scopes) ? row.scopes : [];
+    if (selected.type === "organization" && !scopes.includes("w_organization_social")) throw connectionError("This LinkedIn app does not yet have company-page publishing approval. Reconnect after that permission is approved.", 403);
+    if (selected.type === "person" && !scopes.includes("w_member_social")) throw connectionError("Personal-profile publishing was not authorized.", 403);
+    credentials.destinations = destinations;
+    credentials.destinationId = selected.id;
+    await getPool(env).query(
+      "UPDATE market_agent_connections SET encrypted_credentials = $4, updated_at = NOW() WHERE user_id = $1 AND project_id = $2 AND provider = $3",
+      [userId, projectId, provider, encryptCredentials(credentials, env)],
+    );
+    return getSocialConnectionStatus(userId, projectId, env);
+  }
+  if (provider === "instagram") {
+    const destinations = normalizeInstagramDestinations(credentials.destinations);
+    const selected = destinations.find((item) => item.id === String(destinationId || ""));
+    if (!selected) throw connectionError("Choose one of the Instagram accounts shared during Meta onboarding.", 400);
+    credentials.destinations = destinations;
+    credentials.destinationId = selected.id;
+    await getPool(env).query(
+      `UPDATE market_agent_connections
+          SET account_id = $4, account_label = $5, encrypted_credentials = $6, updated_at = NOW()
+        WHERE user_id = $1 AND project_id = $2 AND provider = $3`,
+      [userId, projectId, provider, selected.id, selected.name, encryptCredentials(credentials, env)],
+    );
+    return getSocialConnectionStatus(userId, projectId, env);
+  }
   const communities = normalizeRedditCommunities(credentials.communities);
   const subreddit = String(destinationId || "").trim().replace(/^r\//i, "").toLowerCase();
   const selected = communities.find((item) => item.id.toLowerCase() === subreddit);
@@ -153,6 +241,7 @@ export async function selectSocialDestination(userId, projectId, provider, desti
 
 export async function publishSocialPost(userId, projectId, provider, payload, env = process.env) {
   if (!SOCIAL_PROVIDERS.includes(provider)) throw connectionError("Choose a supported social channel.", 400);
+  requireSocialConnector(provider, env);
   const row = await readSocialConnection(userId, projectId, provider, env);
   if (!row || row.status !== "connected") throw connectionError(`Connect ${providerLabel(provider)} before publishing.`, 409);
   const scopes = Array.isArray(row.scopes) ? row.scopes : [];
@@ -162,15 +251,17 @@ export async function publishSocialPost(userId, projectId, provider, payload, en
   if (!text) throw connectionError("The approved post has no copy.", 400);
   if (provider === "discord") return publishDiscord(row, credentials, { ...payload, text });
   const accessToken = await validSocialAccessToken(userId, projectId, provider, credentials, env);
-  if (provider === "linkedin") return publishLinkedIn(row, accessToken, { ...payload, text }, env);
-  if (provider === "instagram") return publishInstagram(row, accessToken, { ...payload, text }, env);
+  if (provider === "linkedin") return publishLinkedIn(row, credentials, accessToken, { ...payload, text }, env);
+  if (provider === "instagram") return publishInstagram(row, credentials, accessToken, { ...payload, text }, env);
   if (provider === "tiktok") return publishTikTok(row, accessToken, { ...payload, text });
+  if (provider === "youtube") return publishYouTube(row, accessToken, { ...payload, text });
   if (provider === "reddit") return publishReddit(row, accessToken, { ...payload, text }, env);
   return publishX(row, accessToken, { ...payload, text });
 }
 
 export async function getSocialPublishingOptions(userId, projectId, provider, env = process.env) {
-  if (!["tiktok", "reddit"].includes(provider)) throw connectionError("Publishing options are not required for this channel.", 400);
+  if (!["tiktok", "youtube", "reddit"].includes(provider)) throw connectionError("Publishing options are not required for this channel.", 400);
+  requireSocialConnector(provider, env);
   const row = await readSocialConnection(userId, projectId, provider, env);
   if (!row || row.status !== "connected") throw connectionError(`Connect ${providerLabel(provider)} before reviewing publishing settings.`, 409);
   const scopes = Array.isArray(row.scopes) ? row.scopes : [];
@@ -178,6 +269,13 @@ export async function getSocialPublishingOptions(userId, projectId, provider, en
   const credentials = decryptCredentials(row.encrypted_credentials, env);
   const accessToken = await validSocialAccessToken(userId, projectId, provider, credentials, env);
   if (provider === "reddit") return readRedditCommunityRules(row.account_email, accessToken, env);
+  if (provider === "youtube") {
+    return {
+      provider,
+      accountLabel: row.account_label || "YouTube channel",
+      privacyLevelOptions: ["private", "unlisted", "public"],
+    };
+  }
   const creator = await readTikTokCreatorInfo(accessToken);
   return {
     provider,
@@ -215,14 +313,44 @@ export async function getSocialPostStatus(userId, projectId, provider, externalI
   };
 }
 
+export async function getSocialAnalyticsAccess(userId, projectId, provider, env = process.env) {
+  if (!SOCIAL_PROVIDERS.includes(provider)) throw connectionError("That social analytics channel is not supported.", 400);
+  const row = await readSocialConnection(userId, projectId, provider, env);
+  if (!row || row.status !== "connected") return null;
+  const credentials = decryptCredentials(row.encrypted_credentials, env);
+  const accessToken = provider === "discord"
+    ? String(credentials.accessToken || "")
+    : await validSocialAccessToken(userId, projectId, provider, credentials, env);
+  return {
+    accountId: String(row.account_id || ""),
+    accountLabel: String(row.account_label || row.account_email || providerLabel(provider)),
+    accountEmail: String(row.account_email || ""),
+    scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : [],
+    credentials,
+    accessToken,
+  };
+}
+
 export function socialConnectorConfigured(provider, env = process.env) {
   const secure = Boolean(env.CONNECTION_ENCRYPTION_KEY);
   if (provider === "linkedin") return Boolean(secure && env.LINKEDIN_CLIENT_ID && env.LINKEDIN_CLIENT_SECRET);
-  if (provider === "instagram") return Boolean(secure && env.INSTAGRAM_APP_ID && env.INSTAGRAM_APP_SECRET);
-  if (provider === "tiktok") return Boolean(secure && env.TIKTOK_CLIENT_KEY && env.TIKTOK_CLIENT_SECRET);
+  if (provider === "instagram") return Boolean(secure && env.INSTAGRAM_APP_ID && env.INSTAGRAM_APP_SECRET && env.INSTAGRAM_CONFIG_ID);
+  if (provider === "tiktok") {
+    const { clientKey, clientSecret } = tiktokCredentials(env);
+    return Boolean(secure && clientKey && clientSecret);
+  }
+  if (provider === "youtube") return Boolean(secure && env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET);
   if (provider === "x") return Boolean(secure && env.X_CLIENT_ID && env.X_CLIENT_SECRET);
   if (provider === "discord") return Boolean(secure && env.DISCORD_CLIENT_ID && env.DISCORD_CLIENT_SECRET);
-  if (provider === "reddit") return Boolean(secure && env.REDDIT_CLIENT_ID && env.REDDIT_CLIENT_SECRET && env.REDDIT_USER_AGENT);
+  if (provider === "reddit") {
+    return Boolean(
+      secure
+      && redditAccessApproved(env)
+      && env.REDDIT_CLIENT_ID
+      && env.REDDIT_CLIENT_SECRET
+      && validRedditUserAgent(env.REDDIT_USER_AGENT),
+    );
+  }
   return false;
 }
 
@@ -230,6 +358,7 @@ async function finishProvider(provider, code, request, env) {
   if (provider === "linkedin") return finishLinkedIn(code, request, env);
   if (provider === "instagram") return finishInstagram(code, request, env);
   if (provider === "tiktok") return finishTikTok(code, request, env);
+  if (provider === "youtube") return finishYouTube(code, request, env);
   if (provider === "discord") return finishDiscord(code, request, env);
   if (provider === "reddit") return finishReddit(code, request, env);
   return finishX(code, request, env);
@@ -246,60 +375,159 @@ async function finishLinkedIn(code, request, env) {
   const profile = await fetchJson("https://api.linkedin.com/v2/userinfo", {
     headers: { Authorization: `Bearer ${tokens.access_token}` },
   }, "LinkedIn could not read the authorized profile.");
+  const scopes = splitScopes(tokens.scope);
+  const destinations = await readLinkedInDestinations(tokens.access_token, profile, scopes, env);
   return {
     accountId: String(profile.sub || ""),
     accountLabel: String(profile.name || profile.email || "LinkedIn account"),
     accountEmail: String(profile.email || "").toLowerCase(),
-    scopes: splitScopes(tokens.scope),
-    credentials: tokenCredentials(tokens),
+    scopes,
+    credentials: { ...tokenCredentials(tokens), destinations, destinationId: "" },
   };
+}
+
+async function readLinkedInDestinations(accessToken, profile, scopes, env) {
+  const personal = {
+    id: `urn:li:person:${String(profile.sub || "")}`,
+    name: String(profile.name || profile.email || "Personal profile"),
+    label: "Personal profile — optional",
+    type: "person",
+  };
+  if (!scopes.includes("w_organization_social") || !scopes.some((scope) => ["rw_organization_admin", "r_organization_admin"].includes(scope))) return [personal];
+  try {
+    const version = env.LINKEDIN_VERSION || "202609";
+    const response = await fetchJson("https://api.linkedin.com/rest/organizationAcls?q=roleAssignee&state=APPROVED&count=100", {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "X-Restli-Protocol-Version": "2.0.0",
+        "Linkedin-Version": version,
+      },
+    }, "LinkedIn could not read the company pages administered by this member.");
+    const urns = Array.from(new Set((response.elements || [])
+      .filter((item) => item?.state === "APPROVED" && ["ADMINISTRATOR", "CONTENT_ADMINISTRATOR", "DIRECT_SPONSORED_CONTENT_POSTER"].includes(String(item?.role || "")))
+      .map((item) => String(item.organizationTarget || item.organization || ""))
+      .filter((urn) => /^urn:li:organization(?:Brand)?:/i.test(urn))));
+    const organizations = await Promise.all(urns.map(async (urn) => {
+      const id = urn.split(":").pop();
+      let name = `LinkedIn company page ${id}`;
+      try {
+        const organization = await fetchJson(`https://api.linkedin.com/rest/organizations/${encodeURIComponent(id)}`, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "X-Restli-Protocol-Version": "2.0.0",
+            "Linkedin-Version": version,
+          },
+        }, "LinkedIn could not read a company-page name.");
+        name = String(organization.localizedName || organization.name?.localized?.en_US || name);
+      } catch { /* Preserve the verified page id when its display name is unavailable. */ }
+      return { id: urn, name, label: "Company page · recommended", type: "organization" };
+    }));
+    return [...organizations, personal];
+  } catch {
+    return [personal];
+  }
+}
+
+function normalizeLinkedInDestinations(values, row) {
+  const fallback = row?.account_id ? [{
+    id: `urn:li:person:${String(row.account_id)}`,
+    name: String(row.account_label || "Personal profile"),
+    label: "Personal profile — optional",
+    type: "person",
+  }] : [];
+  const source = Array.isArray(values) && values.length ? values : fallback;
+  const destinations = [];
+  for (const value of source) {
+    const id = String(value?.id || "");
+    const type = /^urn:li:organization(?:Brand)?:/i.test(id) ? "organization" : /^urn:li:person:/i.test(id) ? "person" : "";
+    if (!type || destinations.some((item) => item.id === id)) continue;
+    destinations.push({
+      id,
+      name: String(value?.name || (type === "organization" ? "LinkedIn company page" : row?.account_label || "Personal profile")),
+      label: type === "organization" ? "Company page · recommended" : "Personal profile — optional",
+      type,
+    });
+  }
+  return destinations.sort((left, right) => Number(left.type === "person") - Number(right.type === "person"));
 }
 
 async function finishInstagram(code, request, env) {
-  const tokens = await exchangeFormToken("https://api.instagram.com/oauth/access_token", {
+  const version = env.INSTAGRAM_GRAPH_VERSION || "v27.0";
+  const tokenUrl = new URL(`https://graph.facebook.com/${version}/oauth/access_token`);
+  tokenUrl.search = new URLSearchParams({
     client_id: env.INSTAGRAM_APP_ID,
     client_secret: env.INSTAGRAM_APP_SECRET,
-    grant_type: "authorization_code",
-    redirect_uri: request.redirectUri,
     code,
-  }, "Instagram");
-
-  let accessToken = tokens.access_token;
-  let expiresIn = Number(tokens.expires_in || 3600);
-  const exchangeUrl = new URL("https://graph.instagram.com/access_token");
-  exchangeUrl.search = new URLSearchParams({
-    grant_type: "ig_exchange_token",
-    client_secret: env.INSTAGRAM_APP_SECRET,
+    redirect_uri: request.redirectUri,
+  }).toString();
+  const tokens = await fetchJson(tokenUrl, {}, "Instagram could not exchange the authorization code.");
+  const accessToken = String(tokens.access_token || "");
+  if (!accessToken) throw connectionError("Instagram did not return an access token.", 400);
+  const integrationUrl = new URL(`https://graph.facebook.com/${version}/me`);
+  integrationUrl.search = new URLSearchParams({ fields: "id,client_business_id", access_token: accessToken }).toString();
+  const integration = await fetchJson(integrationUrl, {}, "Instagram could not read the connected business portfolio.");
+  const accountsUrl = new URL(`https://graph.facebook.com/${version}/me/assigned_instagram_accounts`);
+  accountsUrl.search = new URLSearchParams({
+    fields: "id,username,name,profile_picture_url",
+    limit: "100",
     access_token: accessToken,
   }).toString();
-  const longResponse = await fetch(exchangeUrl);
-  const longToken = await longResponse.json().catch(() => ({}));
-  if (longResponse.ok && longToken.access_token) {
-    accessToken = longToken.access_token;
-    expiresIn = Number(longToken.expires_in || expiresIn);
+  const accounts = await fetchJson(accountsUrl, {}, "Instagram could not read the authorized professional accounts.");
+  const destinations = normalizeInstagramDestinations(accounts.data);
+  if (!destinations.length) throw connectionError("No Instagram professional account was shared. Reconnect and select the Instagram account during Meta onboarding.", 409);
+  let grantedScopes = [];
+  try {
+    const permissionsUrl = new URL(`https://graph.facebook.com/${version}/me/permissions`);
+    permissionsUrl.searchParams.set("access_token", accessToken);
+    const permissions = await fetchJson(permissionsUrl, {}, "Instagram permissions could not be verified.");
+    grantedScopes = (permissions.data || [])
+      .filter((item) => item?.status === "granted")
+      .map((item) => String(item.permission || ""))
+      .filter(Boolean);
+  } catch {
+    // The connection still supports publishing when Meta omits permission introspection.
   }
-
-  const profile = await fetchJson(`https://graph.instagram.com/me?fields=user_id,username,name,account_type,profile_picture_url&access_token=${encodeURIComponent(accessToken)}`, {}, "Instagram could not read the authorized profile.");
-  const grantedScopes = new Set(splitScopes(tokens.scope));
-  const permissionResponse = await fetch(`https://graph.instagram.com/me/permissions?access_token=${encodeURIComponent(accessToken)}`);
-  const permissions = await permissionResponse.json().catch(() => ({}));
-  if (permissionResponse.ok) {
-    for (const item of permissions.data || []) if (item?.status === "granted" && item?.permission) grantedScopes.add(String(item.permission));
-  }
-  const username = String(profile.username || "");
+  const selected = destinations.length === 1 ? destinations[0] : null;
+  const expiresIn = Number(tokens.expires_in || 0);
   return {
-    accountId: String(profile.user_id || profile.id || tokens.user_id || ""),
-    accountLabel: username ? `@${username}` : String(profile.name || "Instagram account"),
+    accountId: String(selected?.id || integration.client_business_id || integration.id || ""),
+    accountLabel: String(selected?.name || "Instagram business portfolio"),
     accountEmail: "",
-    scopes: [...grantedScopes],
-    credentials: { accessToken, refreshToken: "", expiresAt: Date.now() + expiresIn * 1000, tokenType: "Bearer" },
+    scopes: grantedScopes.length ? grantedScopes : [...SOCIAL_SCOPES.instagram],
+    credentials: {
+      accessToken,
+      refreshToken: "",
+      expiresAt: expiresIn > 0 ? Date.now() + expiresIn * 1000 : Number.MAX_SAFE_INTEGER,
+      tokenType: "Bearer",
+      clientBusinessId: String(integration.client_business_id || ""),
+      configId: String(env.INSTAGRAM_CONFIG_ID || ""),
+      destinations,
+      destinationId: String(selected?.id || ""),
+    },
   };
 }
 
+function normalizeInstagramDestinations(values) {
+  const destinations = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const id = String(value?.id || "").trim();
+    const username = String(value?.username || "").trim().replace(/^@/, "");
+    if (!/^\d+$/.test(id) || destinations.some((item) => item.id === id)) continue;
+    destinations.push({
+      id,
+      name: username ? `@${username}` : String(value?.name || "Instagram professional account"),
+      label: "Professional account",
+      type: "instagram",
+    });
+  }
+  return destinations;
+}
+
 async function finishTikTok(code, request, env) {
+  const { clientKey, clientSecret } = tiktokCredentials(env);
   const tokens = await exchangeFormToken("https://open.tiktokapis.com/v2/oauth/token/", {
-    client_key: env.TIKTOK_CLIENT_KEY,
-    client_secret: env.TIKTOK_CLIENT_SECRET,
+    client_key: clientKey,
+    client_secret: clientSecret,
     code,
     grant_type: "authorization_code",
     redirect_uri: request.redirectUri,
@@ -313,6 +541,40 @@ async function finishTikTok(code, request, env) {
     accountLabel: String(user.display_name || "TikTok account"),
     accountEmail: "",
     scopes: splitScopes(tokens.scope),
+    credentials: tokenCredentials(tokens),
+  };
+}
+
+async function finishYouTube(code, request, env) {
+  const tokens = await exchangeFormToken("https://oauth2.googleapis.com/token", {
+    code,
+    client_id: env.GOOGLE_OAUTH_CLIENT_ID,
+    client_secret: env.GOOGLE_OAUTH_CLIENT_SECRET,
+    redirect_uri: request.redirectUri,
+    grant_type: "authorization_code",
+  }, "YouTube");
+  const grantedScopes = splitScopes(tokens.scope);
+  if (!grantedScopes.includes("https://www.googleapis.com/auth/youtube.upload")) {
+    throw connectionError("YouTube was connected without video publishing permission. Reconnect and allow video management.", 400);
+  }
+  if (!tokens.refresh_token) {
+    throw connectionError("Google did not provide offline YouTube access. Reconnect and approve access again.", 400);
+  }
+  const [profile, channels] = await Promise.all([
+    fetchJson("https://openidconnect.googleapis.com/v1/userinfo", {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+    }, "Google could not read the authorized account."),
+    fetchJson("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+    }, "YouTube could not read the authorized channel."),
+  ]);
+  const channel = Array.isArray(channels.items) ? channels.items[0] : null;
+  if (!channel?.id) throw connectionError("This Google account does not have an accessible YouTube channel. Choose the Google or Brand Account that owns the channel.", 400);
+  return {
+    accountId: String(channel.id),
+    accountLabel: String(channel.snippet?.title || "YouTube channel"),
+    accountEmail: String(profile.email || "").toLowerCase(),
+    scopes: grantedScopes,
     credentials: tokenCredentials(tokens),
   };
 }
@@ -497,9 +759,10 @@ async function validSocialAccessToken(userId, projectId, provider, credentials, 
   if (credentials?.accessToken && Number(credentials.expiresAt || 0) > Date.now() + expiryBuffer) return credentials.accessToken;
   let refreshed;
   if (provider === "tiktok" && credentials?.refreshToken) {
+    const { clientKey, clientSecret } = tiktokCredentials(env);
     refreshed = await exchangeFormToken("https://open.tiktokapis.com/v2/oauth/token/", {
-      client_key: env.TIKTOK_CLIENT_KEY,
-      client_secret: env.TIKTOK_CLIENT_SECRET,
+      client_key: clientKey,
+      client_secret: clientSecret,
       grant_type: "refresh_token",
       refresh_token: credentials.refreshToken,
     }, "TikTok");
@@ -526,12 +789,21 @@ async function validSocialAccessToken(userId, projectId, provider, credentials, 
     });
     refreshed = await response.json().catch(() => ({}));
     if (!response.ok || !refreshed.access_token) throw connectionError("Reddit access expired. Reconnect it.", 401);
-  } else if (provider === "instagram" && credentials?.accessToken && Number(credentials.expiresAt || 0) > Date.now()) {
-    const url = new URL("https://graph.instagram.com/refresh_access_token");
-    url.search = new URLSearchParams({ grant_type: "ig_refresh_token", access_token: credentials.accessToken }).toString();
-    const response = await fetch(url);
+  } else if (provider === "youtube" && credentials?.refreshToken) {
+    const response = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: env.GOOGLE_OAUTH_CLIENT_ID,
+        client_secret: env.GOOGLE_OAUTH_CLIENT_SECRET,
+        refresh_token: credentials.refreshToken,
+        grant_type: "refresh_token",
+      }),
+    });
     refreshed = await response.json().catch(() => ({}));
-    if (!response.ok || !refreshed.access_token) throw connectionError("Instagram access expired. Reconnect it.", 401);
+    if (!response.ok || !refreshed.access_token) throw connectionError("YouTube access expired. Reconnect it.", 401);
+  } else if (provider === "instagram") {
+    throw connectionError("Instagram access expired. Reconnect it to renew publishing access.", 401);
   } else {
     throw connectionError(`${providerLabel(provider)} access expired. Reconnect it.`, 401);
   }
@@ -545,13 +817,16 @@ async function validSocialAccessToken(userId, projectId, provider, credentials, 
   return credentials.accessToken;
 }
 
-async function publishLinkedIn(row, accessToken, payload, env) {
+async function publishLinkedIn(row, credentials, accessToken, payload, env) {
   const text = payload.text;
   if (text.length > 3000) throw connectionError("LinkedIn copy exceeds 3,000 characters.", 400);
+  const destinations = normalizeLinkedInDestinations(credentials.destinations, row);
+  const destination = destinations.find((item) => item.id === credentials.destinationId);
+  if (!destination) throw connectionError("Choose the LinkedIn publishing destination for this project before approving a post.", 409);
   const mediaUrl = payload.mediaKind === "image" ? validMediaUrl(payload.mediaUrl) : "";
-  const imageUrn = mediaUrl ? await uploadLinkedInImage(row, accessToken, mediaUrl, env) : "";
+  const imageUrn = mediaUrl ? await uploadLinkedInImage(destination.id, accessToken, mediaUrl, env) : "";
   const postBody = {
-    author: `urn:li:person:${row.account_id}`,
+    author: destination.id,
     commentary: text,
     visibility: "PUBLIC",
     distribution: { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] },
@@ -572,7 +847,7 @@ async function publishLinkedIn(row, accessToken, payload, env) {
   const body = await response.text();
   if (!response.ok) throw connectionError(providerError("LinkedIn", parseProviderBody(body)), response.status === 401 ? 401 : 502);
   const externalId = response.headers.get("x-restli-id") || parseProviderBody(body)?.id || "";
-  return { provider: "linkedin", externalId: String(externalId), accountLabel: row.account_label, publishedAt: new Date().toISOString() };
+  return { provider: "linkedin", externalId: String(externalId), accountLabel: destination.name, publishedAt: new Date().toISOString() };
 }
 
 async function publishDiscord(row, credentials, payload) {
@@ -630,9 +905,8 @@ async function publishReddit(row, accessToken, payload, env) {
   return { provider: "reddit", externalId, accountLabel: row.account_label, subreddit: `r/${subreddit}`, url: String(data.json?.data?.url || ""), publishedAt: new Date().toISOString() };
 }
 
-async function uploadLinkedInImage(row, accessToken, mediaUrl, env) {
+async function uploadLinkedInImage(owner, accessToken, mediaUrl, env) {
   const version = env.LINKEDIN_VERSION || "202609";
-  const owner = `urn:li:person:${row.account_id}`;
   const initializeResponse = await fetch("https://api.linkedin.com/rest/images?action=initializeUpload", {
     method: "POST",
     headers: {
@@ -647,7 +921,7 @@ async function uploadLinkedInImage(row, accessToken, mediaUrl, env) {
   const uploadUrl = initialized.value?.uploadUrl;
   const imageUrn = initialized.value?.image;
   if (!initializeResponse.ok || !uploadUrl || !imageUrn) throw connectionError(providerError("LinkedIn", initialized), initializeResponse.status === 401 ? 401 : 502);
-  const source = await fetch(mediaUrl, { redirect: "follow" });
+  const source = await safeFetchPublic(mediaUrl, { signal: AbortSignal.timeout(60_000) });
   if (!source.ok || !source.body) throw connectionError("The approved LinkedIn image could not be downloaded for publishing.", 502);
   const contentType = String(source.headers.get("content-type") || "image/jpeg").split(";")[0].trim().toLowerCase();
   if (!["image/jpeg", "image/png", "image/gif"].includes(contentType)) throw connectionError("LinkedIn accepts approved JPG, PNG, or GIF images for this post.", 400);
@@ -680,7 +954,7 @@ async function publishX(row, accessToken, payload) {
 }
 
 async function uploadXImage(accessToken, mediaUrl) {
-  const source = await fetch(mediaUrl, { redirect: "follow" });
+  const source = await safeFetchPublic(mediaUrl, { signal: AbortSignal.timeout(60_000) });
   if (!source.ok) throw connectionError("The approved X image could not be downloaded for publishing.", 502);
   const contentType = String(source.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
   if (!["image/jpeg", "image/png", "image/gif", "image/webp"].includes(contentType)) throw connectionError("X accepts approved JPG, PNG, GIF, or WebP images for this post.", 400);
@@ -697,15 +971,17 @@ async function uploadXImage(accessToken, mediaUrl) {
   return String(mediaId);
 }
 
-async function publishInstagram(row, accessToken, payload, env) {
+async function publishInstagram(row, credentials, accessToken, payload, env) {
   const mediaUrl = validMediaUrl(payload.mediaUrl);
   if (!mediaUrl) throw connectionError("Instagram publishing requires an approved public image or video URL.", 400);
-  const version = env.INSTAGRAM_GRAPH_VERSION || "v24.0";
+  const version = env.INSTAGRAM_GRAPH_VERSION || "v27.0";
+  const accountId = String(credentials?.destinationId || row.account_id || "");
+  if (!accountId) throw connectionError("Choose the Instagram professional account for this project before publishing.", 409);
   const mediaKind = payload.mediaKind === "video" ? "video" : "image";
   const fields = mediaKind === "video"
     ? { media_type: "REELS", video_url: mediaUrl, caption: payload.text, share_to_feed: "true", access_token: accessToken }
     : { image_url: mediaUrl, caption: payload.text, access_token: accessToken };
-  const createResponse = await fetch(`https://graph.instagram.com/${version}/${encodeURIComponent(row.account_id)}/media`, {
+  const createResponse = await fetch(`https://graph.facebook.com/${version}/${encodeURIComponent(accountId)}/media`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(fields),
@@ -715,7 +991,7 @@ async function publishInstagram(row, accessToken, payload, env) {
   if (mediaKind === "video") {
     let ready = false;
     for (let attempt = 0; attempt < 30; attempt += 1) {
-      const statusResponse = await fetch(`https://graph.instagram.com/${version}/${encodeURIComponent(container.id)}?fields=status_code,status&access_token=${encodeURIComponent(accessToken)}`);
+      const statusResponse = await fetch(`https://graph.facebook.com/${version}/${encodeURIComponent(container.id)}?fields=status_code,status&access_token=${encodeURIComponent(accessToken)}`);
       const status = await statusResponse.json().catch(() => ({}));
       if (status.status_code === "FINISHED") { ready = true; break; }
       if (status.status_code === "ERROR" || status.status_code === "EXPIRED") throw connectionError(providerError("Instagram", status), 502);
@@ -723,7 +999,7 @@ async function publishInstagram(row, accessToken, payload, env) {
     }
     if (!ready) throw connectionError("Instagram is still processing the video. Try publishing again in a moment.", 409);
   }
-  const publishResponse = await fetch(`https://graph.instagram.com/${version}/${encodeURIComponent(row.account_id)}/media_publish`, {
+  const publishResponse = await fetch(`https://graph.facebook.com/${version}/${encodeURIComponent(accountId)}/media_publish`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ creation_id: String(container.id), access_token: accessToken }),
@@ -754,7 +1030,7 @@ async function publishTikTok(row, accessToken, payload) {
   let videoSize = 0;
   let videoContentType = "video/mp4";
   if (mediaKind === "video") {
-    videoSource = await fetch(mediaUrl, { redirect: "follow" });
+    videoSource = await safeFetchPublic(mediaUrl, { signal: AbortSignal.timeout(60_000) });
     if (!videoSource.ok || !videoSource.body) throw connectionError("The approved TikTok video could not be downloaded for publishing.", 502);
     videoSize = Number(videoSource.headers.get("content-length") || 0);
     if (!Number.isSafeInteger(videoSize) || videoSize <= 0) throw connectionError("The approved TikTok video host did not provide its file size.", 400);
@@ -799,6 +1075,63 @@ async function publishTikTok(row, accessToken, payload) {
     }
   }
   return { provider: "tiktok", externalId: String(data.data.publish_id), accountLabel: row.account_label, status: "processing", publishedAt: new Date().toISOString() };
+}
+
+async function publishYouTube(row, accessToken, payload) {
+  if (payload.mediaKind !== "video") throw connectionError("YouTube publishing requires an approved video file.", 400);
+  const mediaUrl = validMediaUrl(payload.mediaUrl);
+  if (!mediaUrl) throw connectionError("YouTube publishing requires an approved public HTTPS video.", 400);
+  const title = String(payload.subject || "").replace(/[<>\r\n]+/g, " ").trim().slice(0, 100);
+  if (!title) throw connectionError("The approved YouTube video needs a title.", 400);
+  const privacyStatus = String(payload.privacyLevel || "private");
+  if (!["private", "unlisted", "public"].includes(privacyStatus)) throw connectionError("Choose a valid YouTube visibility before publishing.", 400);
+
+  const source = await safeFetchPublic(mediaUrl, { signal: AbortSignal.timeout(60_000) });
+  if (!source.ok || !source.body) throw connectionError("The approved YouTube video could not be downloaded for publishing.", 502);
+  const contentType = String(source.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  if (!contentType.startsWith("video/")) throw connectionError("The approved YouTube asset is not a recognized video file.", 400);
+  const videoSize = Number(source.headers.get("content-length") || 0);
+  if (!Number.isSafeInteger(videoSize) || videoSize <= 0) throw connectionError("The approved YouTube video host did not provide its file size.", 400);
+  if (videoSize > 256 * 1024 * 1024) throw connectionError("YouTube delivery currently supports approved files up to 256 MB.", 400);
+
+  const initializeResponse = await fetch("https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json; charset=UTF-8",
+      "X-Upload-Content-Length": String(videoSize),
+      "X-Upload-Content-Type": contentType,
+    },
+    body: JSON.stringify({
+      snippet: { title, description: String(payload.text || "").trim().slice(0, 5000) },
+      status: {
+        privacyStatus,
+        selfDeclaredMadeForKids: Boolean(payload.madeForKids),
+        containsSyntheticMedia: Boolean(payload.aiGenerated),
+      },
+    }),
+  });
+  const uploadUrl = initializeResponse.headers.get("location");
+  if (!initializeResponse.ok || !uploadUrl) {
+    const detail = await initializeResponse.json().catch(() => ({}));
+    throw connectionError(providerError("YouTube", detail), initializeResponse.status === 401 ? 401 : 502);
+  }
+  const uploadResponse = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": contentType, "Content-Length": String(videoSize) },
+    body: source.body,
+    duplex: "half",
+  });
+  const uploaded = await uploadResponse.json().catch(() => ({}));
+  if (!uploadResponse.ok || !uploaded.id) throw connectionError(providerError("YouTube", uploaded), uploadResponse.status === 401 ? 401 : 502);
+  return {
+    provider: "youtube",
+    externalId: String(uploaded.id),
+    accountLabel: row.account_label,
+    url: `https://www.youtube.com/watch?v=${encodeURIComponent(uploaded.id)}`,
+    privacyStatus,
+    publishedAt: new Date().toISOString(),
+  };
 }
 
 async function readTikTokCreatorInfo(accessToken) {
@@ -879,7 +1212,19 @@ function normalizeRedditCommunities(values) {
 }
 
 function redditUserAgent(env) {
-  return String(env.REDDIT_USER_AGENT || "web:market-agent:1.0 (by /u/market-agent-owner)").slice(0, 250);
+  const value = String(env.REDDIT_USER_AGENT || "").trim().slice(0, 250);
+  if (!validRedditUserAgent(value)) {
+    throw connectionError("Reddit requires an accurate User-Agent in the form platform:app-id:version (by /u/username).", 503);
+  }
+  return value;
+}
+
+function validRedditUserAgent(value) {
+  return /^[a-z0-9._-]+:[a-z0-9._-]+:v?\d+(?:\.\d+){0,3} \(by \/u\/[A-Za-z0-9_-]{3,20}\)$/i.test(String(value || "").trim());
+}
+
+function redditAccessApproved(env) {
+  return String(env.REDDIT_ACCESS_APPROVED || "").trim().toLowerCase() === "true";
 }
 
 async function ensureSocialTable(env) {
@@ -921,6 +1266,10 @@ function emptySocialStatus(env) {
       scopes: [],
       connectedAt: null,
       canPublish: false,
+      ...(provider === "reddit" ? {
+        approvalRequired: !redditAccessApproved(env),
+        approvalStatus: redditAccessApproved(env) ? "approved" : "pending_approval",
+      } : {}),
     };
   }
   return status;
@@ -972,8 +1321,9 @@ function normalizeOrigin(value) {
 
 function providerCanPublish(provider, scopes, row = null) {
   if (provider === "linkedin") return scopes.includes("w_member_social") || scopes.includes("w_organization_social");
-  if (provider === "instagram") return scopes.includes("instagram_business_content_publish");
+  if (provider === "instagram") return scopes.includes("instagram_content_publish");
   if (provider === "tiktok") return scopes.includes("video.publish");
+  if (provider === "youtube") return scopes.includes("https://www.googleapis.com/auth/youtube.upload");
   if (provider === "discord") return scopes.includes("webhook.incoming");
   if (provider === "reddit") return scopes.includes("submit") && Boolean(row?.account_email);
   return scopes.includes("tweet.write");
@@ -1000,10 +1350,13 @@ function validMediaUrl(value) {
 }
 
 function providerLabel(provider) {
-  return provider === "x" ? "X" : `${provider.charAt(0).toUpperCase()}${provider.slice(1)}`;
+  return provider === "x" ? "X" : provider === "youtube" ? "YouTube" : `${provider.charAt(0).toUpperCase()}${provider.slice(1)}`;
 }
 
 function requireSocialConnector(provider, env) {
+  if (provider === "reddit" && !redditAccessApproved(env)) {
+    throw connectionError("Reddit requires explicit written commercial Data API approval. Authorization remains disabled until Reddit approves Market Agent.", 503);
+  }
   if (!socialConnectorConfigured(provider, env)) throw connectionError(`${providerLabel(provider)} authorization is not configured yet.`, 503);
 }
 

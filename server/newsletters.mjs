@@ -1,4 +1,5 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { del, get } from "@vercel/blob";
 import { EncryptJWT, jwtDecrypt } from "jose";
 import { generateNewsletterDraft } from "./agent.mjs";
 import { getPool, loadStateForUser } from "./db.mjs";
@@ -53,7 +54,7 @@ export async function getMailchimpConnectionStatus(userId, projectId = "project-
 
 export async function createMailchimpAuthorizationUrl({ userId, projectId, origin }, env = process.env) {
   requireConfigured(env);
-  const redirectUri = `${normalizeOrigin(origin)}/api/mailchimp-callback`;
+  const redirectUri = `${normalizeOrigin(env.MAILCHIMP_REDIRECT_BASE_URL || origin)}/api/mailchimp-callback`;
   const state = await new EncryptJWT({
     u: String(userId),
     j: String(projectId || "project-default"),
@@ -152,25 +153,50 @@ export async function disconnectMailchimp(userId, projectId, env = process.env) 
 
 export async function getNewsletterDashboard(userId, projectId, env = process.env) {
   await ensureTables(env);
-  const { credentials } = await connectionCredentials(userId, projectId, env);
-  const audienceId = requireAudience(credentials);
-  const [audience, members, campaigns, local] = await Promise.all([
-    mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}?fields=id,name,stats.member_count,stats.unsubscribe_count,stats.cleaned_count,stats.open_rate,stats.click_rate`),
-    mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}/members?count=25&sort_field=timestamp_opt&sort_dir=DESC&fields=members.id,members.email_address,members.status,members.merge_fields,members.timestamp_opt,total_items`),
-    mailchimpRequest(credentials, `/campaigns?list_id=${encodeURIComponent(audienceId)}&count=25&sort_field=create_time&sort_dir=DESC`),
+  await migrateLegacyContactAssets(userId, projectId, env);
+  const [local, contactImports] = await Promise.all([
     getPool(env).query("SELECT * FROM market_agent_newsletters WHERE user_id = $1 AND project_id = $2 ORDER BY created_at DESC LIMIT 40", [userId, projectId]),
+    getPool(env).query("SELECT * FROM market_agent_contact_imports WHERE user_id = $1 AND project_id = $2 ORDER BY created_at DESC LIMIT 30", [userId, projectId]),
   ]);
-  const remoteCampaigns = await Promise.all((campaigns.campaigns || []).slice(0, 25).map(async (campaign) => {
-    let report = null;
-    if (campaign.status === "sent") {
-      try { report = await mailchimpRequest(credentials, `/reports/${encodeURIComponent(campaign.id)}`); } catch { report = null; }
-    }
-    return serializeRemoteCampaign(campaign, report);
-  }));
+  let audience = { id: "", name: "Market Agent contacts", stats: {} };
+  let members = { members: [], total_items: 0 };
+  let campaigns = { campaigns: [] };
+  let remoteCampaigns = [];
+  try {
+    const { credentials } = await connectionCredentials(userId, projectId, env);
+    const audienceId = requireAudience(credentials);
+    [audience, members, campaigns] = await Promise.all([
+      mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}?fields=id,name,stats.member_count,stats.unsubscribe_count,stats.cleaned_count,stats.open_rate,stats.click_rate`),
+      fetchAudienceMembers(credentials, audienceId),
+      mailchimpRequest(credentials, `/campaigns?list_id=${encodeURIComponent(audienceId)}&count=25&sort_field=create_time&sort_dir=DESC`),
+    ]);
+    await syncSubscriberRegistry(userId, projectId, members.members || [], env);
+    try { await ensureMailchimpWebhook(userId, projectId, credentials, audienceId, env); } catch { /* A manual refresh still keeps subscriber states synchronized. */ }
+    remoteCampaigns = await Promise.all((campaigns.campaigns || []).slice(0, 25).map(async (campaign) => {
+      let report = null;
+      if (campaign.status === "sent") {
+        try { report = await mailchimpRequest(credentials, `/reports/${encodeURIComponent(campaign.id)}`); } catch { report = null; }
+      }
+      return serializeRemoteCampaign(campaign, report);
+    }));
+  } catch {
+    // Campaign planning, contact staging, and newsletter creation remain available
+    // inside Market Agent before a delivery service is connected.
+  }
+  const [registry, registryCounts, settings] = await Promise.all([
+    getPool(env).query("SELECT * FROM market_agent_subscribers WHERE user_id = $1 AND project_id = $2 ORDER BY updated_at DESC LIMIT 12", [userId, projectId]),
+    getPool(env).query(`SELECT COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE status = 'pending')::int AS pending,
+      COUNT(*) FILTER (WHERE status = 'confirmed')::int AS confirmed,
+      COUNT(*) FILTER (WHERE status = 'unsubscribed')::int AS unsubscribed,
+      COUNT(*) FILTER (WHERE status = 'bounced')::int AS bounced
+      FROM market_agent_subscribers WHERE user_id = $1 AND project_id = $2`, [userId, projectId]),
+    getNewsletterSettings(userId, projectId, env),
+  ]);
   return {
     audience: {
-      id: String(audience.id || audienceId),
-      name: String(audience.name || credentials.audienceName || "Audience"),
+      id: String(audience.id || ""),
+      name: String(audience.name || "Market Agent contacts"),
       memberCount: Number(audience.stats?.member_count || members.total_items || 0),
       unsubscribeCount: Number(audience.stats?.unsubscribe_count || 0),
       cleanedCount: Number(audience.stats?.cleaned_count || 0),
@@ -180,7 +206,189 @@ export async function getNewsletterDashboard(userId, projectId, env = process.en
     members: (members.members || []).map(serializeMember),
     campaigns: remoteCampaigns,
     drafts: local.rows.map(serializeDraft),
+    contactImports: contactImports.rows.map(serializeContactImport),
+    subscriberRegistry: {
+      counts: normalizeSubscriberCounts(registryCounts.rows[0]),
+      preview: registry.rows.map(serializeSubscriber),
+    },
+    welcome: settings,
     fetchedAt: new Date().toISOString(),
+  };
+}
+
+export async function stageContactImport(userId, projectId, input, env = process.env) {
+  await ensureTables(env);
+  const parsed = parseContactCsv(input?.text);
+  const id = randomUUID();
+  const result = await getPool(env).query(
+    `INSERT INTO market_agent_contact_imports
+      (id,user_id,project_id,source_name,status,contacts,column_map,total_count,valid_count,invalid_count,duplicate_count,consented_count,unknown_count,denied_count,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,'staged',$5::jsonb,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,NOW(),NOW()) RETURNING *`,
+    [id, userId, projectId, cleanHeader(input?.name, 240) || "Contact list.csv", JSON.stringify(parsed.contacts), JSON.stringify(parsed.columnMap), parsed.totalCount, parsed.validCount, parsed.invalidCount, parsed.duplicateCount, parsed.consentedCount, parsed.unknownCount, parsed.deniedCount],
+  );
+  return { contactImport: serializeContactImport(result.rows[0]) };
+}
+
+export async function getContactImportDetails(userId, projectId, input, env = process.env) {
+  await ensureTables(env);
+  const result = await getPool(env).query(
+    "SELECT id,source_name,contacts FROM market_agent_contact_imports WHERE id = $1 AND user_id = $2 AND project_id = $3 LIMIT 1",
+    [String(input?.id || ""), userId, projectId],
+  );
+  const row = result.rows[0];
+  if (!row) throw newsletterError("The contact list was not found.", 404);
+  const search = String(input?.search || "").trim().toLowerCase().slice(0, 180);
+  const offset = Math.max(0, Number.parseInt(input?.offset, 10) || 0);
+  const limit = Math.min(100, Math.max(10, Number.parseInt(input?.limit, 10) || 50));
+  const all = (Array.isArray(row.contacts) ? row.contacts : []).filter((contact) => {
+    if (!search) return true;
+    return `${contact.firstName || ""} ${contact.lastName || ""} ${contact.email || ""} ${contact.company || ""}`.toLowerCase().includes(search);
+  });
+  return {
+    id: row.id,
+    sourceName: row.source_name || "Contact list.csv",
+    total: all.length,
+    offset,
+    limit,
+    contacts: all.slice(offset, offset + limit).map((contact) => ({
+      email: String(contact.email || ""),
+      firstName: String(contact.firstName || ""),
+      lastName: String(contact.lastName || ""),
+      company: String(contact.company || ""),
+      consent: ["confirmed", "denied"].includes(contact.consent) ? contact.consent : "unknown",
+    })),
+  };
+}
+
+export async function getSubscriberDetails(userId, projectId, input, env = process.env) {
+  await ensureTables(env);
+  const search = String(input?.search || "").trim().toLowerCase().slice(0, 180);
+  const status = ["pending", "confirmed", "unsubscribed", "bounced"].includes(input?.status) ? input.status : "";
+  const offset = Math.max(0, Number.parseInt(input?.offset, 10) || 0);
+  const limit = Math.min(100, Math.max(10, Number.parseInt(input?.limit, 10) || 50));
+  const values = [userId, projectId];
+  let where = "user_id = $1 AND project_id = $2";
+  if (status) { values.push(status); where += ` AND status = $${values.length}`; }
+  if (search) { values.push(`%${search}%`); where += ` AND LOWER(email || ' ' || first_name || ' ' || last_name || ' ' || company) LIKE $${values.length}`; }
+  const count = await getPool(env).query(`SELECT COUNT(*)::int AS total FROM market_agent_subscribers WHERE ${where}`, values);
+  values.push(limit, offset);
+  const rows = await getPool(env).query(`SELECT * FROM market_agent_subscribers WHERE ${where} ORDER BY updated_at DESC LIMIT $${values.length - 1} OFFSET $${values.length}`, values);
+  return { total: Number(count.rows[0]?.total || 0), offset, limit, subscribers: rows.rows.map(serializeSubscriber) };
+}
+
+export async function updateNewsletterSettings(userId, projectId, input, env = process.env) {
+  await ensureTables(env);
+  if (input?.approvalConfirmed !== true) throw newsletterError("Approve the welcome automation before changing it.", 400);
+  const enabled = input?.enabled === true;
+  const subject = cleanHeader(input?.subject, 180);
+  const body = cleanText(input?.body, 12_000);
+  if (enabled && (!subject || !body)) throw newsletterError("The welcome email needs a subject and message.", 400);
+  await getPool(env).query(
+    `INSERT INTO market_agent_newsletter_settings
+      (user_id,project_id,welcome_enabled,welcome_subject,welcome_body,welcome_enabled_at,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,$5,CASE WHEN $3 THEN NOW() ELSE NULL END,NOW(),NOW())
+     ON CONFLICT (user_id,project_id) DO UPDATE SET
+       welcome_enabled = EXCLUDED.welcome_enabled,
+       welcome_subject = EXCLUDED.welcome_subject,
+       welcome_body = EXCLUDED.welcome_body,
+       welcome_enabled_at = CASE
+         WHEN EXCLUDED.welcome_enabled AND NOT market_agent_newsletter_settings.welcome_enabled THEN NOW()
+         WHEN NOT EXCLUDED.welcome_enabled THEN NULL
+         ELSE market_agent_newsletter_settings.welcome_enabled_at END,
+       updated_at = NOW()`,
+    [userId, projectId, enabled, subject, body],
+  );
+  return { welcome: await getNewsletterSettings(userId, projectId, env) };
+}
+
+async function migrateLegacyContactAssets(userId, projectId, env) {
+  const candidates = await getPool(env).query(
+    `SELECT id,name,blob_path FROM market_agent_project_assets
+      WHERE user_id = $1 AND project_id = $2 AND status = 'ready' AND blob_path <> ''
+        AND (LOWER(name) LIKE '%.csv' OR LOWER(mime_type) LIKE '%csv%')
+        AND LOWER(name) ~ '(contact|subscriber|audience|lead|prospect)'
+      ORDER BY created_at DESC LIMIT 5`,
+    [userId, projectId],
+  ).catch(() => ({ rows: [] }));
+  for (const asset of candidates.rows) {
+    try {
+      const blob = await get(asset.blob_path, { access: "private" });
+      if (!blob || blob.statusCode !== 200 || !blob.stream) continue;
+      const text = (await new Response(blob.stream).text()).slice(0, 1_000_000);
+      const parsed = parseContactCsv(text);
+      const inserted = await getPool(env).query(
+        `INSERT INTO market_agent_contact_imports
+          (id,user_id,project_id,source_asset_id,source_name,status,contacts,column_map,total_count,valid_count,invalid_count,duplicate_count,consented_count,unknown_count,denied_count,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,$5,'staged',$6::jsonb,$7::jsonb,$8,$9,$10,$11,$12,$13,$14,NOW(),NOW())
+         ON CONFLICT (source_asset_id) WHERE source_asset_id <> '' DO NOTHING RETURNING id`,
+        [randomUUID(), userId, projectId, asset.id, asset.name, JSON.stringify(parsed.contacts), JSON.stringify(parsed.columnMap), parsed.totalCount, parsed.validCount, parsed.invalidCount, parsed.duplicateCount, parsed.consentedCount, parsed.unknownCount, parsed.deniedCount],
+      );
+      if (!inserted.rows[0]) continue;
+      await getPool(env).query("DELETE FROM market_agent_project_assets WHERE id = $1 AND user_id = $2", [asset.id, userId]);
+      try { await del(asset.blob_path); } catch { /* The contact record is safely moved even if blob cleanup is delayed. */ }
+    } catch {
+      // Non-contact CSVs remain untouched in the Content Library.
+    }
+  }
+}
+
+export async function importContactList(userId, projectId, input, env = process.env) {
+  if (input?.approvalConfirmed !== true) throw newsletterError("Approve the contact import before changing the delivery audience.", 400);
+  await ensureTables(env);
+  const result = await getPool(env).query(
+    "SELECT * FROM market_agent_contact_imports WHERE id = $1 AND user_id = $2 AND project_id = $3 LIMIT 1",
+    [String(input?.id || ""), userId, projectId],
+  );
+  const row = result.rows[0];
+  if (!row) throw newsletterError("The staged contact list was not found.", 404);
+  const mode = input?.mode === "confirmed" ? "confirmed" : input?.mode === "double-opt-in" ? "double-opt-in" : "";
+  if (!mode) throw newsletterError("Choose how the contacts should be registered.", 400);
+  const contacts = (Array.isArray(row.contacts) ? row.contacts : []).filter((contact) => mode === "confirmed" ? contact.consent === "confirmed" : contact.consent !== "denied");
+  if (!contacts.length) throw newsletterError(mode === "confirmed" ? "This file has no contacts marked with confirmed newsletter permission." : "This file has no eligible contacts.", 409);
+  const { credentials } = await connectionCredentials(userId, projectId, env);
+  const audienceId = requireAudience(credentials);
+  await getPool(env).query("UPDATE market_agent_contact_imports SET status = 'importing', error = '', updated_at = NOW() WHERE id = $1", [row.id]);
+  let importedCount = 0;
+  let failedCount = 0;
+  for (const contact of contacts) {
+    try {
+      const memberId = createHash("md5").update(contact.email).digest("hex");
+      const subscribed = mode === "confirmed";
+      await mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}/members/${memberId}`, {
+        method: "PUT",
+        body: {
+          email_address: contact.email,
+          status_if_new: subscribed ? "subscribed" : "pending",
+          ...(subscribed ? { status: "subscribed" } : {}),
+          merge_fields: { FNAME: contact.firstName || "", LNAME: contact.lastName || "" },
+          tags: ["Market Agent"],
+        },
+      });
+      await upsertSubscriber(userId, projectId, {
+        email: contact.email,
+        firstName: contact.firstName,
+        lastName: contact.lastName,
+        company: contact.company,
+        status: subscribed ? "confirmed" : "pending",
+        remoteId: memberId,
+        confirmedAt: subscribed ? new Date().toISOString() : null,
+      }, env);
+      importedCount += 1;
+    } catch {
+      failedCount += 1;
+    }
+  }
+  const status = failedCount ? (importedCount ? "partial" : "failed") : "imported";
+  const error = failedCount ? `${failedCount} contact${failedCount === 1 ? "" : "s"} could not be registered.` : "";
+  const updated = await getPool(env).query(
+    "UPDATE market_agent_contact_imports SET status = $2, import_mode = $3, imported_count = $4, failed_count = $5, error = $6, updated_at = NOW() WHERE id = $1 RETURNING *",
+    [row.id, status, mode, importedCount, failedCount, error],
+  );
+  return {
+    contactImport: serializeContactImport(updated.rows[0]),
+    message: mode === "confirmed"
+      ? `${importedCount} consented contact${importedCount === 1 ? " was" : "s were"} added to the delivery audience.`
+      : `${importedCount} contact${importedCount === 1 ? " was" : "s were"} sent a confirmation request. They are not subscribed until they opt in.`,
   };
 }
 
@@ -203,21 +411,58 @@ export async function registerSubscriber(userId, projectId, input, env = process
       tags: ["Market Agent"],
     },
   });
+  await upsertSubscriber(userId, projectId, {
+    email,
+    firstName: cleanText(input?.firstName, 100),
+    lastName: cleanText(input?.lastName, 100),
+    status: mapMailchimpStatus(member.status),
+    remoteId: member.id || memberId,
+    confirmedAt: member.timestamp_opt || null,
+  }, env);
   return { member: serializeMember(member), message: member.status === "pending" ? "Confirmation email requested. The subscriber is not active until they confirm." : "Subscriber record updated without changing their consent status." };
+}
+
+export async function processMailchimpWebhook(token, input, env = process.env) {
+  await ensureTables(env);
+  const identity = verifyWebhookToken(token, env);
+  const event = normalizeWebhookEvent(input);
+  if (!event.email || (event.listId && event.listId !== identity.audienceId)) return { accepted: true };
+  const status = ({ subscribe: "confirmed", unsubscribe: "unsubscribed", cleaned: "bounced" })[event.type];
+  if (!status) return { accepted: true };
+  await upsertSubscriber(identity.userId, identity.projectId, {
+    email: event.email,
+    firstName: event.firstName,
+    lastName: event.lastName,
+    status,
+    remoteId: event.remoteId,
+    confirmedAt: status === "confirmed" ? new Date().toISOString() : null,
+  }, env);
+  let welcome = null;
+  if (status === "confirmed") welcome = await claimSubscriberWelcome(identity.userId, identity.projectId, event.email, event.firstName, env);
+  return { accepted: true, userId: identity.userId, projectId: identity.projectId, welcome };
+}
+
+export async function completeSubscriberWelcome(userId, projectId, email, error = "", env = process.env) {
+  await ensureTables(env);
+  await getPool(env).query(
+    `UPDATE market_agent_subscribers SET welcome_status = $4, welcome_error = $5,
+      welcome_sent_at = CASE WHEN $4 = 'sent' THEN NOW() ELSE NULL END, updated_at = NOW()
+      WHERE user_id = $1 AND project_id = $2 AND email = $3`,
+    [userId, projectId, String(email || "").toLowerCase(), error ? "failed" : "sent", cleanText(error, 1000)],
+  );
 }
 
 export async function createNewsletterDraft(userId, projectId, direction, userApiEnv, env = process.env) {
   await ensureTables(env);
-  const { credentials } = await connectionCredentials(userId, projectId, env);
-  requireAudience(credentials);
   const { state } = await loadStateForUser(userId, env);
   const workspace = state.projects.find((item) => item.id === projectId);
   if (!workspace) throw newsletterError("The project could not be found.", 404);
   const approvedWork = state.runs.filter((run) => run.projectId === projectId && run.status === "Approved").slice(0, 5);
   const generated = await generateNewsletterDraft({ workspace, direction, approvedWork }, userApiEnv);
-  const draft = normalizeDraft(generated, workspace);
-  const html = renderNewsletterHtml(draft, workspace);
   const id = randomUUID();
+  const draft = normalizeDraft(generated, workspace);
+  draft.ctaUrl = trackedNewsletterUrl(draft.ctaUrl, id, draft.subject);
+  const html = renderNewsletterHtml(draft, workspace);
   const result = await getPool(env).query(
     `INSERT INTO market_agent_newsletters (id,user_id,project_id,direction,draft,html,status,created_at,updated_at)
      VALUES ($1,$2,$3,$4,$5::jsonb,$6,'draft',NOW(),NOW()) RETURNING *`,
@@ -235,12 +480,45 @@ export async function updateNewsletterDraft(userId, projectId, id, changes, env 
   const { state } = await loadStateForUser(userId, env);
   const workspace = state.projects.find((item) => item.id === projectId);
   const draft = normalizeDraft({ ...row.draft, ...changes }, workspace || {});
+  draft.ctaUrl = trackedNewsletterUrl(draft.ctaUrl, id, draft.subject);
   const html = renderNewsletterHtml(draft, workspace || {});
   const result = await getPool(env).query(
     "UPDATE market_agent_newsletters SET draft = $4::jsonb, html = $5, status = 'draft', error = '', updated_at = NOW() WHERE id = $1 AND user_id = $2 AND project_id = $3 RETURNING *",
     [id, userId, projectId, JSON.stringify(draft), html],
   );
   return { draft: serializeDraft(result.rows[0]) };
+}
+
+export async function updateLatestNewsletterLink(userId, projectId, targetUrl, env = process.env) {
+  await ensureTables(env);
+  const current = await getPool(env).query(
+    `SELECT id FROM market_agent_newsletters
+      WHERE user_id = $1 AND project_id = $2 AND status IN ('draft','failed')
+      ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+    [userId, projectId],
+  );
+  const id = current.rows[0]?.id;
+  if (!id) throw newsletterError("There is no editable newsletter draft in this project.", 404);
+  const normalizedUrl = normalizeHttpUrl(targetUrl);
+  if (!normalizedUrl) throw newsletterError("The requested newsletter link is not a valid website address.", 400);
+  const updated = await updateNewsletterDraft(userId, projectId, id, { ctaUrl: normalizedUrl }, env);
+  return { ...updated, requestedUrl: normalizedUrl };
+}
+
+function trackedNewsletterUrl(value, campaignId, campaignName) {
+  try {
+    if (!value) return "";
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return value;
+    url.searchParams.set("utm_id", String(campaignId || "newsletter").slice(0, 120));
+    url.searchParams.set("utm_source", "mailchimp");
+    url.searchParams.set("utm_medium", "email");
+    url.searchParams.set("utm_campaign", String(campaignName || "newsletter").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 100) || "newsletter");
+    url.searchParams.set("utm_content", "primary-cta");
+    return url.toString();
+  } catch {
+    return value;
+  }
 }
 
 export async function deliverNewsletter(userId, projectId, id, mode, scheduleTime, env = process.env) {
@@ -365,6 +643,178 @@ async function saveCredentials(userId, projectId, credentials, env) {
   );
 }
 
+async function syncSubscriberRegistry(userId, projectId, members, env) {
+  if (!Array.isArray(members) || !members.length) return;
+  for (const member of members) {
+    const email = String(member?.email_address || "").trim().toLowerCase();
+    if (!email) continue;
+    await upsertSubscriber(userId, projectId, {
+      email,
+      firstName: member.merge_fields?.FNAME || "",
+      lastName: member.merge_fields?.LNAME || "",
+      company: member.merge_fields?.COMPANY || "",
+      status: mapMailchimpStatus(member.status),
+      remoteId: member.id || "",
+      confirmedAt: member.timestamp_opt || null,
+    }, env);
+  }
+}
+
+async function fetchAudienceMembers(credentials, audienceId) {
+  const collected = [];
+  let total = 0;
+  for (let offset = 0; offset < 10_000; offset += 1000) {
+    const page = await mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}/members?count=1000&offset=${offset}&sort_field=timestamp_opt&sort_dir=DESC&fields=members.id,members.email_address,members.status,members.merge_fields,members.timestamp_opt,members.last_changed,total_items`);
+    const rows = Array.isArray(page.members) ? page.members : [];
+    collected.push(...rows);
+    total = Number(page.total_items || collected.length);
+    if (!rows.length || collected.length >= total) break;
+  }
+  return { members: collected, total_items: total };
+}
+
+async function upsertSubscriber(userId, projectId, subscriber, env) {
+  const status = ["pending", "confirmed", "unsubscribed", "bounced"].includes(subscriber.status) ? subscriber.status : "pending";
+  await getPool(env).query(
+    `INSERT INTO market_agent_subscribers
+      (user_id,project_id,email,first_name,last_name,company,status,remote_id,source,confirmed_at,unsubscribed_at,bounced_at,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'mailchimp',
+       CASE WHEN $7 = 'confirmed' THEN COALESCE($9::timestamptz,NOW()) ELSE NULL END,
+       CASE WHEN $7 = 'unsubscribed' THEN NOW() ELSE NULL END,
+       CASE WHEN $7 = 'bounced' THEN NOW() ELSE NULL END,NOW(),NOW())
+     ON CONFLICT (user_id,project_id,email) DO UPDATE SET
+       first_name = COALESCE(NULLIF(EXCLUDED.first_name,''),market_agent_subscribers.first_name),
+       last_name = COALESCE(NULLIF(EXCLUDED.last_name,''),market_agent_subscribers.last_name),
+       company = COALESCE(NULLIF(EXCLUDED.company,''),market_agent_subscribers.company),
+       status = EXCLUDED.status,
+       remote_id = COALESCE(NULLIF(EXCLUDED.remote_id,''),market_agent_subscribers.remote_id),
+       confirmed_at = CASE WHEN EXCLUDED.status = 'confirmed' THEN COALESCE(EXCLUDED.confirmed_at,market_agent_subscribers.confirmed_at,NOW()) ELSE market_agent_subscribers.confirmed_at END,
+       unsubscribed_at = CASE WHEN EXCLUDED.status = 'unsubscribed' THEN COALESCE(market_agent_subscribers.unsubscribed_at,NOW()) ELSE market_agent_subscribers.unsubscribed_at END,
+       bounced_at = CASE WHEN EXCLUDED.status = 'bounced' THEN COALESCE(market_agent_subscribers.bounced_at,NOW()) ELSE market_agent_subscribers.bounced_at END,
+       updated_at = NOW()`,
+    [userId, projectId, String(subscriber.email || "").trim().toLowerCase(), cleanHeader(subscriber.firstName, 120), cleanHeader(subscriber.lastName, 120), cleanHeader(subscriber.company, 240), status, cleanHeader(subscriber.remoteId, 240), subscriber.confirmedAt || null],
+  );
+}
+
+async function getNewsletterSettings(userId, projectId, env) {
+  const result = await getPool(env).query("SELECT * FROM market_agent_newsletter_settings WHERE user_id = $1 AND project_id = $2 LIMIT 1", [userId, projectId]);
+  if (result.rows[0]) return serializeNewsletterSettings(result.rows[0]);
+  let projectName = "our newsletter";
+  try {
+    const { state } = await loadStateForUser(userId, env);
+    projectName = cleanHeader(state.projects.find((item) => item.id === projectId)?.name, 100) || projectName;
+  } catch { /* Use a safe, editable default when the project record is temporarily unavailable. */ }
+  return {
+    enabled: false,
+    subject: `Welcome to ${projectName}`,
+    body: `Thank you for confirming your subscription to ${projectName}.\n\nYou are now registered and will receive future updates. You can unsubscribe at any time.`,
+    enabledAt: null,
+  };
+}
+
+async function claimSubscriberWelcome(userId, projectId, email, firstName, env) {
+  const settings = await getNewsletterSettings(userId, projectId, env);
+  if (!settings.enabled) return null;
+  const claimed = await getPool(env).query(
+    `UPDATE market_agent_subscribers SET welcome_status = 'sending', welcome_error = '', updated_at = NOW()
+     WHERE user_id = $1 AND project_id = $2 AND email = $3 AND status = 'confirmed'
+       AND welcome_status IN ('not_sent','failed') AND welcome_sent_at IS NULL
+       AND ($4::timestamptz IS NULL OR confirmed_at >= $4::timestamptz)
+     RETURNING email,first_name`,
+    [userId, projectId, String(email || "").toLowerCase(), settings.enabledAt],
+  );
+  if (!claimed.rows[0]) return null;
+  const name = cleanHeader(firstName || claimed.rows[0].first_name, 120);
+  return {
+    to: claimed.rows[0].email,
+    subject: personalizeWelcome(settings.subject, name),
+    body: personalizeWelcome(settings.body, name),
+  };
+}
+
+function personalizeWelcome(value, firstName) {
+  return String(value || "").replace(/\{\{?first_name\}?\}/gi, firstName || "there");
+}
+
+async function ensureMailchimpWebhook(userId, projectId, credentials, audienceId, env) {
+  const baseValue = env.MAILCHIMP_REDIRECT_BASE_URL || env.APP_BASE_URL || "";
+  if (!baseValue) return;
+  const base = normalizeOrigin(baseValue);
+  if (!base.startsWith("https://")) return;
+  const callbackUrl = `${base}/api/mailchimp-webhook?t=${encodeURIComponent(createWebhookToken(userId, projectId, audienceId, env))}`;
+  const existing = await mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}/webhooks`);
+  if ((existing.webhooks || []).some((item) => item.url === callbackUrl)) return;
+  await mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}/webhooks`, {
+    method: "POST",
+    body: {
+      url: callbackUrl,
+      events: { subscribe: true, unsubscribe: true, profile: true, cleaned: true, upemail: true, campaign: false },
+      sources: { user: true, admin: true, api: true },
+    },
+  });
+}
+
+function createWebhookToken(userId, projectId, audienceId, env) {
+  const payload = Buffer.from(JSON.stringify({ u: userId, p: projectId, a: audienceId }), "utf8").toString("base64url");
+  const signature = createHmac("sha256", connectionKey(env)).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function verifyWebhookToken(token, env) {
+  const [payload, signature] = String(token || "").split(".");
+  if (!payload || !signature) throw newsletterError("Invalid webhook authorization.", 401);
+  const expected = createHmac("sha256", connectionKey(env)).update(payload).digest("base64url");
+  const suppliedBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (suppliedBuffer.length !== expectedBuffer.length || !timingSafeEqual(suppliedBuffer, expectedBuffer)) throw newsletterError("Invalid webhook authorization.", 401);
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (!parsed.u || !parsed.p || !parsed.a) throw new Error("Incomplete token");
+    return { userId: String(parsed.u), projectId: String(parsed.p), audienceId: String(parsed.a) };
+  } catch { throw newsletterError("Invalid webhook authorization.", 401); }
+}
+
+function normalizeWebhookEvent(input) {
+  const read = (key) => input?.data?.[key] ?? input?.[`data[${key}]`] ?? input?.[key] ?? "";
+  const merges = input?.data?.merges || {};
+  return {
+    type: String(input?.type || "").toLowerCase(),
+    listId: String(read("list_id")),
+    remoteId: String(read("id")),
+    email: String(read("email") || merges.EMAIL || input?.["data[merges][EMAIL]"] || "").trim().toLowerCase(),
+    firstName: String(merges.FNAME || input?.["data[merges][FNAME]"] || ""),
+    lastName: String(merges.LNAME || input?.["data[merges][LNAME]"] || ""),
+  };
+}
+
+function mapMailchimpStatus(value) {
+  return ({ subscribed: "confirmed", pending: "pending", unsubscribed: "unsubscribed", cleaned: "bounced" })[String(value || "").toLowerCase()] || "pending";
+}
+
+function normalizeSubscriberCounts(row = {}) {
+  return { total: Number(row.total || 0), pending: Number(row.pending || 0), confirmed: Number(row.confirmed || 0), unsubscribed: Number(row.unsubscribed || 0), bounced: Number(row.bounced || 0) };
+}
+
+function serializeSubscriber(row) {
+  return {
+    email: row.email || "",
+    firstName: row.first_name || "",
+    lastName: row.last_name || "",
+    company: row.company || "",
+    status: row.status || "pending",
+    confirmedAt: iso(row.confirmed_at),
+    unsubscribedAt: iso(row.unsubscribed_at),
+    bouncedAt: iso(row.bounced_at),
+    welcomeStatus: row.welcome_status || "not_sent",
+    welcomeSentAt: iso(row.welcome_sent_at),
+    updatedAt: iso(row.updated_at),
+  };
+}
+
+function serializeNewsletterSettings(row) {
+  return { enabled: Boolean(row.welcome_enabled), subject: row.welcome_subject || "", body: row.welcome_body || "", enabledAt: iso(row.welcome_enabled_at) };
+}
+
 async function ensureTables(env) {
   if (tablesReady) return;
   await getPool(env).query(`
@@ -389,6 +839,39 @@ async function ensureTables(env) {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS market_agent_newsletters_user_project_idx ON market_agent_newsletters (user_id, project_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS market_agent_contact_imports (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL, project_id TEXT NOT NULL, source_asset_id TEXT NOT NULL DEFAULT '', source_name TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'staged' CHECK (status IN ('staged','importing','imported','partial','failed')),
+      contacts JSONB NOT NULL DEFAULT '[]'::jsonb, column_map JSONB NOT NULL DEFAULT '{}'::jsonb,
+      total_count INTEGER NOT NULL DEFAULT 0, valid_count INTEGER NOT NULL DEFAULT 0,
+      invalid_count INTEGER NOT NULL DEFAULT 0, duplicate_count INTEGER NOT NULL DEFAULT 0,
+      consented_count INTEGER NOT NULL DEFAULT 0, unknown_count INTEGER NOT NULL DEFAULT 0,
+      denied_count INTEGER NOT NULL DEFAULT 0, imported_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0, import_mode TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    ALTER TABLE market_agent_contact_imports ADD COLUMN IF NOT EXISTS source_asset_id TEXT NOT NULL DEFAULT '';
+    CREATE INDEX IF NOT EXISTS market_agent_contact_imports_user_project_idx ON market_agent_contact_imports (user_id, project_id, created_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS market_agent_contact_imports_source_asset_uidx ON market_agent_contact_imports (source_asset_id) WHERE source_asset_id <> '';
+    CREATE TABLE IF NOT EXISTS market_agent_subscribers (
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL, email TEXT NOT NULL,
+      first_name TEXT NOT NULL DEFAULT '', last_name TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','confirmed','unsubscribed','bounced')),
+      remote_id TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'mailchimp',
+      confirmed_at TIMESTAMPTZ, unsubscribed_at TIMESTAMPTZ, bounced_at TIMESTAMPTZ,
+      welcome_status TEXT NOT NULL DEFAULT 'not_sent' CHECK (welcome_status IN ('not_sent','sending','sent','failed')),
+      welcome_sent_at TIMESTAMPTZ, welcome_error TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id,project_id,email)
+    );
+    CREATE INDEX IF NOT EXISTS market_agent_subscribers_user_project_status_idx ON market_agent_subscribers (user_id,project_id,status,updated_at DESC);
+    CREATE TABLE IF NOT EXISTS market_agent_newsletter_settings (
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL,
+      welcome_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      welcome_subject TEXT NOT NULL DEFAULT '', welcome_body TEXT NOT NULL DEFAULT '', welcome_enabled_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id,project_id)
+    );
   `);
   tablesReady = true;
 }
@@ -449,6 +932,121 @@ function serializeDraft(row) {
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
+}
+
+function serializeContactImport(row) {
+  const contacts = Array.isArray(row.contacts) ? row.contacts : [];
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    sourceName: row.source_name || "Contact list.csv",
+    status: row.status || "staged",
+    columnMap: row.column_map || {},
+    totalCount: Number(row.total_count || 0),
+    validCount: Number(row.valid_count || 0),
+    invalidCount: Number(row.invalid_count || 0),
+    duplicateCount: Number(row.duplicate_count || 0),
+    consentedCount: Number(row.consented_count || 0),
+    unknownCount: Number(row.unknown_count || 0),
+    deniedCount: Number(row.denied_count || 0),
+    importedCount: Number(row.imported_count || 0),
+    failedCount: Number(row.failed_count || 0),
+    importMode: row.import_mode || "",
+    error: row.error || "",
+    preview: contacts.slice(0, 5).map((contact) => ({ email: maskEmail(contact.email), firstName: contact.firstName || "", lastName: contact.lastName || "", company: contact.company || "", consent: contact.consent || "unknown" })),
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+  };
+}
+
+function parseContactCsv(value) {
+  const rows = parseCsv(String(value || "").replace(/^\uFEFF/, "")).filter((row) => row.some((cell) => String(cell || "").trim()));
+  if (rows.length < 2) throw newsletterError("The contact CSV does not contain any contact rows.", 400);
+  const headers = rows[0].map((header) => String(header || "").trim());
+  const normalized = headers.map(normalizeColumnName);
+  const findColumn = (...aliases) => normalized.findIndex((header) => aliases.some((alias) => header === alias || header.includes(alias)));
+  let emailIndex = normalized.findIndex((header) => ["emailaddress", "email", "mail", "emailid"].includes(header));
+  if (emailIndex < 0) emailIndex = normalized.findIndex((header) => /(?:^|contact|work|business|personal)email(?:address)?$/.test(header));
+  if (emailIndex < 0) throw newsletterError("The contact CSV needs an email column.", 400);
+  const firstNameIndex = findColumn("firstname", "givenname", "forename");
+  const lastNameIndex = findColumn("lastname", "surname", "familyname");
+  const fullNameIndex = findColumn("fullname", "contactname", "name");
+  const companyIndex = findColumn("company", "organization", "organisation", "venue", "business");
+  const consentIndex = normalized.findIndex((header) => /(consent|permission|optin|subscribed|marketingstatus)/.test(header));
+  const contacts = [];
+  const seen = new Set();
+  let invalidCount = 0;
+  let duplicateCount = 0;
+  let consentedCount = 0;
+  let unknownCount = 0;
+  let deniedCount = 0;
+  for (const row of rows.slice(1, 5001)) {
+    const email = String(row[emailIndex] || "").trim().toLowerCase();
+    if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email)) { invalidCount += 1; continue; }
+    if (seen.has(email)) { duplicateCount += 1; continue; }
+    seen.add(email);
+    let firstName = firstNameIndex >= 0 ? cleanHeader(row[firstNameIndex], 100) : "";
+    let lastName = lastNameIndex >= 0 ? cleanHeader(row[lastNameIndex], 100) : "";
+    if (!firstName && !lastName && fullNameIndex >= 0) {
+      const pieces = cleanHeader(row[fullNameIndex], 200).split(/\s+/).filter(Boolean);
+      firstName = pieces.shift() || "";
+      lastName = pieces.join(" ");
+    }
+    const consent = consentIndex >= 0 ? normalizeConsent(row[consentIndex]) : "unknown";
+    if (consent === "confirmed") consentedCount += 1;
+    else if (consent === "denied") deniedCount += 1;
+    else unknownCount += 1;
+    contacts.push({ email, firstName, lastName, company: companyIndex >= 0 ? cleanHeader(row[companyIndex], 180) : "", consent });
+  }
+  if (!contacts.length) throw newsletterError("No valid email addresses were found in the contact CSV.", 400);
+  return {
+    contacts,
+    columnMap: { email: headers[emailIndex] || "", firstName: firstNameIndex >= 0 ? headers[firstNameIndex] : "", lastName: lastNameIndex >= 0 ? headers[lastNameIndex] : "", fullName: fullNameIndex >= 0 ? headers[fullNameIndex] : "", company: companyIndex >= 0 ? headers[companyIndex] : "", consent: consentIndex >= 0 ? headers[consentIndex] : "" },
+    totalCount: Math.max(0, rows.length - 1),
+    validCount: contacts.length,
+    invalidCount,
+    duplicateCount,
+    consentedCount,
+    unknownCount,
+    deniedCount,
+  };
+}
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let quoted = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quoted) {
+      if (character === '"' && text[index + 1] === '"') { cell += '"'; index += 1; }
+      else if (character === '"') quoted = false;
+      else cell += character;
+    } else if (character === '"') quoted = true;
+    else if (character === ",") { row.push(cell); cell = ""; }
+    else if (character === "\n") { row.push(cell.replace(/\r$/, "")); rows.push(row); row = []; cell = ""; }
+    else cell += character;
+  }
+  if (cell || row.length) { row.push(cell.replace(/\r$/, "")); rows.push(row); }
+  return rows;
+}
+
+function normalizeColumnName(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function normalizeConsent(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[_-]+/g, " ");
+  if (["yes", "true", "1", "subscribed", "consented", "confirmed", "granted", "opted in", "opt in"].includes(normalized)) return "confirmed";
+  if (["no", "false", "0", "unsubscribed", "denied", "revoked", "opted out", "opt out"].includes(normalized)) return "denied";
+  return "unknown";
+}
+
+function maskEmail(value) {
+  const [local, domain] = String(value || "").split("@");
+  if (!local || !domain) return "";
+  return `${local.slice(0, 2)}${local.length > 2 ? "•••" : ""}@${domain}`;
 }
 
 function serializeMember(member) {

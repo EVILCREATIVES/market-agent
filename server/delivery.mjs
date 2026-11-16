@@ -1,4 +1,4 @@
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { generateDeliveryPlan } from "./agent.mjs";
 import { getConnectionStatus } from "./connections.mjs";
 import { loadStateForUser, getPool } from "./db.mjs";
@@ -6,6 +6,9 @@ import { sendGmailMessage } from "./connections.mjs";
 import { publishSocialPost } from "./social-connections.mjs";
 import { getSocialPublishingOptions } from "./social-connections.mjs";
 import { getSocialPostStatus } from "./social-connections.mjs";
+import { createShopifyDraft } from "./shopify.mjs";
+import { createPublicProjectAssetUrl } from "./assets.mjs";
+import { loadUserApiEnv } from "./user-api-credentials.mjs";
 
 let deliveryTableReady = false;
 
@@ -21,7 +24,37 @@ export async function listDeliveryJobs(userId, projectId, runId = "", env = proc
       ORDER BY created_at ASC LIMIT 100`,
     values,
   );
-  return { jobs: result.rows.map(serializeDeliveryJob) };
+  return { jobs: result.rows.map((row, index) => {
+    const job = serializeDeliveryJob(row);
+    if (!job.payload?.scheduledAt && job.status === "awaiting_approval") job.payload.scheduledAt = normalizeScheduledAt("", index);
+    if (job.payload?.sourceAssetId) job.payload.mediaUrl = createPublicProjectAssetUrl(job.payload.sourceAssetId, env);
+    return job;
+  }) };
+}
+
+export async function replaceDeliveryMediaFromAsset(userId, projectId, runId, asset, env = process.env) {
+  await ensureDeliveryTable(env);
+  if (!asset || asset.projectId !== projectId || !["image", "video"].includes(asset.kind) || asset.status !== "ready" || !asset.id) {
+    throw deliveryError("The selected Content Library item cannot be used as campaign media.", 400);
+  }
+  const result = await getPool(env).query(
+    `SELECT * FROM market_agent_delivery_jobs
+      WHERE user_id = $1 AND project_id = $2 AND run_id = $3 AND status = 'awaiting_approval'
+      ORDER BY created_at ASC`,
+    [userId, projectId, runId],
+  );
+  const compatible = asset.kind === "video"
+    ? new Set(["instagram", "tiktok", "youtube", "discord"])
+    : new Set(["instagram", "tiktok", "linkedin", "x", "discord", "shopify"]);
+  let replaced = 0;
+  for (const row of result.rows) {
+    if (!compatible.has(row.channel)) continue;
+    const payload = { ...(row.payload || {}), sourceAssetId: asset.id, mediaUrl: createPublicProjectAssetUrl(asset.id, env), mediaKind: asset.kind };
+    await getPool(env).query("UPDATE market_agent_delivery_jobs SET payload = $3::jsonb, updated_at = NOW() WHERE id = $1 AND user_id = $2", [row.id, userId, JSON.stringify(payload)]);
+    replaced += 1;
+  }
+  if (!replaced) throw deliveryError("No unapproved campaign post can use this asset right now.", 409);
+  return { asset: { id: asset.id, name: asset.name, kind: asset.kind, summary: asset.summary || "Saved campaign asset", tags: asset.tags || [], routingRationale: `Selected from the Content Library to replace the campaign media.` }, replaced, ...(await listDeliveryJobs(userId, projectId, runId, env)) };
 }
 
 async function refreshSubmittedTikTokJobs(userId, projectId, runId, env) {
@@ -64,20 +97,36 @@ export async function prepareDeliveryJobs(userId, projectId, runId, userApiEnv, 
   const connections = await getConnectionStatus(userId, projectId, env);
   let channels = operationalChannels(connections).filter((channel) => channelAllowedForAccess(channel, userApiEnv));
   if (!channels.length) throw deliveryError("Connect an operational email or social channel first.", 409);
+  const requestedScope = requestedDeliveryScope(run, channels);
+  channels = requestedScope.channels;
+  if (!channels.length) throw deliveryError(requestedScope.explicit
+    ? "The channel requested in this campaign is not connected for publishing. Connect it, then prepare actions again."
+    : "Connect an operational email or social channel first.", 409);
   const channelContexts = {};
   if (channels.includes("reddit")) {
     try { channelContexts.reddit = await getSocialPublishingOptions(userId, projectId, "reddit", env); }
     catch { channels = channels.filter((channel) => channel !== "reddit"); }
   }
   if (!channels.length) throw deliveryError("The selected community's current rules could not be verified. Nothing was prepared.", 409);
-  const plan = await generateDeliveryPlan({ run, workspace, channels, channelContexts }, userApiEnv);
-  const safeItems = normalizeDeliveryItems(plan?.items, channels, workspace);
-  for (const item of safeItems) {
+  const plan = run.campaignPlan?.items?.length
+    ? run.campaignPlan
+    : await generateDeliveryPlan({ run, workspace, channels, channelContexts }, userApiEnv);
+  const safeItems = normalizeDeliveryItems(plan?.items, channels, workspace, run);
+  if (!safeItems.length && channels.includes("instagram")) {
+    const hasMedia = campaignMedia(workspace).some((item) => ["image", "video"].includes(item.kind));
+    throw deliveryError(hasMedia
+      ? "The approved campaign does not contain final Instagram copy that can be queued. Ask the project assistant to prepare the final Instagram caption, approve it, then prepare actions again."
+      : "Instagram is connected, but this project has no reusable public campaign image or video. Generate or approve an asset in Content, then prepare actions again.", 409);
+  }
+  for (let index = 0; index < safeItems.length; index += 1) {
+    const item = safeItems[index];
+    const idempotencyKey = createHash("sha256").update(`${userId}:${projectId}:${runId}:${index}:${item.channel}`).digest("hex");
     await getPool(env).query(
       `INSERT INTO market_agent_delivery_jobs
-        (id, user_id, project_id, run_id, channel, payload, status, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6::jsonb,'awaiting_approval',NOW(),NOW())`,
-      [randomUUID(), userId, projectId, runId, item.channel, JSON.stringify(item)],
+        (id, user_id, project_id, run_id, channel, payload, status, idempotency_key, next_attempt_at, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,'awaiting_approval',$7,NULL,NOW(),NOW())
+       ON CONFLICT (user_id, idempotency_key) WHERE idempotency_key <> '' DO NOTHING`,
+      [randomUUID(), userId, projectId, runId, item.channel, JSON.stringify(item), idempotencyKey],
     );
   }
   return listDeliveryJobs(userId, projectId, runId, env);
@@ -91,7 +140,7 @@ export async function getDeliveryPublishingOptions(userId, id, env = process.env
   );
   const row = result.rows[0];
   if (!row) throw deliveryError("The delivery item was not found.", 404);
-  if (row.channel !== "tiktok") throw deliveryError("This delivery item does not need additional publishing settings.", 400);
+  if (!["tiktok", "youtube"].includes(row.channel)) throw deliveryError("This delivery item does not need additional publishing settings.", 400);
   if (row.status !== "awaiting_approval") throw deliveryError("This delivery item is no longer waiting for approval.", 409);
   return { id: row.id, ...(await getSocialPublishingOptions(userId, row.project_id, row.channel, env)) };
 }
@@ -110,7 +159,12 @@ export async function executeDeliveryJob(userId, id, userApiEnv, approval = {}, 
       throw deliveryError("This delivery channel is not included in the current access level.", 403);
     }
     if (row.status !== "awaiting_approval") throw deliveryError("This delivery item is no longer waiting for approval.", 409);
-    const payload = row.channel === "tiktok" ? prepareTikTokPayload(row.id, mergeTikTokApproval(row.payload, approval), env) : row.payload;
+    const storedPayload = row.payload?.sourceAssetId ? { ...row.payload, mediaUrl: createPublicProjectAssetUrl(row.payload.sourceAssetId, env) } : row.payload;
+    const payload = row.channel === "tiktok"
+      ? prepareTikTokPayload(row.id, mergeTikTokApproval(storedPayload, approval), env)
+      : row.channel === "youtube"
+        ? mergeYouTubeApproval(storedPayload, approval)
+        : storedPayload;
     const claimed = await client.query(
       "UPDATE market_agent_delivery_jobs SET status = 'running', payload = $3::jsonb, approved_at = NOW(), updated_at = NOW() WHERE id = $1 AND user_id = $2 RETURNING *",
       [id, userId, JSON.stringify(payload || {})],
@@ -123,27 +177,206 @@ export async function executeDeliveryJob(userId, id, userApiEnv, approval = {}, 
   } finally {
     client.release();
   }
+  return completeDeliveryExecution(row, userId, env);
+}
+
+export async function approveDeliveryCampaign(userId, projectId, runId, items = [], userApiEnv = {}, env = process.env) {
+  await ensureDeliveryTable(env);
+  const supplied = new Map((Array.isArray(items) ? items : []).map((item) => [String(item?.id || ""), item]));
+  const client = await getPool(env).connect();
+  const approvalId = randomUUID();
   try {
-    const payload = row.payload || {};
+    await client.query("BEGIN");
+    const result = await client.query(
+      `SELECT * FROM market_agent_delivery_jobs
+        WHERE user_id = $1 AND project_id = $2 AND run_id = $3 AND status = 'awaiting_approval'
+        ORDER BY created_at ASC FOR UPDATE`,
+      [userId, projectId, runId],
+    );
+    if (!result.rows.length) throw deliveryError("There are no unapproved campaign items to schedule.", 409);
+    for (let index = 0; index < result.rows.length; index += 1) {
+      const row = result.rows[index];
+      if (!channelAllowedForAccess(row.channel, userApiEnv)) throw deliveryError(`${row.channel} is not included in the current access level.`, 403);
+      const submitted = supplied.get(row.id) || {};
+      const scheduledAt = approvedScheduleDate(submitted.scheduledAt || row.payload?.scheduledAt, index);
+      const storedPayload = row.payload?.sourceAssetId ? { ...row.payload, mediaUrl: createPublicProjectAssetUrl(row.payload.sourceAssetId, env) } : row.payload;
+      const reviewedPayload = row.channel === "tiktok"
+        ? mergeTikTokApproval(storedPayload, submitted.approval || {})
+        : row.channel === "youtube"
+          ? mergeYouTubeApproval(storedPayload, submitted.approval || {})
+          : storedPayload;
+      const payload = { ...(reviewedPayload || {}), scheduledAt, campaignApprovalId: approvalId };
+      await client.query(
+        `UPDATE market_agent_delivery_jobs
+          SET status = 'scheduled', payload = $3::jsonb, approved_at = NOW(), error = '', next_attempt_at = $4::timestamptz, updated_at = NOW()
+          WHERE id = $1 AND user_id = $2`,
+        [row.id, userId, JSON.stringify(payload), scheduledAt],
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+  return listDeliveryJobs(userId, projectId, runId, env);
+}
+
+export async function approveTrustedDeliveryJobs(userId, projectId, runId, trustedChannels = [], userApiEnv = {}, env = process.env) {
+  await ensureDeliveryTable(env);
+  const allowed = new Set((Array.isArray(trustedChannels) ? trustedChannels : []).filter((channel) => ["linkedin", "instagram", "x", "discord"].includes(channel)));
+  if (!allowed.size) return { approved: 0, ...(await listDeliveryJobs(userId, projectId, runId, env)) };
+  const rows = await getPool(env).query(
+    `SELECT * FROM market_agent_delivery_jobs
+      WHERE user_id = $1 AND project_id = $2 AND run_id = $3 AND status = 'awaiting_approval'
+      ORDER BY created_at ASC`,
+    [userId, projectId, runId],
+  );
+  let approved = 0;
+  for (let index = 0; index < rows.rows.length; index += 1) {
+    const row = rows.rows[index];
+    if (!allowed.has(row.channel) || !channelAllowedForAccess(row.channel, userApiEnv)) continue;
+    const scheduledAt = approvedScheduleDate(row.payload?.scheduledAt, index);
+    const payload = { ...(row.payload || {}), scheduledAt, campaignApprovalId: `standing-${runId}` };
+    await getPool(env).query(
+      `UPDATE market_agent_delivery_jobs SET status = 'scheduled', payload = $3::jsonb,
+        approved_at = NOW(), next_attempt_at = $4::timestamptz, error = '', updated_at = NOW()
+        WHERE id = $1 AND user_id = $2 AND status = 'awaiting_approval'`,
+      [row.id, userId, JSON.stringify(payload), scheduledAt],
+    );
+    approved += 1;
+  }
+  return { approved, ...(await listDeliveryJobs(userId, projectId, runId, env)) };
+}
+
+export async function pauseDeliveryCampaign(userId, projectId, runId, env = process.env) {
+  await ensureDeliveryTable(env);
+  const result = await getPool(env).query(
+    `UPDATE market_agent_delivery_jobs
+      SET status = 'awaiting_approval', approved_at = NULL,
+          payload = CASE WHEN channel = 'tiktok'
+            THEN (payload - 'campaignApprovalId') || '{"privacyLevel":"","musicConsent":false}'::jsonb
+            ELSE payload - 'campaignApprovalId' END,
+          updated_at = NOW()
+      WHERE user_id = $1 AND project_id = $2 AND run_id = $3 AND status = 'scheduled'
+      RETURNING id`,
+    [userId, projectId, runId],
+  );
+  if (!result.rowCount) throw deliveryError("This campaign has no future scheduled items to pause.", 409);
+  return listDeliveryJobs(userId, projectId, runId, env);
+}
+
+export async function runScheduledDeliveryJobs(env = process.env, limit = 10) {
+  await ensureDeliveryTable(env);
+  const due = await getPool(env).query(
+    `WITH candidates AS (
+      SELECT id FROM market_agent_delivery_jobs
+      WHERE status = 'scheduled'
+        AND COALESCE(next_attempt_at, NULLIF(payload->>'scheduledAt', '')::timestamptz) <= NOW()
+      ORDER BY COALESCE(next_attempt_at, NULLIF(payload->>'scheduledAt', '')::timestamptz) ASC
+      FOR UPDATE SKIP LOCKED
+      LIMIT $1
+    )
+    UPDATE market_agent_delivery_jobs jobs
+      SET status = 'running', attempt_count = attempt_count + 1, updated_at = NOW()
+    FROM candidates
+    WHERE jobs.id = candidates.id
+    RETURNING jobs.*`,
+    [Math.max(1, Math.min(25, Number(limit) || 10))],
+  );
+  const results = [];
+  for (const row of due.rows) {
+    try {
+      const userApiEnv = await loadUserApiEnv(row.user_id);
+      if (!channelAllowedForAccess(row.channel, userApiEnv)) throw deliveryError("This delivery channel is no longer included in the current access level.", 403);
+      const result = await completeDeliveryExecution(row, row.user_id, env);
+      results.push({ id: row.id, userId: row.user_id, status: result.job.status, error: result.job.error || "" });
+    } catch (error) {
+      const errorMessage = safeError(error);
+      const failed = await recordDeliveryFailure(row, errorMessage, env);
+      results.push({ id: row.id, userId: row.user_id, status: failed.status, error: errorMessage });
+    }
+  }
+  return results;
+}
+
+async function completeDeliveryExecution(row, userId, env) {
+  try {
+    let payload = row.payload?.sourceAssetId ? { ...row.payload, mediaUrl: createPublicProjectAssetUrl(row.payload.sourceAssetId, env) } : (row.payload || {});
+    if (row.channel === "tiktok") payload = prepareTikTokPayload(row.id, payload, env);
+    if (row.channel === "gmail") {
+      const suppressed = await getPool(env).query("SELECT 1 FROM market_agent_email_suppressions WHERE user_id = $1 AND project_id = $2 AND email = $3 LIMIT 1", [userId, row.project_id, String(payload.recipient || "").toLowerCase()]);
+      if (suppressed.rows[0]) throw deliveryError("This recipient previously opted out and is suppressed.", 409);
+      const optOutUrl = createEmailOptOutUrl(row.id, env);
+      payload = { ...payload, text: `${String(payload.text || "").trim()}\n\nStop future emails from this sender: ${optOutUrl}` };
+    }
     const result = row.channel === "gmail"
-      ? await sendGmailMessage(userId, row.project_id, { to: payload.recipient, subject: payload.subject, body: payload.text }, env)
-      : await publishSocialPost(userId, row.project_id, row.channel, payload, env);
+      ? await sendGmailMessage(userId, row.project_id, { to: payload.recipient, subject: payload.subject, body: payload.text, unsubscribeUrl: createEmailOptOutUrl(row.id, env) }, env)
+      : row.channel === "shopify"
+        ? await createShopifyDraft(userId, row.project_id, payload, env)
+        : await publishSocialPost(userId, row.project_id, row.channel, payload, env);
     const status = result.status === "processing" ? "submitted" : "complete";
     const updated = await getPool(env).query(
       `UPDATE market_agent_delivery_jobs
           SET status = $3, external_id = $4, result = $5::jsonb, error = '', completed_at = NOW(), updated_at = NOW()
         WHERE id = $1 AND user_id = $2 RETURNING *`,
-      [id, userId, status, String(result.externalId || ""), JSON.stringify(result)],
+      [row.id, userId, status, String(result.externalId || ""), JSON.stringify(result)],
     );
     return { job: serializeDeliveryJob(updated.rows[0]) };
   } catch (error) {
-    const updated = await getPool(env).query(
-      `UPDATE market_agent_delivery_jobs SET status = 'failed', error = $3, updated_at = NOW()
-        WHERE id = $1 AND user_id = $2 RETURNING *`,
-      [id, userId, safeError(error)],
-    );
-    return { job: serializeDeliveryJob(updated.rows[0]) };
+    const failed = await recordDeliveryFailure(row, safeError(error), env);
+    return { job: serializeDeliveryJob(failed) };
   }
+}
+
+function createEmailOptOutUrl(id, env) {
+  const origin = String(env.APP_BASE_URL || "").replace(/\/$/, "");
+  if (!/^https:\/\//i.test(origin)) throw deliveryError("The public app address is not configured for email opt-out links.", 503);
+  const signature = createHmac("sha256", deliveryMediaSecret(env)).update(`email-opt-out:${id}`).digest("base64url");
+  return `${origin}/api/email-opt-out?token=${encodeURIComponent(`${id}.${signature}`)}`;
+}
+
+export async function recordEmailOptOut(token, env = process.env) {
+  const split = String(token || "").lastIndexOf(".");
+  const id = split > 0 ? String(token).slice(0, split) : "";
+  const signature = split > 0 ? String(token).slice(split + 1) : "";
+  if (!id || !signature) throw deliveryError("This opt-out link is invalid.", 400);
+  const expected = createHmac("sha256", deliveryMediaSecret(env)).update(`email-opt-out:${id}`).digest("base64url");
+  const receivedBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (receivedBuffer.length !== expectedBuffer.length || !timingSafeEqual(receivedBuffer, expectedBuffer)) throw deliveryError("This opt-out link is invalid.", 403);
+  const result = await getPool(env).query("SELECT user_id, project_id, payload->>'recipient' AS email FROM market_agent_delivery_jobs WHERE id = $1 AND channel = 'gmail' LIMIT 1", [id]);
+  const row = result.rows[0];
+  if (!row?.email) throw deliveryError("This opt-out link is no longer available.", 404);
+  await getPool(env).query(
+    `INSERT INTO market_agent_email_suppressions (user_id, project_id, email, reason)
+      VALUES ($1,$2,$3,'recipient opt-out') ON CONFLICT (user_id, project_id, email) DO NOTHING`,
+    [row.user_id, row.project_id, String(row.email).toLowerCase()],
+  );
+  return { ok: true };
+}
+
+async function recordDeliveryFailure(row, message, env) {
+  const attempts = Number(row.attempt_count || 0);
+  const maximum = Math.max(1, Number(row.max_attempts || 5));
+  const retryable = Boolean(row.payload?.campaignApprovalId) && attempts < maximum;
+  const delayMinutes = retryDelayMinutes(attempts);
+  const result = await getPool(env).query(
+    `UPDATE market_agent_delivery_jobs
+      SET status = $3,
+          error = $4,
+          next_attempt_at = CASE WHEN $3 = 'scheduled' THEN NOW() + ($5 || ' minutes')::interval ELSE NULL END,
+          dead_lettered_at = CASE WHEN $3 = 'dead_letter' THEN NOW() ELSE NULL END,
+          updated_at = NOW()
+      WHERE id = $1 AND user_id = $2 RETURNING *`,
+    [row.id, row.user_id, retryable ? "scheduled" : attempts >= maximum ? "dead_letter" : "failed", message, String(delayMinutes)],
+  );
+  return result.rows[0];
+}
+
+export function retryDelayMinutes(attempts) {
+  return Math.min(360, Math.max(2, 2 ** Math.max(1, Number(attempts || 0))));
 }
 
 export async function readDeliveryMedia(token, env = process.env) {
@@ -171,37 +404,79 @@ export async function cancelDeliveryJob(userId, id, env = process.env) {
   return { job: serializeDeliveryJob(result.rows[0]) };
 }
 
+export async function retryDeliveryJob(userId, id, env = process.env) {
+  await ensureDeliveryTable(env);
+  const result = await getPool(env).query(
+    `UPDATE market_agent_delivery_jobs
+      SET status = 'awaiting_approval', error = '', result = '{}'::jsonb, approved_at = NULL,
+          attempt_count = 0, next_attempt_at = NULL, dead_lettered_at = NULL, updated_at = NOW()
+      WHERE id = $1 AND user_id = $2 AND status IN ('failed','dead_letter') AND COALESCE(external_id, '') = ''
+      RETURNING *`,
+    [id, userId],
+  );
+  if (!result.rows[0]) throw deliveryError("Only a failed or exhausted item without a platform receipt can be retried safely.", 409);
+  return { job: serializeDeliveryJob(result.rows[0]) };
+}
+
 function operationalChannels(connections) {
   const channels = [];
   if (connections.gmail?.connected && connections.gmail.canSend) channels.push("gmail");
-  for (const provider of ["linkedin", "instagram", "tiktok", "x", "discord", "reddit"]) if (connections[provider]?.connected && connections[provider].canPublish) channels.push(provider);
+  if (connections.shopify?.connected && connections.shopify.canManage) channels.push("shopify");
+  for (const provider of ["linkedin", "instagram", "tiktok", "youtube", "x", "discord", "reddit"]) if (connections[provider]?.connected && connections[provider].canPublish) channels.push(provider);
   return channels;
+}
+
+function requestedDeliveryScope(run, availableChannels) {
+  const direction = String(run?.prompt || "").toLowerCase();
+  if (/\b(all (?:connected )?channels|all social|multichannel|multi-channel|cross-channel|omnichannel)\b/i.test(direction)) return { channels: availableChannels, explicit: true };
+  const patterns = {
+    gmail: /\b(email|gmail|mail outreach|cold email)\b/i,
+    linkedin: /\blinked\s*in\b/i,
+    instagram: /\b(instagram|insta\b|ig\b)\b/i,
+    tiktok: /\btik\s*tok\b/i,
+    youtube: /\byou\s*tube|shorts?\b/i,
+    x: /(?:^|\s)(?:x|twitter)(?:\s|$)/i,
+    discord: /\bdiscord\b/i,
+    reddit: /\breddit\b/i,
+    shopify: /\bshopify|product draft|store draft\b/i,
+  };
+  const requested = Object.entries(patterns).filter(([, pattern]) => pattern.test(direction)).map(([channel]) => channel);
+  if (!requested.length) return { channels: availableChannels, explicit: false };
+  return { channels: availableChannels.filter((channel) => requested.includes(channel)), explicit: true };
 }
 
 function channelAllowedForAccess(channel, accessEnv) {
   const mode = String(accessEnv?.MARKET_AGENT_ACCESS_MODE || "expired");
+  if (channel === "x") return mode === "managed";
   if (mode === "byok" || mode === "managed") return true;
   return mode === "trial" && channel === "linkedin";
 }
 
-function normalizeDeliveryItems(values, channels, workspace) {
-  if (!Array.isArray(values)) return [];
-  const allowedMedia = new Set((workspace.sourceMedia || []).map((item) => item?.url).filter((url) => /^https:\/\//i.test(String(url || ""))));
+function normalizeDeliveryItems(values, channels, workspace, run = {}) {
+  const candidates = campaignMedia(workspace);
+  const allowedMedia = new Map(candidates.map((item) => [item.url, item]));
   const items = [];
-  for (const value of values) {
+  for (const value of Array.isArray(values) ? values : []) {
     const channel = String(value?.channel || "");
     if (!channels.includes(channel)) continue;
-    const textLimit = channel === "x" ? 280 : channel === "linkedin" ? 3000 : channel === "gmail" ? 100_000 : channel === "discord" ? 2000 : channel === "reddit" ? 40_000 : 2200;
-    const text = String(value?.text || "").trim().slice(0, textLimit);
+    const textLimit = channel === "x" ? 280 : channel === "linkedin" ? 3000 : channel === "gmail" ? 100_000 : channel === "shopify" ? 50_000 : channel === "discord" ? 2000 : channel === "reddit" ? 40_000 : channel === "youtube" ? 5000 : 2200;
+    const rawText = String(value?.text || "").trim();
+    if (!rawText) continue;
+    const tracked = applyCampaignTracking(rawText, workspace, run, channel, items.length);
+    const text = tracked.text.slice(0, textLimit).trim();
     if (!text) continue;
-    const requestedMediaKind = value?.mediaKind === "video" ? "video" : "image";
-    const channelAcceptsMedia = channel === "instagram" || channel === "tiktok" || channel === "discord" || (["linkedin", "x"].includes(channel) && requestedMediaKind === "image");
-    const mediaUrl = channelAcceptsMedia && allowedMedia.has(value?.mediaUrl) ? String(value.mediaUrl) : "";
-    if ((channel === "instagram" || channel === "tiktok") && !mediaUrl) continue;
-    const recipient = channel === "gmail" ? validRecipientList(value?.recipient) : "";
+    let requestedMediaKind = value?.mediaKind === "video" ? "video" : "image";
+    const channelAcceptsMedia = channel === "instagram" || channel === "tiktok" || channel === "discord" || channel === "shopify" || (channel === "youtube" && requestedMediaKind === "video") || (["linkedin", "x"].includes(channel) && requestedMediaKind === "image");
+    let mediaUrl = channelAcceptsMedia && allowedMedia.has(String(value?.mediaUrl || "")) ? String(value.mediaUrl) : "";
+    if (!mediaUrl && ["instagram", "tiktok", "youtube"].includes(channel)) {
+      const fallback = candidates.find((item) => channel === "youtube" ? item.kind === "video" : item.kind === requestedMediaKind) || (channel === "youtube" ? null : candidates[0]);
+      if (fallback) { mediaUrl = fallback.url; requestedMediaKind = fallback.kind; }
+    }
+    if (["instagram", "tiktok", "youtube"].includes(channel) && !mediaUrl) continue;
+    const recipient = channel === "gmail" ? validApprovedRecipient(value?.recipient, run) : "";
     if (channel === "gmail" && !recipient) continue;
-    const subject = ["gmail", "reddit"].includes(channel) ? String(value?.subject || "").replace(/[\r\n]+/g, " ").trim().slice(0, 300) : "";
-    if (["gmail", "reddit"].includes(channel) && !subject) continue;
+    const subject = ["gmail", "reddit", "youtube", "shopify"].includes(channel) ? String(value?.subject || "").replace(/[\r\n]+/g, " ").trim().slice(0, channel === "youtube" ? 100 : channel === "shopify" ? 255 : 300) : "";
+    if (["gmail", "reddit", "youtube", "shopify"].includes(channel) && !subject) continue;
     items.push({
       channel,
       recipient,
@@ -209,34 +484,176 @@ function normalizeDeliveryItems(values, channels, workspace) {
       text,
       mediaUrl,
       mediaKind: mediaUrl ? requestedMediaKind : "",
-      privacyLevel: channel === "tiktok" ? "SELF_ONLY" : "",
+      privacyLevel: channel === "tiktok" ? "" : channel === "youtube" ? "private" : "",
       aiGenerated: Boolean(value?.aiGenerated),
+      madeForKids: false,
+      disableComment: channel === "tiktok",
+      disableDuet: channel === "tiktok",
+      disableStitch: channel === "tiktok",
+      commercialContentToggle: false,
+      brandOrganicToggle: false,
+      brandContentToggle: false,
+      musicConsent: false,
+      scheduledAt: normalizeScheduledAt(value?.scheduledAt, items.length),
+      tracking: tracked.tracking,
+      rationale: String(value?.rationale || "Prepared from the approved run.").trim().slice(0, 1000),
+    });
+    if (items.length >= 45) break;
+  }
+  if (!items.length && channels.includes("instagram")) {
+    const media = candidates[0];
+    const text = approvedChannelCopy(run, "instagram", 2200);
+    if (media && text) items.push({
+      channel: "instagram",
+      recipient: "",
+      subject: "",
+      text,
+      mediaUrl: media.url,
+      mediaKind: media.kind,
+      privacyLevel: "",
+      aiGenerated: false,
+      madeForKids: false,
       disableComment: false,
       disableDuet: false,
       disableStitch: false,
-      brandOrganicToggle: channel === "tiktok",
+      commercialContentToggle: false,
+      brandOrganicToggle: false,
       brandContentToggle: false,
-      rationale: String(value?.rationale || "Prepared from the approved run.").trim().slice(0, 1000),
+      musicConsent: false,
+      scheduledAt: normalizeScheduledAt("", 0),
+      rationale: `Prepared from the approved Instagram campaign using the project asset “${String(media.name || "Campaign media").slice(0, 120)}”.`,
     });
-    if (items.length >= 12) break;
   }
   return items;
 }
 
+function applyCampaignTracking(text, workspace, run, channel, index) {
+  const website = validExternalMediaUrl(workspace?.website);
+  const clickable = ["gmail", "linkedin", "x", "discord", "reddit", "youtube"].includes(channel);
+  if (!website || !clickable) return { text, tracking: null };
+  const target = new URL(website);
+  const campaignId = String(run?.id || "market-agent").slice(0, 120);
+  const campaignName = trackingSlug(run?.title || workspace?.name || "market-agent-campaign");
+  target.searchParams.set("utm_id", campaignId);
+  target.searchParams.set("utm_source", channel);
+  target.searchParams.set("utm_medium", channel === "gmail" ? "email" : "organic_social");
+  target.searchParams.set("utm_campaign", campaignName);
+  target.searchParams.set("utm_content", `item-${index + 1}`);
+  const trackedUrl = target.toString();
+  let replaced = false;
+  let result = text.replace(/https?:\/\/[^\s<>()\]]+/gi, (candidate) => {
+    try {
+      const clean = candidate.replace(/[.,;:!?]+$/, "");
+      const parsed = new URL(clean);
+      if (parsed.hostname.replace(/^www\./, "") !== target.hostname.replace(/^www\./, "")) return candidate;
+      replaced = true;
+      const suffix = candidate.slice(clean.length);
+      return `${trackedUrl}${suffix}`;
+    } catch {
+      return candidate;
+    }
+  });
+  const objective = String(workspace?.growth?.objective || inferTrackingObjective(workspace));
+  if (!replaced && objective && objective !== "visibility") result = `${result}\n\n${trackedUrl}`;
+  return {
+    text: result,
+    tracking: { url: trackedUrl, campaignId, campaignName, source: channel, medium: channel === "gmail" ? "email" : "organic_social", content: `item-${index + 1}` },
+  };
+}
+
+function inferTrackingObjective(workspace) {
+  const context = [workspace?.name, workspace?.description, workspace?.segmentation, workspace?.positioning, workspace?.audience, workspace?.valueProposition].filter(Boolean).join(" ").toLowerCase();
+  if (/\b(shop|store|e-?commerce|retail|purchase|checkout)\b/.test(context)) return "sales";
+  if (/\b(newsletter|publication|subscriber|mailing list)\b/.test(context)) return "newsletter";
+  if (/\b(demo|saas|software|platform|agency|studio|consult|service|b2b|venue|operator|client)\b/.test(context)) return "leads";
+  if (/\b(community|creator|followers|audience growth)\b/.test(context)) return "audience";
+  return "visibility";
+}
+
+function trackingSlug(value) {
+  return String(value || "campaign").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 100) || "campaign";
+}
+
+function campaignMedia(workspace) {
+  const values = Array.isArray(workspace?.sourceMedia) ? workspace.sourceMedia : [];
+  return values
+    .filter((item) => item && ["image", "video"].includes(item.kind) && validExternalMediaUrl(item.url))
+    .filter((item) => !/\b(logo|favicon|app icon|brand mark|wordmark)\b/i.test(`${item.name || ""} ${item.role || ""} ${Array.isArray(item.tags) ? item.tags.join(" ") : ""}`))
+    .map((item) => ({ ...item, url: validExternalMediaUrl(item.url) }))
+    .sort((left, right) => mediaRank(right) - mediaRank(left));
+}
+
+function mediaRank(item) {
+  const recommendation = item?.recommendation === "reuse" ? 4 : item?.recommendation === "adapt" ? 2 : 0;
+  const role = /\b(hero|campaign|editorial|photograph|social|product|work|portfolio)\b/i.test(`${item?.name || ""} ${item?.role || ""}`) ? 3 : 0;
+  return recommendation + role + (item?.kind === "video" ? 1 : 0);
+}
+
+function approvedChannelCopy(run, channel, limit) {
+  const output = String(run?.output || "").replace(/\r/g, "");
+  const heading = new RegExp(`(?:^|\\n)(?:#{1,6}\\s*)?(?:\\*\\*)?${channel}(?:\\s+(?:post|caption|copy))?(?:\\*\\*)?\\s*[:—-]?\\s*\\n`, "i");
+  const match = heading.exec(output);
+  let source = match ? output.slice(match.index + match[0].length) : output;
+  if (match) source = source.split(/\n(?=#{1,6}\s|\*\*[A-Z][^\n]{1,80}\*\*\s*$)/)[0];
+  const cleaned = source
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^[-*]\s+/gm, "")
+    .replace(/\*\*|__/g, "")
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (!cleaned || /^\|.+\|$/m.test(cleaned.slice(0, 500))) return "";
+  return cleaned.slice(0, limit).trim();
+}
+
+function mergeYouTubeApproval(payload, approval) {
+  const privacyLevel = String(approval?.privacyLevel || payload?.privacyLevel || "private").trim();
+  if (!["private", "unlisted", "public"].includes(privacyLevel)) throw deliveryError("Choose a YouTube visibility option before publishing.", 400);
+  return { ...(payload || {}), privacyLevel, madeForKids: Boolean(approval?.madeForKids) };
+}
+
 function mergeTikTokApproval(payload, approval) {
-  const privacyLevel = String(approval?.privacyLevel || payload?.privacyLevel || "").trim();
+  const privacyLevel = String(approval?.privacyLevel || "").trim();
   if (!/^(PUBLIC_TO_EVERYONE|MUTUAL_FOLLOW_FRIENDS|FOLLOWER_OF_CREATOR|SELF_ONLY)$/.test(privacyLevel)) {
     throw deliveryError("Choose an available TikTok visibility option before publishing.", 400);
   }
+  const commercialContentToggle = Boolean(approval?.commercialContentToggle);
+  const brandOrganicToggle = commercialContentToggle && Boolean(approval?.brandOrganicToggle);
+  const brandContentToggle = commercialContentToggle && Boolean(approval?.brandContentToggle);
+  if (commercialContentToggle && !brandOrganicToggle && !brandContentToggle) {
+    throw deliveryError("Choose whether the TikTok post promotes your brand, another brand, or both.", 400);
+  }
+  if (!approval?.musicConsent) throw deliveryError("Confirm TikTok's music-use terms before approving this post.", 400);
   return {
     ...(payload || {}),
     privacyLevel,
     disableComment: Boolean(approval?.disableComment),
     disableDuet: Boolean(approval?.disableDuet),
     disableStitch: Boolean(approval?.disableStitch),
-    brandOrganicToggle: approval?.brandOrganicToggle !== false,
-    brandContentToggle: Boolean(approval?.brandContentToggle),
+    commercialContentToggle,
+    brandOrganicToggle,
+    brandContentToggle,
+    musicConsent: true,
   };
+}
+
+function normalizeScheduledAt(value, index = 0) {
+  const parsed = new Date(String(value || ""));
+  const minimum = Date.now() + 15 * 60_000;
+  if (Number.isFinite(parsed.getTime()) && parsed.getTime() >= minimum && parsed.getTime() < Date.now() + 370 * 24 * 60 * 60_000) return parsed.toISOString();
+  const fallback = new Date();
+  fallback.setUTCDate(fallback.getUTCDate() + 1 + Math.floor(index / 2) * 2);
+  fallback.setUTCHours(12, (index % 2) * 15, 0, 0);
+  return fallback.toISOString();
+}
+
+function approvedScheduleDate(value, index = 0) {
+  const scheduledAt = normalizeScheduledAt(value, index);
+  if (new Date(scheduledAt).getTime() < Date.now() + 10 * 60_000) {
+    throw deliveryError("Choose a campaign time at least ten minutes from now.", 400);
+  }
+  return scheduledAt;
 }
 
 function prepareTikTokPayload(id, payload, env) {
@@ -281,14 +698,11 @@ function validExternalMediaUrl(value) {
   }
 }
 
-function validRecipientList(value) {
-  const result = [];
-  for (const item of String(value || "").split(/[;,\n]+/)) {
-    const email = item.trim().toLowerCase();
-    if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email) && !result.includes(email)) result.push(email);
-    if (result.length >= 50) break;
-  }
-  return result.join(", ");
+export function validApprovedRecipient(value, run = {}) {
+  const supplied = String(value || "").trim().toLowerCase();
+  if (!/^[^\s@<>;,]+@[^\s@<>;,]+\.[^\s@<>;,]+$/.test(supplied)) return "";
+  const approved = new Set(`${String(run?.prompt || "")}\n${String(run?.output || "")}`.toLowerCase().match(/[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+\.[a-z]{2,}/g) || []);
+  return approved.has(supplied) ? supplied : "";
 }
 
 async function ensureDeliveryTable(env) {
@@ -296,24 +710,45 @@ async function ensureDeliveryTable(env) {
   await getPool(env).query(`
     CREATE TABLE IF NOT EXISTS market_agent_delivery_jobs (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, project_id TEXT NOT NULL, run_id TEXT NOT NULL,
-      channel TEXT NOT NULL CHECK (channel IN ('gmail','linkedin','instagram','tiktok','x','discord','reddit')),
+      channel TEXT NOT NULL CHECK (channel IN ('gmail','linkedin','instagram','tiktok','youtube','x','discord','reddit','shopify')),
       payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-      status TEXT NOT NULL DEFAULT 'awaiting_approval' CHECK (status IN ('awaiting_approval','running','submitted','complete','failed','cancelled')),
+      status TEXT NOT NULL DEFAULT 'awaiting_approval' CHECK (status IN ('awaiting_approval','scheduled','running','submitted','complete','failed','cancelled')),
       external_id TEXT NOT NULL DEFAULT '', result JSONB NOT NULL DEFAULT '{}'::jsonb, error TEXT NOT NULL DEFAULT '',
       approved_at TIMESTAMPTZ, completed_at TIMESTAMPTZ,
+      idempotency_key TEXT NOT NULL DEFAULT '', attempt_count INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 5, next_attempt_at TIMESTAMPTZ, dead_lettered_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS market_agent_delivery_jobs_user_project_run_idx ON market_agent_delivery_jobs (user_id, project_id, run_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS market_agent_delivery_jobs_scheduled_idx ON market_agent_delivery_jobs (status);
+    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS idempotency_key TEXT NOT NULL DEFAULT '';
+    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 5;
+    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ;
+    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS dead_lettered_at TIMESTAMPTZ;
+    CREATE UNIQUE INDEX IF NOT EXISTS market_agent_delivery_jobs_idempotency_uidx ON market_agent_delivery_jobs (user_id, idempotency_key) WHERE idempotency_key <> '';
     DO $$ BEGIN
       IF EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conrelid = 'market_agent_delivery_jobs'::regclass
           AND conname = 'market_agent_delivery_jobs_channel_check'
-          AND pg_get_constraintdef(oid) NOT LIKE '%discord%'
+          AND pg_get_constraintdef(oid) NOT LIKE '%shopify%'
       ) THEN
         ALTER TABLE market_agent_delivery_jobs DROP CONSTRAINT market_agent_delivery_jobs_channel_check;
         ALTER TABLE market_agent_delivery_jobs ADD CONSTRAINT market_agent_delivery_jobs_channel_check
-          CHECK (channel IN ('gmail','linkedin','instagram','tiktok','x','discord','reddit'));
+          CHECK (channel IN ('gmail','linkedin','instagram','tiktok','youtube','x','discord','reddit','shopify'));
+      END IF;
+    END $$;
+    DO $$ BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'market_agent_delivery_jobs'::regclass
+          AND conname = 'market_agent_delivery_jobs_status_check'
+          AND pg_get_constraintdef(oid) NOT LIKE '%dead_letter%'
+      ) THEN
+        ALTER TABLE market_agent_delivery_jobs DROP CONSTRAINT market_agent_delivery_jobs_status_check;
+        ALTER TABLE market_agent_delivery_jobs ADD CONSTRAINT market_agent_delivery_jobs_status_check
+          CHECK (status IN ('awaiting_approval','scheduled','running','submitted','complete','failed','dead_letter','cancelled'));
       END IF;
     END $$;
   `);
@@ -328,6 +763,9 @@ function serializeDeliveryJob(row) {
     channel: row.channel,
     payload: row.payload || {},
     status: row.status,
+    attemptCount: Number(row.attempt_count || 0),
+    maxAttempts: Number(row.max_attempts || 5),
+    nextAttemptAt: row.next_attempt_at ? new Date(row.next_attempt_at).toISOString() : null,
     externalId: row.external_id || "",
     result: row.result || {},
     error: row.error || "",

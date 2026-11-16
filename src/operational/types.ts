@@ -12,6 +12,10 @@ export interface ProductMaterial {
   name: string;
   kind: "document" | "image" | "video";
   addedAt: string;
+  assetId?: string;
+  summary?: string;
+  tags?: string[];
+  routingRationale?: string;
 }
 
 export interface SourceMediaAsset {
@@ -35,8 +39,21 @@ export interface BrandIdentity {
   typography: string;
   fontFamilies: string[];
   fontSources: BrandFontSource[];
+  typographySystems: BrandTypographySystem[];
+  sourceTypographySystems: BrandTypographySystem[];
+  lookAndFeel: string;
+  photographyStyle: string;
   imageryStyle: string;
   notes: string;
+}
+
+export interface BrandTypographySystem {
+  source: "website" | "deck" | "document" | "manual";
+  sourceLabel: string;
+  usage: string;
+  families: string[];
+  sample: string;
+  verified: boolean;
 }
 
 export interface BrandFontSource {
@@ -45,6 +62,21 @@ export interface BrandFontSource {
   weight: string;
   style: string;
   format: string;
+  source?: string;
+  usage?: string;
+}
+
+export type GrowthObjective = "visibility" | "leads" | "sales" | "audience" | "newsletter";
+export type PrimaryConversion = "contact_form" | "demo_request" | "newsletter_signup" | "purchase" | "reply" | "custom";
+
+export interface ProjectGrowthPlan {
+  objective: GrowthObjective | "";
+  primaryConversion: PrimaryConversion | "";
+  analyticsEvent: string;
+  selectedBy: "assistant" | "user";
+  rationale: string;
+  targetValue: number;
+  targetPeriodDays: number;
 }
 
 export interface ProductWorkspace {
@@ -52,11 +84,16 @@ export interface ProductWorkspace {
   name: string;
   website: string;
   description: string;
+  segmentation: string;
+  positioning: string;
+  manifesto: string;
   audience: string;
   valueProposition: string;
   voice: string;
   guardrails: string;
   notes: string;
+  issueNotes: { high: string; attention: string; context: string };
+  acceptedIssueNotes: string[];
   sourcePriority: "best-evidence" | "website" | "deck";
   sourceGuidance: string;
   sources: ProductSource[];
@@ -70,6 +107,7 @@ export interface ProductWorkspace {
   sourceWarnings: string[];
   protectedFields: string[];
   chatMessages: ProjectChatMessage[];
+  growth: ProjectGrowthPlan;
   updatedAt: string;
 }
 
@@ -77,7 +115,17 @@ export interface ProjectChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  attachments?: Array<{ id: string; name: string; kind: "document" | "image" | "video"; destinations: string[] }>;
   createdAt: string;
+}
+
+export interface RunAssetReference {
+  id: string;
+  name: string;
+  kind: "document" | "image" | "video";
+  summary: string;
+  tags: string[];
+  routingRationale: string;
 }
 
 export interface AgentRun {
@@ -91,8 +139,30 @@ export interface AgentRun {
   sources: Array<{ title: string; url: string }>;
   status: RunStatus;
   model: string;
+  executionMode?: "single" | "panel";
+  campaignPlan?: CampaignPlan | null;
   intensity?: CampaignIntensity;
+  issueFindings?: {
+    high: string[];
+    attention: string[];
+  };
+  assetReferences?: RunAssetReference[];
   createdAt: string;
+}
+
+export interface CampaignPlan {
+  items: Array<{
+    channel: DeliveryJob["channel"];
+    recipient: string;
+    subject: string;
+    text: string;
+    mediaUrl: string;
+    mediaKind: "" | "image" | "video";
+    privacyLevel: string;
+    aiGenerated: boolean;
+    scheduledAt: string;
+    rationale: string;
+  }>;
 }
 
 export type CampaignIntensity = "careful" | "assertive" | "aggressive";
@@ -109,6 +179,8 @@ export interface AgentSchedule {
   action: Exclude<AgentAction, "chat">;
   prompt: string;
   useWeb: boolean;
+  autonomyLevel: "draft" | "prepare" | "publish";
+  trustedChannels: Array<"linkedin" | "instagram" | "x" | "discord">;
   lastRunAt: string | null;
 }
 
@@ -237,6 +309,7 @@ export interface AssetProposal {
 export interface ConnectionStatus {
   analytics: AnalyticsConnectionStatus;
   mailchimp: MailchimpConnectionStatus;
+  shopify: ShopifyConnectionStatus;
   gmail: {
     configured: boolean;
     connected: boolean;
@@ -248,9 +321,20 @@ export interface ConnectionStatus {
   linkedin: SocialConnectionStatus;
   instagram: SocialConnectionStatus;
   tiktok: SocialConnectionStatus;
+  youtube: SocialConnectionStatus;
   x: SocialConnectionStatus;
   discord: SocialConnectionStatus;
   reddit: SocialConnectionStatus;
+}
+
+export interface ShopifyConnectionStatus {
+  configured: boolean;
+  connected: boolean;
+  storeDomain: string;
+  storeName: string;
+  scopes: string[];
+  connectedAt: string | null;
+  canManage: boolean;
 }
 
 export interface MailchimpConnectionStatus {
@@ -291,6 +375,28 @@ export interface NewsletterDraft {
   updatedAt: string;
 }
 
+export interface ContactImport {
+  id: string;
+  projectId: string;
+  sourceName: string;
+  status: "staged" | "importing" | "imported" | "partial" | "failed";
+  columnMap: Record<string, string>;
+  totalCount: number;
+  validCount: number;
+  invalidCount: number;
+  duplicateCount: number;
+  consentedCount: number;
+  unknownCount: number;
+  deniedCount: number;
+  importedCount: number;
+  failedCount: number;
+  importMode: "" | "confirmed" | "double-opt-in";
+  error: string;
+  preview: Array<{ email: string; firstName: string; lastName: string; company: string; consent: "confirmed" | "unknown" | "denied" }>;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface NewsletterDashboard {
   audience: {
     id: string;
@@ -318,7 +424,32 @@ export interface NewsletterDashboard {
     bounces: number;
   }>;
   drafts: NewsletterDraft[];
+  contactImports: ContactImport[];
+  subscriberRegistry: {
+    counts: { total: number; pending: number; confirmed: number; unsubscribed: number; bounced: number };
+    preview: NewsletterSubscriber[];
+  };
+  welcome: {
+    enabled: boolean;
+    subject: string;
+    body: string;
+    enabledAt: string | null;
+  };
   fetchedAt: string;
+}
+
+export interface NewsletterSubscriber {
+  email: string;
+  firstName: string;
+  lastName: string;
+  company: string;
+  status: "pending" | "confirmed" | "unsubscribed" | "bounced";
+  confirmedAt: string | null;
+  unsubscribedAt: string | null;
+  bouncedAt: string | null;
+  welcomeStatus: "not_sent" | "sending" | "sent" | "failed";
+  welcomeSentAt: string | null;
+  updatedAt: string | null;
 }
 
 export interface AnalyticsConnectionStatus {
@@ -344,34 +475,46 @@ export interface SocialConnectionStatus {
   destinations?: Array<{ id: string; name: string; label: string }>;
   destinationId?: string;
   destinationName?: string;
+  approvalRequired?: boolean;
+  approvalStatus?: "pending_approval" | "approved";
 }
 
-export type DeliveryJobStatus = "awaiting_approval" | "running" | "submitted" | "complete" | "failed" | "cancelled";
+export type DeliveryJobStatus = "awaiting_approval" | "scheduled" | "running" | "submitted" | "complete" | "failed" | "dead_letter" | "cancelled";
 
 export interface DeliveryJob {
   id: string;
   projectId: string;
   runId: string;
-  channel: "gmail" | "linkedin" | "instagram" | "tiktok" | "x" | "discord" | "reddit";
+  channel: "gmail" | "linkedin" | "instagram" | "tiktok" | "youtube" | "x" | "discord" | "reddit" | "shopify";
   payload: {
     recipient: string;
     subject: string;
     text: string;
     mediaUrl: string;
     mediaKind: "" | "image" | "video";
+    sourceAssetId?: string;
     privacyLevel: string;
     aiGenerated: boolean;
+    madeForKids: boolean;
     disableComment: boolean;
     disableDuet: boolean;
     disableStitch: boolean;
+    commercialContentToggle: boolean;
     brandOrganicToggle: boolean;
     brandContentToggle: boolean;
+    musicConsent: boolean;
+    scheduledAt: string;
+    campaignApprovalId?: string;
+    tracking?: { url: string; campaignId: string; campaignName: string; source: string; medium: string; content: string } | null;
     rationale: string;
   };
   status: DeliveryJobStatus;
   externalId: string;
   result: Record<string, unknown>;
   error: string;
+  attemptCount: number;
+  maxAttempts: number;
+  nextAttemptAt: string | null;
   approvedAt: string | null;
   completedAt: string | null;
   createdAt: string;
@@ -389,12 +532,89 @@ export interface TikTokPublishingOptions {
   maxVideoDurationSec: number;
 }
 
+export interface YouTubePublishingOptions {
+  id: string;
+  provider: "youtube";
+  accountLabel: string;
+  privacyLevelOptions: Array<"private" | "unlisted" | "public">;
+}
+
 export interface AnalyticsReport {
   propertyId: string;
   propertyName: string;
   range: string;
-  totals: Record<string, number>;
+  totals: Record<string, number | null>;
+  previousTotals: Record<string, number | null>;
+  changes: Record<string, { current: number | null; previous: number | null; absolute: number | null; percent: number | null }>;
   timeline: Array<Record<string, string | number>>;
   channels: Array<Record<string, string | number>>;
+  previousChannels: Array<Record<string, string | number>>;
+  campaigns: Array<Record<string, string | number>>;
+  previousCampaigns: Array<Record<string, string | number>>;
+  campaignEvents: Array<Record<string, string | number>>;
+  previousCampaignEvents: Array<Record<string, string | number>>;
+  keyEvents: Array<Record<string, string | number>>;
+  acquisition: Array<Record<string, string | number>>;
+  landingPages: Array<Record<string, string | number>>;
+  pages: Array<Record<string, string | number>>;
+  downloads: Array<Record<string, string | number>>;
+  outboundLinks: Array<Record<string, string | number>>;
+  videos: Array<Record<string, string | number>>;
+  transitions: Array<Record<string, string | number>>;
+  fetchedAt: string;
+}
+
+export interface SocialAnalyticsReport {
+  provider: "linkedin" | "instagram" | "tiktok" | "youtube" | "x" | "discord" | "reddit";
+  label: string;
+  range: string;
+  connected: boolean;
+  accountLabel: string;
+  availability: "live" | "delivery_only" | "permission_required" | "not_connected" | "temporarily_unavailable";
+  note: string;
+  requiredAction: string;
+  totals: Record<string, number | null>;
+  comparison: {
+    baselineAt: string;
+    label: string;
+    metrics: Record<string, { current: number; previous: number; absolute: number; percent: number | null }>;
+  } | null;
+  account: Record<string, string | number>;
+  metrics: Array<{ key: string; label: string }>;
+  posts: Array<{
+    id: string;
+    providerId: string;
+    title: string;
+    publishedAt: string;
+    status: string;
+    url: string;
+    metrics: Record<string, number>;
+  }>;
+  fetchedAt: string;
+}
+
+export interface GrowthReportMetric {
+  key: "visibility" | "audience" | "visits" | "leads";
+  label: string;
+  value: number | null;
+  previous: number | null;
+  change: number | null;
+  changePercent: number | null;
+  unit: string;
+  source: string;
+  note: string;
+}
+
+export interface GrowthReport {
+  range: string;
+  days: number;
+  goal: ProjectGrowthPlan;
+  metrics: GrowthReportMetric[];
+  funnel: Array<{ key: string; label: string; value: number | null; source: string }>;
+  channels: Array<{ provider: string; label: string; visibility: number | null; audienceCurrent: number | null; audienceChange: number | null; visits: number | null; leads: number | null; availability: string }>;
+  campaigns: Array<{ id: string; name: string; source: string; medium: string; sessions: number; leads: number | null }>;
+  keyEvents: Array<{ eventName: string; count: number }>;
+  recommendations: Array<{ level: "positive" | "attention" | "setup"; title: string; detail: string; action: string }>;
+  tracking: { startedAt: string; attributed: boolean; note: string };
   fetchedAt: string;
 }

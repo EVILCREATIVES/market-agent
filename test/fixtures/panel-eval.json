@@ -1,0 +1,18 @@
+[
+  {
+    "name": "service lead campaign",
+    "action": "campaign",
+    "prompt": "Prepare a 14-day LinkedIn campaign to generate qualified enquiries. Nothing is connected, so do not claim publication.",
+    "workspace": { "name": "North Studio", "description": "Brand and digital design studio", "audience": "Marketing leaders", "positioning": "Senior creative direction for complex launches", "growth": { "objective": "leads", "primaryConversion": "contact_form", "selectedBy": "assistant", "rationale": "Qualified enquiries matter." } },
+    "required": ["LinkedIn", "enquir", "prepared"],
+    "forbidden": ["guaranteed", "we published"]
+  },
+  {
+    "name": "product visibility campaign",
+    "action": "social",
+    "prompt": "Create a seven-day Instagram content plan that increases qualified visibility and sends visitors to the website.",
+    "workspace": { "name": "Luma Objects", "description": "Independent homeware brand", "audience": "Design-conscious homeowners", "positioning": "Small-run functional objects", "website": "https://example.com", "growth": { "objective": "visibility", "primaryConversion": "purchase", "selectedBy": "user", "rationale": "Website purchases are primary." } },
+    "required": ["Instagram", "website", "tracking"],
+    "forbidden": ["guaranteed", "we posted"]
+  }
+]

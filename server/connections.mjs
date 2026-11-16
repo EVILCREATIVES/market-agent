@@ -4,6 +4,7 @@ import { getPool } from "./db.mjs";
 import { getSocialConnectionStatus } from "./social-connections.mjs";
 import { getAnalyticsConnectionStatus } from "./analytics.mjs";
 import { getMailchimpConnectionStatus } from "./newsletters.mjs";
+import { getShopifyConnectionStatus } from "./shopify.mjs";
 
 const GOOGLE_SCOPES = [
   "openid",
@@ -15,12 +16,13 @@ let connectionsTableReady = false;
 
 export async function getConnectionStatus(userId, projectId = "project-default", env = process.env) {
   const configured = googleConnectorConfigured(env);
-  const [social, analytics, mailchimp] = await Promise.all([
+  const [social, analytics, mailchimp, shopify] = await Promise.all([
     getSocialConnectionStatus(userId, projectId, env),
     getAnalyticsConnectionStatus(userId, projectId, env),
     getMailchimpConnectionStatus(userId, projectId, env),
+    getShopifyConnectionStatus(userId, projectId, env),
   ]);
-  if (!env.DATABASE_URL) return { ...emptyStatus(configured), analytics, mailchimp, ...social };
+  if (!env.DATABASE_URL) return { ...emptyStatus(configured), analytics, mailchimp, shopify, ...social };
   await ensureConnectionsTable(env);
   const result = await getPool(env).query(
     `SELECT account_email, scopes, status, connected_at, updated_at
@@ -30,7 +32,7 @@ export async function getConnectionStatus(userId, projectId = "project-default",
     [userId, projectId],
   );
   const row = result.rows[0];
-  if (!row || row.status !== "connected") return { ...emptyStatus(configured), analytics, mailchimp, ...social };
+  if (!row || row.status !== "connected") return { ...emptyStatus(configured), analytics, mailchimp, shopify, ...social };
   return {
     gmail: {
       configured,
@@ -42,6 +44,7 @@ export async function getConnectionStatus(userId, projectId = "project-default",
     },
     analytics,
     mailchimp,
+    shopify,
     ...social,
   };
 }
@@ -152,12 +155,13 @@ export async function disconnectGoogleMailbox(userId, projectId = "project-defau
 }
 
 export async function sendGmailMessage(userId, projectId, message, env = process.env) {
-  const to = normalizeEmailList(message?.to, 50);
-  const cc = normalizeEmailList(message?.cc, 25);
-  const bcc = normalizeEmailList(message?.bcc, 25);
+  const to = normalizeEmailList(message?.to, 2);
+  const cc = normalizeEmailList(message?.cc, 1);
+  const bcc = normalizeEmailList(message?.bcc, 1);
   const subject = cleanHeader(message?.subject, 300);
   const body = String(message?.body || "").trim().slice(0, 100_000);
-  if (!to.length) throw connectionError("The approved email needs at least one valid recipient.", 400);
+  const unsubscribeUrl = /^https:\/\/[^\s<>]+$/i.test(String(message?.unsubscribeUrl || "")) ? String(message.unsubscribeUrl) : "";
+  if (to.length !== 1 || cc.length || bcc.length) throw connectionError("Direct email is limited to one approved recipient per delivery item. Use the newsletter connection for audience sends.", 400);
   if (!subject || !body) throw connectionError("The approved email needs a subject and message.", 400);
   const row = await readGoogleConnection(userId, projectId, env);
   if (!row || row.status !== "connected") throw connectionError("Connect the project mailbox before sending email.", 409);
@@ -170,6 +174,7 @@ export async function sendGmailMessage(userId, projectId, message, env = process
     ...(cc.length ? [`Cc: ${cc.join(", ")}`] : []),
     ...(bcc.length ? [`Bcc: ${bcc.join(", ")}`] : []),
     `Subject: ${subject}`,
+    ...(unsubscribeUrl ? [`List-Unsubscribe: <${unsubscribeUrl}>`, "List-Unsubscribe-Post: List-Unsubscribe=One-Click"] : []),
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=UTF-8",
     "Content-Transfer-Encoding: 8bit",

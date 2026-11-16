@@ -2,7 +2,7 @@
 
 This is the one-time setup for the Market Agent platform owner. It is not an end-user onboarding checklist. After these apps are registered, every signed-in user connects and authorizes their own accounts from Market Agent.
 
-Production base URL: `https://market-agent-lime-gamma.vercel.app`
+Production base URL: `https://www.marketagent.shop`
 
 ## Cost boundary
 
@@ -13,6 +13,7 @@ Production base URL: `https://market-agent-lime-gamma.vercel.app`
 - Setting the approval limit to `$0` disables all paid media generation for that user.
 - This is an application-side guard based on estimated provider usage, not a provider-issued billing cap. Provider invoices can differ, so users should also configure a billing limit in their provider account when that provider offers one.
 - PayPal subscription receipts go to the platform owner's PayPal business account. This is income, not a provider cost passed through to end users.
+- Organic LinkedIn publishing and LinkedIn Ads are separate authorizations. If paid LinkedIn campaigns are added, every user must connect and select their own LinkedIn ad account, set a hard campaign budget, and approve launch. LinkedIn charges that user's ad account directly; Market Agent must never place ad spend on a platform-owner account.
 
 ## Redirects and server variables
 
@@ -20,7 +21,7 @@ Production base URL: `https://market-agent-lime-gamma.vercel.app`
 | --- | --- | --- |
 | Google | `/api/google-callback` and `/api/google-analytics-callback` | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` |
 | LinkedIn | `/api/social-callback` | `LINKEDIN_CLIENT_ID`, `LINKEDIN_CLIENT_SECRET` |
-| Instagram | `/api/social-callback` | `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET` |
+| Instagram | `/api/social-callback` | `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET`, `INSTAGRAM_CONFIG_ID` |
 | TikTok | `/api/social-callback` | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` |
 | X | `/api/social-callback` | `X_CLIENT_ID`, `X_CLIENT_SECRET` |
 | Discord | `/api/social-callback` | `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` |
@@ -33,17 +34,19 @@ Use the full production origin before each path. Keep every secret server-only i
 ## Already configured
 
 - Google: enable Gmail API, Google Analytics Admin API, and Google Analytics Data API. The app requests send-only Gmail access and read-only Analytics access. Each user signs into their own Google account and selects their own property.
-- LinkedIn: enable Sign In with LinkedIn using OpenID Connect and Share on LinkedIn. Personal posting uses `w_member_social`; organization posting must remain unavailable unless LinkedIn separately approves the required organization products and the user is an authorized page administrator.
+- LinkedIn: enable Sign In with LinkedIn using OpenID Connect and Share on LinkedIn. The authenticated member is the authorizer, not the automatic publishing destination. Market Agent requires a separate per-project destination choice and never defaults to the member's personal profile. Personal posting uses `w_member_social`. For company pages, obtain LinkedIn Community Management approval, add `rw_organization_admin`, `r_organization_social`, and `w_organization_social`, then set `LINKEDIN_ORGANIZATION_ACCESS=true` and reconnect. Company pages are shown before the optional personal profile.
+- LinkedIn Groups: the current official Community Management capability covers company pages and profile/page activity, not general group search, joining, or group posting. Campaign research may recommend publicly verifiable groups, but joining and participation must be marked as manual user actions and must never be reported as completed by the connector.
 
 ## Requires platform-owner approval
 
 ### Instagram
 
-1. Create a Meta app and add Instagram API with Instagram Login.
-2. Register the full social callback URL.
-3. Request `instagram_business_basic` and `instagram_business_content_publish`.
-4. Complete Meta's business verification and app review before inviting general users.
-5. Add the app ID and secret to Vercel, then redeploy.
+1. Create a business-owned Meta app and add **Manage messaging & content on Instagram**.
+2. Under **API setup with Unified login**, create a compatible Facebook Login for Business configuration for the Instagram assets and permissions the app needs.
+3. Register the exact production callback URL, copy the configuration ID, and store it as `INSTAGRAM_CONFIG_ID`.
+4. During Development mode, invite the test Instagram professional account and have that account accept the tester invitation.
+5. Request Advanced Access for the configured Instagram permissions, complete Meta's business verification and app review, and switch the app to Live before inviting general users.
+6. Add the Meta app ID, app secret, and configuration ID to Vercel, then redeploy.
 
 The user must connect an Instagram professional account. Market Agent publishes only after that user approves the individual image or Reel.
 

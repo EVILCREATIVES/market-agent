@@ -6,5 +6,6 @@ outputs
 .vercel
 *.tsbuildinfo
 .DS_Store
+work/
 .env*
 !.env.example

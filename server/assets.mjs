@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { Readable } from "node:stream";
-import { get, put } from "@vercel/blob";
+import { del, get, put } from "@vercel/blob";
 import fontkit from "@pdf-lib/fontkit";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { analyzeProjectAsset, generateProjectDocument, safeFetchPublic } from "./agent.mjs";
@@ -25,6 +25,82 @@ export async function listProjectAssets(userId, projectId, env = process.env) {
   return { assets: assets.rows.map(serializeAsset), proposals: proposals.rows.map(serializeProposal) };
 }
 
+export async function findProjectAssetForInstruction(userId, projectId, instruction, env = process.env) {
+  await ensureTables(env);
+  const result = await getPool(env).query(
+    `SELECT * FROM market_agent_project_assets
+      WHERE user_id = $1 AND project_id = $2 AND status = 'ready' AND asset_kind IN ('image','video')
+      ORDER BY created_at DESC LIMIT 200`,
+    [userId, projectId],
+  );
+  const message = normalizeSearchText(instruction);
+  const messageWords = new Set(message.split(" ").filter((word) => word.length >= 3));
+  let best = null;
+  let bestScore = 0;
+  for (const row of result.rows) {
+    const name = normalizeSearchText(String(row.name || "").replace(/\.[a-z0-9]{2,6}$/i, ""));
+    const nameWords = name.split(" ").filter((word) => word.length >= 3);
+    let score = name && message.includes(name) ? 20 : 0;
+    for (const word of nameWords) if (messageWords.has(word)) score += word.length >= 6 ? 4 : 2;
+    const summary = normalizeSearchText(`${row.summary || ""} ${row.rationale || ""}`);
+    const summaryWords = new Set(summary.split(" ").filter((word) => word.length >= 4));
+    for (const word of messageWords) if (summaryWords.has(word)) score += word.length >= 7 ? 4 : 2;
+    for (const tag of row.tags || []) {
+      const normalizedTag = normalizeSearchText(tag);
+      if (normalizedTag && message.includes(normalizedTag)) score += 2;
+    }
+    if (message.includes(row.asset_kind)) score += 1;
+    if (score > bestScore) { best = row; bestScore = score; }
+  }
+  return bestScore >= 3 && best ? { ...serializeAsset(best), blobPath: best.blob_path } : null;
+}
+
+export function createPublicProjectAssetUrl(assetId, env = process.env, lifetimeSeconds = 6 * 60 * 60) {
+  const origin = String(env.APP_BASE_URL || "").replace(/\/$/, "");
+  if (!/^https:\/\//i.test(origin)) throw httpError(503, "The public app address is not configured for asset delivery.");
+  const expiresAt = Math.floor(Date.now() / 1000) + lifetimeSeconds;
+  const unsigned = `${expiresAt}.${assetId}`;
+  const signature = createHmac("sha256", publicAssetSecret(env)).update(unsigned).digest("base64url");
+  return `${origin}/api/delivery-asset?token=${encodeURIComponent(`${unsigned}.${signature}`)}`;
+}
+
+export async function getProjectAssetPreviewUrl(userId, assetId, env = process.env) {
+  const id = requiredText(assetId, "The asset is missing.", 100);
+  await ensureTables(env);
+  const result = await getPool(env).query(
+    "SELECT id, asset_kind, mime_type, blob_path FROM market_agent_project_assets WHERE id = $1 AND user_id = $2 AND status = 'ready'",
+    [id, userId],
+  );
+  const row = result.rows[0];
+  if (!row?.blob_path || !["image", "video"].includes(row.asset_kind)) throw httpError(404, "Preview unavailable.");
+  return { url: createPublicProjectAssetUrl(row.id, env, 15 * 60), kind: row.asset_kind, mimeType: row.mime_type };
+}
+
+export async function servePublicProjectAsset(req, res, env = process.env) {
+  const assetId = verifyPublicAssetToken(req.query?.token, env);
+  await ensureTables(env);
+  const result = await getPool(env).query("SELECT name, blob_path, mime_type FROM market_agent_project_assets WHERE id = $1 AND status = 'ready' LIMIT 1", [assetId]);
+  const row = result.rows[0];
+  if (!row?.blob_path) throw httpError(404, "Asset not found.");
+  const range = String(req.headers?.range || "").trim();
+  const blob = await get(row.blob_path, { access: "private", ...(range ? { headers: { Range: range } } : {}) });
+  if (!blob || ![200, 206].includes(blob.statusCode) || !blob.stream) throw httpError(404, "Asset not found.");
+  const contentRange = blob.headers.get("content-range");
+  res.statusCode = contentRange ? 206 : blob.statusCode;
+  res.setHeader("Content-Type", blob.blob.contentType || row.mime_type || "application/octet-stream");
+  res.setHeader("Content-Disposition", `inline; filename="${safeFilename(row.name)}"`);
+  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Accept-Ranges", blob.headers.get("accept-ranges") || "bytes");
+  res.setHeader("Content-Length", blob.headers.get("content-length") || String(blob.blob.size));
+  if (contentRange) res.setHeader("Content-Range", contentRange);
+  if (req.method === "HEAD") {
+    await blob.stream.cancel().catch(() => undefined);
+    return res.end();
+  }
+  return Readable.fromWeb(blob.stream).pipe(res);
+}
+
 export async function registerUploadedAsset(userId, payload, env = process.env) {
   const projectId = requiredText(payload?.projectId, "Choose a project first.", 200);
   const name = requiredText(payload?.name, "The uploaded asset needs a name.", 250);
@@ -42,6 +118,7 @@ export async function registerUploadedAsset(userId, payload, env = process.env) 
     detail: String(payload?.detail || "").slice(0, 500),
     text: payload?.text,
     images: payload?.images,
+    instruction: String(payload?.instruction || "").slice(0, 4000),
     workspace: payload?.workspace,
   }, env);
 }
@@ -69,6 +146,37 @@ export async function registerLinkedAsset(userId, payload, env = process.env) {
   }, env);
 }
 
+export async function deleteProjectAsset(userId, payload, env = process.env) {
+  const id = requiredText(payload?.id, "Choose an asset first.", 100);
+  await ensureTables(env);
+  const existing = await getPool(env).query(
+    "SELECT project_id, blob_path FROM market_agent_project_assets WHERE id = $1 AND user_id = $2",
+    [id, userId],
+  );
+  const row = existing.rows[0];
+  if (!row) throw httpError(404, "Asset not found.");
+  await getPool(env).query("DELETE FROM market_agent_project_assets WHERE id = $1 AND user_id = $2", [id, userId]);
+  if (row.blob_path) {
+    try { await del(row.blob_path); } catch { /* The library record is removed even if blob cleanup is temporarily unavailable. */ }
+  }
+  return listProjectAssets(userId, row.project_id, env);
+}
+
+export async function updateProjectAsset(userId, payload, env = process.env) {
+  const id = requiredText(payload?.id, "Choose an asset first.", 100);
+  const name = requiredText(payload?.name, "The asset needs a name.", 250);
+  const summary = requiredText(payload?.summary, "Add a short description for the asset.", 2000);
+  await ensureTables(env);
+  const updated = await getPool(env).query(
+    `UPDATE market_agent_project_assets
+      SET name = $3, summary = $4, updated_at = NOW()
+      WHERE id = $1 AND user_id = $2 RETURNING *`,
+    [id, userId, name, summary],
+  );
+  if (!updated.rows[0]) throw httpError(404, "Asset not found.");
+  return { asset: serializeAsset(updated.rows[0]), ...(await listProjectAssets(userId, updated.rows[0].project_id, env)) };
+}
+
 async function createAndAnalyzeAsset(userId, asset, env) {
   await ensureTables(env);
   const id = randomUUID();
@@ -87,6 +195,7 @@ async function createAndAnalyzeAsset(userId, asset, env) {
       sourceUrl: asset.sourceUrl,
       text: asset.text,
       images: asset.images,
+      instruction: asset.instruction,
       workspace: asset.workspace,
     }, env);
     const updated = await getPool(env).query(
@@ -116,7 +225,7 @@ async function createAndAnalyzeAsset(userId, asset, env) {
         [randomUUID(), userId, asset.projectId, proposal.kind, proposal.title, proposal.description, proposal.rationale, relatedAssetIds],
       );
     }
-    return { asset: serializeAsset(updated.rows[0]), ...(await listProjectAssets(userId, asset.projectId, env)) };
+    return { asset: serializeAsset(updated.rows[0]), issueFindings: decision.issueFindings, routing: decision.routing, ...(await listProjectAssets(userId, asset.projectId, env)) };
   } catch (error) {
     const failed = await getPool(env).query(
       `UPDATE market_agent_project_assets SET status = 'failed', error = $3, updated_at = NOW()
@@ -325,7 +434,10 @@ async function embedBrandFonts(document, brand) {
   if (!sources.length) return { regular: fallbackRegular, bold: fallbackBold };
   document.registerFontkit(fontkit);
   const families = Array.isArray(brand?.fontFamilies) ? brand.fontFamilies.map(String) : [];
-  const typography = String(brand?.typography || "");
+  const typographySystems = Array.isArray(brand?.typographySystems)
+    ? brand.typographySystems.map((system) => `${system?.families?.join(", ") || ""}: ${system?.usage || ""}`).join("; ")
+    : "";
+  const typography = `${String(brand?.typography || "")} ${typographySystems}`.trim();
   const displayFamily = selectTypographyFamily(families, typography, /(?:display|headline|heading|title)/i) || families.find((family) => !/inter|sans|serif/i.test(family)) || families[0];
   const bodyFamily = selectTypographyFamily(families, typography, /(?:body|support|copy|text|interface)/i) || families.find((family) => /inter|sans|serif/i.test(family)) || families[1] || families[0];
   const regularSource = selectFontFile(sources, bodyFamily, false);
@@ -443,6 +555,22 @@ function serializeProposal(row) {
 }
 
 function normalizeAssetKind(value) { return ["document", "image", "video"].includes(value) ? value : "document"; }
+function normalizeSearchText(value) { return String(value || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, " ").trim(); }
+function publicAssetSecret(env) {
+  const secret = String(env.CONNECTION_ENCRYPTION_KEY || "");
+  if (secret.length < 32) throw httpError(503, "Secure asset delivery is not configured.");
+  return secret;
+}
+function verifyPublicAssetToken(value, env) {
+  const [expiresValue, assetId, signature] = String(value || "").split(".");
+  const expiresAt = Number(expiresValue);
+  if (!expiresAt || expiresAt < Math.floor(Date.now() / 1000) || !assetId || !signature) throw httpError(410, "This asset preview expired.");
+  const expected = createHmac("sha256", publicAssetSecret(env)).update(`${expiresValue}.${assetId}`).digest("base64url");
+  const receivedBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (receivedBuffer.length !== expectedBuffer.length || !timingSafeEqual(receivedBuffer, expectedBuffer)) throw httpError(403, "This asset link is invalid.");
+  return assetId;
+}
 function cleanText(value) { return String(value || "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/[^\x20-\x7E\xA0-\xFF]/g, "-").replace(/\s+/g, " ").trim(); }
 function safeFilename(value) { return cleanText(value).replace(/[\\/:*?"<>|]/g, "-").slice(0, 160) || "download"; }
 function safeError(error) { return String(error?.message || "Asset processing failed.").slice(0, 500); }

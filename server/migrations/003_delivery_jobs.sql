@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS market_agent_delivery_jobs (
   run_id TEXT NOT NULL,
   channel TEXT NOT NULL CHECK (channel IN ('gmail','linkedin','instagram','tiktok','x')),
   payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-  status TEXT NOT NULL DEFAULT 'awaiting_approval' CHECK (status IN ('awaiting_approval','running','submitted','complete','failed','cancelled')),
+  status TEXT NOT NULL DEFAULT 'awaiting_approval' CHECK (status IN ('awaiting_approval','scheduled','running','submitted','complete','failed','cancelled')),
   external_id TEXT NOT NULL DEFAULT '',
   result JSONB NOT NULL DEFAULT '{}'::jsonb,
   error TEXT NOT NULL DEFAULT '',

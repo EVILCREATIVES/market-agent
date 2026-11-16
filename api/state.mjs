@@ -10,9 +10,9 @@ export default async function handler(req, res) {
     if (req.method === "GET") {
       return res.status(200).json(await loadStateForUser(userId));
     }
-    const state = await saveStateForUser(userId, req.body?.state);
-    return res.status(200).json({ ok: true, state });
+    const saved = await saveStateForUser(userId, req.body?.state, process.env, req.body?.baseRevision);
+    return res.status(200).json({ ok: true, ...saved });
   } catch (error) {
-    return res.status(error.statusCode || 500).json({ error: error.message || "Cloud workspace request failed." });
+    return res.status(error.statusCode || 500).json({ error: error.message || "Cloud workspace request failed.", ...(error.current || {}) });
   }
 }

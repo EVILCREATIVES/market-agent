@@ -23,6 +23,7 @@ import {
   disconnectMailchimp,
   selectMailchimpAudience,
 } from "../server/newsletters.mjs";
+import { createShopifyAuthorizationUrl, disconnectShopify } from "../server/shopify.mjs";
 
 export default async function handler(req, res) {
   if (!["GET", "POST", "DELETE"].includes(req.method)) {
@@ -38,13 +39,16 @@ export default async function handler(req, res) {
       if (provider === "google-gmail") await disconnectGoogleMailbox(userId, projectId);
       else if (provider === "google-analytics") await disconnectAnalytics(userId, projectId);
       else if (provider === "mailchimp") await disconnectMailchimp(userId, projectId);
+      else if (provider === "shopify") await disconnectShopify(userId, projectId);
       else await disconnectSocialConnection(userId, projectId, provider);
       return res.status(200).json({ ok: true, ...(await getConnectionStatus(userId, projectId)) });
     }
     const provider = String(req.body?.provider || "google-gmail");
     const accessEnv = await loadUserApiEnv(userId);
     if (!connectorAllowedForAccess(accessEnv, provider)) {
-      const message = accessEnv.MARKET_AGENT_ACCESS_MODE === "trial"
+      const message = provider === "x"
+        ? "X publishing is available only with the paid managed plan because X charges for every API request."
+        : accessEnv.MARKET_AGENT_ACCESS_MODE === "trial"
         ? "LinkedIn is the only delivery connector included in the 10-day demo. Connect your APIs or activate the managed plan to unlock the others."
         : "Connect your APIs or activate the managed plan before connecting delivery accounts.";
       return res.status(403).json({ error: message });
@@ -57,7 +61,7 @@ export default async function handler(req, res) {
       await selectMailchimpAudience(userId, projectId, req.body.audienceId);
       return res.status(200).json({ ok: true, ...(await getConnectionStatus(userId, projectId)) });
     }
-    if (provider === "reddit" && req.body?.destinationId) {
+    if (["linkedin", "instagram", "reddit"].includes(provider) && req.body?.destinationId) {
       await selectSocialDestination(userId, projectId, provider, req.body.destinationId);
       return res.status(200).json({ ok: true, ...(await getConnectionStatus(userId, projectId)) });
     }
@@ -66,6 +70,8 @@ export default async function handler(req, res) {
       ? await createAnalyticsAuthorizationUrl({ userId, projectId, origin })
       : provider === "mailchimp"
         ? await createMailchimpAuthorizationUrl({ userId, projectId, origin })
+      : provider === "shopify"
+        ? await createShopifyAuthorizationUrl({ userId, projectId, origin, storeDomain: req.body?.storeDomain })
       : SOCIAL_PROVIDERS.includes(provider)
         ? await createSocialAuthorizationUrl({ provider, userId, projectId, origin })
         : await createGoogleAuthorizationUrl({ userId, projectId, appEmail: email, origin });

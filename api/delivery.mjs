@@ -1,5 +1,5 @@
 import { requireUser } from "../server/auth.mjs";
-import { cancelDeliveryJob, executeDeliveryJob, getDeliveryPublishingOptions, listDeliveryJobs, prepareDeliveryJobs } from "../server/delivery.mjs";
+import { approveDeliveryCampaign, cancelDeliveryJob, executeDeliveryJob, getDeliveryPublishingOptions, listDeliveryJobs, pauseDeliveryCampaign, prepareDeliveryJobs, retryDeliveryJob } from "../server/delivery.mjs";
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 import { consumeAiUsage } from "../server/billing.mjs";
 
@@ -16,6 +16,15 @@ export default async function handler(req, res) {
     const userApiEnv = await loadUserApiEnv(userId);
     if (action === "options") return res.status(200).json(await getDeliveryPublishingOptions(userId, String(req.body?.id || "").slice(0, 100)));
     if (action === "execute") return res.status(200).json(await executeDeliveryJob(userId, String(req.body?.id || "").slice(0, 100), userApiEnv, req.body?.approval || {}));
+    if (action === "approve-campaign") {
+      if (!runId) return res.status(400).json({ error: "Choose an approved campaign first." });
+      return res.status(200).json(await approveDeliveryCampaign(userId, projectId, runId, req.body?.items || [], userApiEnv));
+    }
+    if (action === "pause-campaign") {
+      if (!runId) return res.status(400).json({ error: "Choose a scheduled campaign first." });
+      return res.status(200).json(await pauseDeliveryCampaign(userId, projectId, runId));
+    }
+    if (action === "retry") return res.status(200).json(await retryDeliveryJob(userId, String(req.body?.id || "").slice(0, 100)));
     if (action === "cancel") return res.status(200).json(await cancelDeliveryJob(userId, String(req.body?.id || "").slice(0, 100)));
     if (!runId) return res.status(400).json({ error: "Choose approved work first." });
     await consumeAiUsage(userId, "delivery", userApiEnv);

@@ -2,6 +2,8 @@ import { createInternalNeonAuth } from "@neon/auth";
 import { BetterAuthReactAdapter } from "@neon/auth/react/adapters";
 
 export const authUrl = import.meta.env.VITE_NEON_AUTH_URL || "";
+export const canonicalAppOrigin = (import.meta.env.VITE_APP_ORIGIN || "https://www.marketagent.shop").replace(/\/+$/, "");
+export const passwordResetUrl = import.meta.env.VITE_PASSWORD_RESET_URL || `${canonicalAppOrigin}/reset-password`;
 
 const neonAuth = createInternalNeonAuth(authUrl || "http://127.0.0.1:8787/auth", {
   adapter: BetterAuthReactAdapter(),

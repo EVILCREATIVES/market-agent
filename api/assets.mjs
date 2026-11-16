@@ -2,9 +2,11 @@ import { requireUser } from "../server/auth.mjs";
 import {
   approveAssetProposal,
   cancelAssetProposal,
+  deleteProjectAsset,
   listProjectAssets,
   registerLinkedAsset,
   registerUploadedAsset,
+  updateProjectAsset,
 } from "../server/assets.mjs";
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 import { consumeAiUsage } from "../server/billing.mjs";
@@ -18,11 +20,13 @@ export default async function handler(req, res) {
     if (req.method === "GET") return res.status(200).json(await listProjectAssets(userId, req.query?.projectId));
     const action = String(req.body?.action || "");
     const userApiEnv = await loadUserApiEnv(userId);
-    if (action !== "cancel-proposal") await consumeAiUsage(userId, "workspace", userApiEnv);
+    if (!["cancel-proposal", "delete-asset", "update-asset"].includes(action)) await consumeAiUsage(userId, "workspace", userApiEnv);
     if (action === "register-upload") return res.status(200).json(await registerUploadedAsset(userId, req.body, userApiEnv));
     if (action === "add-link") return res.status(200).json(await registerLinkedAsset(userId, req.body, userApiEnv));
     if (action === "approve-proposal") return res.status(200).json(await approveAssetProposal(userId, req.body, userApiEnv));
     if (action === "cancel-proposal") return res.status(200).json(await cancelAssetProposal(userId, req.body, userApiEnv));
+    if (action === "delete-asset") return res.status(200).json(await deleteProjectAsset(userId, req.body, userApiEnv));
+    if (action === "update-asset") return res.status(200).json(await updateProjectAsset(userId, req.body, userApiEnv));
     return res.status(400).json({ error: "Unknown asset action." });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message || "Project asset request failed." });

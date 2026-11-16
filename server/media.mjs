@@ -403,13 +403,14 @@ function buildMediaPrompt(kind, workspace, recentRuns, direction) {
     .join("\n\n")
     .slice(0, 5000);
   const projectName = clean(workspace.name, "the project");
-  const visualDirection = clean(brand.imageryStyle, "polished, distinctive, contemporary campaign photography");
+  const visualDirection = clean(brand.lookAndFeel || brand.imageryStyle, "polished, distinctive, contemporary campaign photography");
   return `Create a final, campaign-ready ${kind} for ${projectName}.
 
-PROJECT
-Product: ${clean(workspace.description, projectName)}
-Audience: ${clean(workspace.audience, "the most relevant audience supported by the project context")}
-Value proposition: ${clean(workspace.valueProposition, "communicate the product's strongest supported benefit")}
+BRAND
+Offer: ${clean(workspace.description, projectName)}
+Segmentation: ${clean(workspace.segmentation || workspace.audience, "the most relevant audience supported by the brand context")}
+Positioning: ${clean(workspace.positioning || workspace.valueProposition, "communicate the brand's strongest supported differentiation")}
+Manifesto: ${clean(workspace.manifesto, "not established")}
 Voice: ${clean(workspace.voice, "clear, confident, and human")}
 
 VISUAL IDENTITY
@@ -420,11 +421,14 @@ Light neutral/background: ${clean(brand.neutralLightColor, "#ffffff")}
 Dark neutral/text: ${clean(brand.neutralDarkColor, "#222222")}
 Typography direction: ${clean(brand.typography, "clean editorial typography")}
 Connected typefaces: ${Array.isArray(brand.fontFamilies) && brand.fontFamilies.length ? brand.fontFamilies.map((family) => clean(family, "")).filter(Boolean).join(", ") : "none connected"}
-Imagery style: ${visualDirection}
+Typography by source and use: ${Array.isArray(brand.typographySystems) && brand.typographySystems.length ? clean(JSON.stringify(brand.typographySystems), "not established") : "not established"}
+Look and feel: ${visualDirection}
+Photography: ${clean(brand.photographyStyle || brand.imageryStyle, "not established")}
+Other imagery: ${clean(brand.imageryStyle, "not established")}
 Brand notes: ${clean(brand.notes, "none")}
 
 CURRENT CAMPAIGN CONTEXT
-${latestContent || "No recent campaign pack exists. Choose the strongest honest visual concept from the product brain."}
+${latestContent || "No recent campaign pack exists. Choose the strongest honest visual concept from the saved Brand."}
 
 CREATIVE DIRECTION
 ${direction || "Choose the strongest concept yourself. Make the subject and benefit immediately understandable in a social feed."}

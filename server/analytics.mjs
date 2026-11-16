@@ -162,6 +162,9 @@ export async function getAnalyticsReport(userId, projectId, range = "28daysAgo",
   const propertyId = cleanPropertyId(credentials.propertyId);
   if (!propertyId) throw analyticsError("Choose a Google Analytics property first.", 409);
   const startDate = /^(7|14|28|30|60|90)daysAgo$/.test(String(range)) ? String(range) : "28daysAgo";
+  const days = Number(startDate.match(/^\d+/)?.[0] || 28);
+  const previousRange = { startDate: `${days * 2 + 1}daysAgo`, endDate: `${days + 1}daysAgo` };
+  const currentRange = { startDate, endDate: "today" };
   const request = async (body) => {
     const response = await fetch(`https://analyticsdata.googleapis.com/v1beta/properties/${encodeURIComponent(propertyId)}:runReport`, {
       method: "POST",
@@ -172,20 +175,137 @@ export async function getAnalyticsReport(userId, projectId, range = "28daysAgo",
     if (!response.ok) throw analyticsError(providerMessage(data, "Google Analytics could not read this property."), response.status === 403 ? 403 : 502);
     return data;
   };
-  const [summary, timeline, channels] = await Promise.all([
-    request({ dateRanges: [{ startDate, endDate: "today" }], metrics: [{ name: "activeUsers" }, { name: "sessions" }, { name: "newUsers" }, { name: "eventCount" }, { name: "keyEvents" }] }),
-    request({ dateRanges: [{ startDate, endDate: "today" }], dimensions: [{ name: "date" }], metrics: [{ name: "activeUsers" }, { name: "sessions" }], orderBys: [{ dimension: { dimensionName: "date" } }] }),
-    request({ dateRanges: [{ startDate, endDate: "today" }], dimensions: [{ name: "sessionDefaultChannelGroup" }], metrics: [{ name: "sessions" }, { name: "activeUsers" }, { name: "keyEvents" }], orderBys: [{ metric: { metricName: "sessions" }, desc: true }], limit: "12" }),
+  const optionalRequest = async (body) => {
+    try { return await request(body); }
+    catch { return { dimensionHeaders: [], metricHeaders: [], rows: [] }; }
+  };
+  const summaryMetrics = [
+    { name: "activeUsers" }, { name: "sessions" }, { name: "newUsers" }, { name: "eventCount" }, { name: "keyEvents" },
+    { name: "engagedSessions" }, { name: "engagementRate" }, { name: "averageSessionDuration" }, { name: "screenPageViews" }, { name: "screenPageViewsPerSession" },
+  ];
+  const campaignDimensions = [{ name: "sessionManualCampaignId" }, { name: "sessionManualCampaignName" }, { name: "sessionManualSource" }, { name: "sessionManualMedium" }];
+  const campaignMetrics = [{ name: "sessions" }, { name: "activeUsers" }, { name: "keyEvents" }];
+  const campaignEventDimensions = [...campaignDimensions, { name: "eventName" }];
+  const [summary, previousSummary, timeline, channels, previousChannels, campaigns, previousCampaigns, campaignEvents, previousCampaignEvents, keyEvents] = await Promise.all([
+    request({ dateRanges: [currentRange], metrics: summaryMetrics }),
+    request({ dateRanges: [previousRange], metrics: summaryMetrics }),
+    request({ dateRanges: [currentRange], dimensions: [{ name: "date" }], metrics: [{ name: "activeUsers" }, { name: "sessions" }], orderBys: [{ dimension: { dimensionName: "date" } }] }),
+    request({ dateRanges: [currentRange], dimensions: [{ name: "sessionDefaultChannelGroup" }], metrics: [{ name: "sessions" }, { name: "activeUsers" }, { name: "keyEvents" }], orderBys: [{ metric: { metricName: "sessions" }, desc: true }], limit: "20" }),
+    request({ dateRanges: [previousRange], dimensions: [{ name: "sessionDefaultChannelGroup" }], metrics: [{ name: "sessions" }, { name: "activeUsers" }, { name: "keyEvents" }], orderBys: [{ metric: { metricName: "sessions" }, desc: true }], limit: "20" }),
+    optionalRequest({ dateRanges: [currentRange], dimensions: campaignDimensions, metrics: campaignMetrics, orderBys: [{ metric: { metricName: "sessions" }, desc: true }], limit: "100" }),
+    optionalRequest({ dateRanges: [previousRange], dimensions: campaignDimensions, metrics: campaignMetrics, orderBys: [{ metric: { metricName: "sessions" }, desc: true }], limit: "100" }),
+    optionalRequest({ dateRanges: [currentRange], dimensions: campaignEventDimensions, metrics: [{ name: "keyEvents" }], orderBys: [{ metric: { metricName: "keyEvents" }, desc: true }], limit: "500" }),
+    optionalRequest({ dateRanges: [previousRange], dimensions: campaignEventDimensions, metrics: [{ name: "keyEvents" }], orderBys: [{ metric: { metricName: "keyEvents" }, desc: true }], limit: "500" }),
+    optionalRequest({ dateRanges: [currentRange], dimensions: [{ name: "eventName" }], metrics: [{ name: "keyEvents" }], orderBys: [{ metric: { metricName: "keyEvents" }, desc: true }], limit: "100" }),
   ]);
+  const [acquisition, landingPages, pages, downloads, outboundLinks, videos, transitions] = await Promise.all([
+    optionalRequest({
+      dateRanges: [currentRange],
+      dimensions: [{ name: "sessionSourceMedium" }, { name: "sessionPrimaryChannelGroup" }, { name: "sessionManualCampaignName" }],
+      metrics: [{ name: "sessions" }, { name: "activeUsers" }, { name: "engagedSessions" }, { name: "engagementRate" }, { name: "averageSessionDuration" }, { name: "keyEvents" }],
+      orderBys: [{ metric: { metricName: "sessions" }, desc: true }], limit: "50",
+    }),
+    optionalRequest({
+      dateRanges: [currentRange], dimensions: [{ name: "landingPagePlusQueryString" }],
+      metrics: [{ name: "sessions" }, { name: "activeUsers" }, { name: "engagedSessions" }, { name: "engagementRate" }, { name: "averageSessionDuration" }, { name: "screenPageViewsPerSession" }, { name: "keyEvents" }],
+      orderBys: [{ metric: { metricName: "sessions" }, desc: true }], limit: "50",
+    }),
+    optionalRequest({
+      dateRanges: [currentRange], dimensions: [{ name: "pagePathPlusQueryString" }, { name: "pageTitle" }],
+      metrics: [{ name: "screenPageViews" }, { name: "activeUsers" }, { name: "userEngagementDuration" }, { name: "scrolledUsers" }, { name: "keyEvents" }],
+      orderBys: [{ metric: { metricName: "screenPageViews" }, desc: true }], limit: "100",
+    }),
+    optionalRequest({
+      dateRanges: [currentRange], dimensions: [{ name: "fileName" }, { name: "linkText" }, { name: "linkUrl" }], metrics: [{ name: "eventCount" }, { name: "activeUsers" }],
+      dimensionFilter: exactDimension("eventName", "file_download"), orderBys: [{ metric: { metricName: "eventCount" }, desc: true }], limit: "100",
+    }),
+    optionalRequest({
+      dateRanges: [currentRange], dimensions: [{ name: "linkDomain" }, { name: "linkText" }, { name: "linkUrl" }], metrics: [{ name: "eventCount" }, { name: "activeUsers" }],
+      dimensionFilter: { andGroup: { expressions: [exactDimension("eventName", "click"), exactDimension("outbound", "true")] } },
+      orderBys: [{ metric: { metricName: "eventCount" }, desc: true }], limit: "100",
+    }),
+    optionalRequest({
+      dateRanges: [currentRange], dimensions: [{ name: "eventName" }, { name: "videoTitle" }, { name: "videoUrl" }], metrics: [{ name: "eventCount" }, { name: "activeUsers" }],
+      dimensionFilter: inListDimension("eventName", ["video_start", "video_progress", "video_complete"]),
+      orderBys: [{ metric: { metricName: "eventCount" }, desc: true }], limit: "100",
+    }),
+    optionalRequest({
+      dateRanges: [currentRange], dimensions: [{ name: "pageReferrer" }, { name: "pageLocation" }], metrics: [{ name: "screenPageViews" }, { name: "activeUsers" }],
+      dimensionFilter: exactDimension("eventName", "page_view"), orderBys: [{ metric: { metricName: "screenPageViews" }, desc: true }], limit: "250",
+    }),
+  ]);
+  const totals = reportRows(summary)[0] || {};
+  const previousTotals = reportRows(previousSummary)[0] || {};
+  const metricNames = summaryMetrics.map((metric) => metric.name);
   return {
     propertyId,
     propertyName: normalizeProperties(credentials.properties).find((item) => item.id === propertyId)?.name || propertyId,
     range: startDate,
-    totals: reportRows(summary)[0] || {},
+    totals,
+    previousTotals,
+    changes: Object.fromEntries(metricNames.map((name) => [name, metricChange(totals[name], previousTotals[name])])),
     timeline: reportRows(timeline),
     channels: reportRows(channels),
+    previousChannels: reportRows(previousChannels),
+    campaigns: reportRows(campaigns).filter(isAttributedCampaignRow),
+    previousCampaigns: reportRows(previousCampaigns).filter(isAttributedCampaignRow),
+    campaignEvents: reportRows(campaignEvents).filter(isAttributedCampaignRow),
+    previousCampaignEvents: reportRows(previousCampaignEvents).filter(isAttributedCampaignRow),
+    keyEvents: reportRows(keyEvents).filter((row) => Number(row.keyEvents || 0) > 0),
+    acquisition: reportRows(acquisition),
+    landingPages: reportRows(landingPages),
+    pages: reportRows(pages),
+    downloads: reportRows(downloads).filter(hasMeaningfulLink),
+    outboundLinks: reportRows(outboundLinks).filter(hasMeaningfulLink),
+    videos: reportRows(videos).filter((row) => meaningfulValue(row.videoTitle) || meaningfulValue(row.videoUrl)),
+    transitions: reportRows(transitions).filter(isInternalTransition).slice(0, 100),
     fetchedAt: new Date().toISOString(),
   };
+}
+
+function exactDimension(fieldName, value) {
+  return { filter: { fieldName, stringFilter: { matchType: "EXACT", value, caseSensitive: false } } };
+}
+
+function inListDimension(fieldName, values) {
+  return { filter: { fieldName, inListFilter: { values, caseSensitive: false } } };
+}
+
+function meaningfulValue(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return Boolean(normalized && !["(not set)", "(not provided)", "(none)"].includes(normalized));
+}
+
+function hasMeaningfulLink(row) {
+  return meaningfulValue(row.linkUrl) || meaningfulValue(row.fileName) || meaningfulValue(row.linkText);
+}
+
+function isInternalTransition(row) {
+  try {
+    const from = new URL(String(row.pageReferrer || ""));
+    const to = new URL(String(row.pageLocation || ""));
+    return from.hostname && from.hostname === to.hostname && `${from.pathname}${from.search}` !== `${to.pathname}${to.search}`;
+  } catch { return false; }
+}
+
+function isAttributedCampaignRow(row) {
+  const name = String(row.sessionManualCampaignName || "").trim().toLowerCase();
+  const id = String(row.sessionManualCampaignId || "").trim().toLowerCase();
+  return !["", "(not set)", "(direct)"].includes(name) || !["", "(not set)"].includes(id);
+}
+
+function metricChange(currentValue, previousValue) {
+  const current = finiteMetric(currentValue);
+  const previous = finiteMetric(previousValue);
+  if (current == null || previous == null) return { current, previous, absolute: null, percent: null };
+  const absolute = current - previous;
+  return { current, previous, absolute, percent: previous === 0 ? null : (absolute / previous) * 100 };
+}
+
+function finiteMetric(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 async function verifyAnalyticsRead(userId, projectId, propertyId, env, suppliedCredentials) {

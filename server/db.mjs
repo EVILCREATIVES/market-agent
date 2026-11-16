@@ -1,4 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { attachDatabasePool } from "@vercel/functions";
@@ -37,30 +38,78 @@ export function defaultState() {
 }
 
 export async function loadStateForUser(userId, env = process.env) {
-  const result = await getPool(env).query(
-    "SELECT state FROM market_agent_states WHERE user_id = $1",
-    [userId],
-  );
-  if (!result.rows[0]) return { state: defaultState(), isEmpty: true };
-  return { state: normalizeState(result.rows[0].state), isEmpty: false };
+  const database = getPool(env);
+  const [result, runRows, scheduleRows, messageRows] = await Promise.all([
+    database.query("SELECT state, revision FROM market_agent_states WHERE user_id = $1", [userId]),
+    database.query("SELECT data FROM market_agent_runs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 250", [userId]).catch(() => ({ rows: [] })),
+    database.query("SELECT project_id, data FROM market_agent_schedules WHERE user_id = $1", [userId]).catch(() => ({ rows: [] })),
+    database.query("SELECT project_id, data FROM market_agent_project_messages WHERE user_id = $1 ORDER BY created_at ASC", [userId]).catch(() => ({ rows: [] })),
+  ]);
+  if (!result.rows[0]) return { state: defaultState(), isEmpty: true, revision: 0 };
+  const state = normalizeState(result.rows[0].state);
+  const runs = new Map(state.runs.map((run) => [run.id, run]));
+  for (const row of runRows.rows) if (row.data?.id) runs.set(row.data.id, row.data);
+  state.runs = Array.from(runs.values()).sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || ""))).slice(0, 250);
+  for (const row of scheduleRows.rows) state.schedules[row.project_id] = { ...defaultSchedule(), ...(row.data || {}) };
+  const messages = new Map();
+  for (const row of messageRows.rows) {
+    if (!messages.has(row.project_id)) messages.set(row.project_id, []);
+    messages.get(row.project_id).push(row.data);
+  }
+  for (const project of state.projects) if (messages.has(project.id)) project.chatMessages = messages.get(project.id).slice(-80);
+  return { state, isEmpty: false, revision: Number(result.rows[0].revision || 0) };
 }
 
-export async function saveStateForUser(userId, state, env = process.env) {
+export async function saveStateForUser(userId, state, env = process.env, expectedRevision = null) {
   const normalized = normalizeState(state);
-  await getPool(env).query(
-    `INSERT INTO market_agent_states (user_id, state)
-     VALUES ($1, $2::jsonb)
+  const revision = Number.isInteger(expectedRevision) && expectedRevision >= 0 ? expectedRevision : null;
+  const result = await getPool(env).query(
+    `INSERT INTO market_agent_states (user_id, state, revision)
+     VALUES ($1, $2::jsonb, 1)
      ON CONFLICT (user_id) DO UPDATE
-     SET state = EXCLUDED.state, updated_at = NOW()`,
-    [userId, JSON.stringify(normalized)],
+     SET state = EXCLUDED.state, revision = market_agent_states.revision + 1, updated_at = NOW()
+     WHERE $3::integer IS NULL OR market_agent_states.revision = $3::integer
+     RETURNING state, revision`,
+    [userId, JSON.stringify(normalized), revision],
   );
-  return normalized;
+  if (!result.rows[0]) {
+    const current = await loadStateForUser(userId, env);
+    const error = new Error("This workspace changed in another tab or background task. The newer work was preserved.");
+    error.statusCode = 409;
+    error.current = current;
+    throw error;
+  }
+  await persistNormalizedState(userId, normalized, env);
+  return { state: normalizeState(result.rows[0].state), revision: Number(result.rows[0].revision || 0) };
+}
+
+async function persistNormalizedState(userId, state, env) {
+  const database = getPool(env);
+  const writes = [];
+  for (const [projectId, schedule] of Object.entries(state.schedules || {})) writes.push(database.query(
+    `INSERT INTO market_agent_schedules (user_id, project_id, data, updated_at) VALUES ($1,$2,$3::jsonb,NOW())
+      ON CONFLICT (user_id, project_id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+    [userId, projectId, JSON.stringify(schedule)],
+  ));
+  for (const project of state.projects || []) for (const message of project.chatMessages || []) if (message?.id) writes.push(database.query(
+    `INSERT INTO market_agent_project_messages (user_id, project_id, id, data, created_at)
+      VALUES ($1,$2,$3,$4::jsonb,$5::timestamptz) ON CONFLICT (user_id, id) DO UPDATE SET data = EXCLUDED.data`,
+    [userId, project.id, message.id, JSON.stringify(message), message.createdAt || new Date().toISOString()],
+  ));
+  await Promise.all(writes);
 }
 
 export async function appendRunForUser(userId, run, env = process.env) {
   const initial = defaultState();
   initial.runs = [run];
-  const result = await getPool(env).query(
+  const database = getPool(env);
+  await database.query(
+    `INSERT INTO market_agent_runs (user_id, id, project_id, data, created_at)
+      VALUES ($1,$2,$3,$4::jsonb,$5::timestamptz)
+      ON CONFLICT (user_id, id) DO UPDATE SET data = EXCLUDED.data`,
+    [userId, run.id, run.projectId || "project-default", JSON.stringify(run), run.createdAt || new Date().toISOString()],
+  );
+  const result = await database.query(
     `INSERT INTO market_agent_states (user_id, state)
      VALUES ($1, $2::jsonb)
      ON CONFLICT (user_id) DO UPDATE
@@ -69,23 +118,45 @@ export async function appendRunForUser(userId, run, env = process.env) {
        '{runs}',
        jsonb_build_array($3::jsonb) || COALESCE(market_agent_states.state->'runs', '[]'::jsonb),
        true
-     ), updated_at = NOW()
-     RETURNING state`,
+     ), revision = market_agent_states.revision + 1, updated_at = NOW()
+     RETURNING state, revision`,
     [userId, JSON.stringify(initial), JSON.stringify(run)],
   );
   return normalizeState(result.rows[0].state);
+}
+
+export async function markScheduleRunForUser(userId, projectId, ranAt, env = process.env) {
+  const database = getPool(env);
+  await database.query(
+    `UPDATE market_agent_states
+      SET state = jsonb_set(state, ARRAY['schedules', $2, 'lastRunAt'], to_jsonb($3::text), true),
+          revision = revision + 1,
+          updated_at = NOW()
+      WHERE user_id = $1`,
+    [userId, projectId, ranAt],
+  );
+  await database.query(
+    `INSERT INTO market_agent_schedules (user_id, project_id, data, updated_at)
+      SELECT $1, $2, state->'schedules'->$2, NOW() FROM market_agent_states WHERE user_id = $1
+      ON CONFLICT (user_id, project_id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+    [userId, projectId],
+  );
 }
 
 export async function enforceRunBudget(userId, mode, env = process.env) {
   const { state } = await loadStateForUser(userId, env);
   const today = new Date().toISOString().slice(0, 10);
   const todaysRuns = state.runs.filter((run) => String(run.createdAt || "").slice(0, 10) === today);
-  const panelRuns = todaysRuns.filter((run) => String(run.model || "").includes("panel"));
+  const panelRuns = todaysRuns.filter(isPanelRun);
   if (todaysRuns.length >= 25 || (mode === "panel" && panelRuns.length >= 5)) {
     const error = new Error(mode === "panel" ? "The five-per-day balanced panel limit has been reached." : "The daily agent limit has been reached.");
     error.statusCode = 429;
     throw error;
   }
+}
+
+export function isPanelRun(run) {
+  return run?.executionMode === "panel" || /(?:panel|three-way strategy review|collaborative review)/i.test(String(run?.model || ""));
 }
 
 export async function listScheduledStates(env = process.env) {
@@ -105,9 +176,36 @@ export async function runMigrations(env = process.env) {
   const migrationDirectory = fileURLToPath(new URL("./migrations/", import.meta.url));
   const files = (await readdir(migrationDirectory)).filter((name) => name.endsWith(".sql")).sort();
   const migrationEnv = { ...env, DATABASE_URL: env.DATABASE_URL_UNPOOLED || env.DATABASE_URL };
-  for (const file of files) {
-    const sql = await readFile(`${migrationDirectory}/${file}`, "utf8");
-    await getPool(migrationEnv).query(sql);
+  const database = getPool(migrationEnv);
+  await database.query(`CREATE TABLE IF NOT EXISTS market_agent_schema_migrations (
+    filename TEXT PRIMARY KEY,
+    checksum TEXT NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`);
+  const client = await database.connect();
+  try {
+    await client.query("SELECT pg_advisory_lock(hashtext('market-agent-schema-migrations'))");
+    for (const file of files) {
+      const sql = await readFile(`${migrationDirectory}/${file}`, "utf8");
+      const checksum = createHash("sha256").update(sql).digest("hex");
+      const existing = await client.query("SELECT checksum FROM market_agent_schema_migrations WHERE filename = $1", [file]);
+      if (existing.rows[0]) {
+        if (existing.rows[0].checksum !== checksum) throw new Error(`Applied migration ${file} was modified. Add a new migration instead.`);
+        continue;
+      }
+      await client.query("BEGIN");
+      try {
+        await client.query(sql);
+        await client.query("INSERT INTO market_agent_schema_migrations (filename, checksum) VALUES ($1, $2)", [file, checksum]);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+    }
+  } finally {
+    await client.query("SELECT pg_advisory_unlock(hashtext('market-agent-schema-migrations'))").catch(() => undefined);
+    client.release();
   }
 }
 
@@ -143,11 +241,16 @@ function defaultProject(name = "New project", id = "project-default") {
     name,
     website: "",
     description: "",
+    segmentation: "",
+    positioning: "",
+    manifesto: "",
     audience: "",
     valueProposition: "",
     voice: "",
     guardrails: "",
     notes: "",
+    issueNotes: { high: "", attention: "", context: "" },
+    acceptedIssueNotes: [],
     sourcePriority: "best-evidence",
     sourceGuidance: "",
     sources: [],
@@ -161,6 +264,7 @@ function defaultProject(name = "New project", id = "project-default") {
     sourceWarnings: [],
     protectedFields: [],
     chatMessages: [],
+    growth: defaultGrowthPlan(),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -171,6 +275,8 @@ function defaultSchedule() {
     action: "research",
     prompt: "Create a concise daily market pulse with notable changes, audience signals, and recommended actions.",
     useWeb: true,
+    autonomyLevel: "draft",
+    trustedChannels: [],
     lastRunAt: null,
   };
 }
@@ -182,10 +288,15 @@ function normalizeProject(value, index) {
     ...defaultProject(index === 0 ? "New project" : `Project ${index + 1}`, id),
     ...project,
     id,
+    segmentation: typeof project.segmentation === "string" ? project.segmentation : project.audience || "",
+    positioning: typeof project.positioning === "string" ? project.positioning : project.valueProposition || "",
+    manifesto: typeof project.manifesto === "string" ? project.manifesto : "",
+    issueNotes: normalizeIssueNotes(project.issueNotes, project.notes),
+    acceptedIssueNotes: Array.isArray(project.acceptedIssueNotes) ? project.acceptedIssueNotes.map(String).slice(0, 100) : [],
     sources: Array.isArray(project.sources) ? project.sources : [],
     materials: Array.isArray(project.materials) ? project.materials : [],
     sourceMedia: Array.isArray(project.sourceMedia) ? project.sourceMedia.slice(0, 40) : [],
-    brand: { ...defaultBrand(), ...(project.brand || {}) },
+    brand: { ...defaultBrand(), ...(project.brand || {}), typographySystems: Array.isArray(project.brand?.typographySystems) ? project.brand.typographySystems.slice(0, 12) : [], sourceTypographySystems: Array.isArray(project.brand?.sourceTypographySystems) ? project.brand.sourceTypographySystems.slice(0, 12) : [] },
     reviewSummary: typeof project.reviewSummary === "string" ? project.reviewSummary : "",
     openQuestions: Array.isArray(project.openQuestions) ? project.openQuestions : [],
     questionAnswers: project.questionAnswers && typeof project.questionAnswers === "object" ? project.questionAnswers : {},
@@ -193,7 +304,43 @@ function normalizeProject(value, index) {
     sourceWarnings: Array.isArray(project.sourceWarnings) ? project.sourceWarnings : [],
     protectedFields: Array.isArray(project.protectedFields) ? project.protectedFields.map(String).slice(0, 30) : [],
     chatMessages: Array.isArray(project.chatMessages) ? project.chatMessages.slice(-80) : [],
+    growth: normalizeGrowthPlan(project.growth),
   };
+}
+
+function defaultGrowthPlan() {
+  return { objective: "", primaryConversion: "", analyticsEvent: "", selectedBy: "assistant", rationale: "", targetValue: 0, targetPeriodDays: 30 };
+}
+
+function normalizeGrowthPlan(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const objectives = new Set(["visibility", "leads", "sales", "audience", "newsletter"]);
+  const conversions = new Set(["contact_form", "demo_request", "newsletter_signup", "purchase", "reply", "custom"]);
+  return {
+    ...defaultGrowthPlan(),
+    ...source,
+    objective: objectives.has(String(source.objective || "")) ? String(source.objective) : "",
+    primaryConversion: conversions.has(String(source.primaryConversion || "")) ? String(source.primaryConversion) : "",
+    analyticsEvent: String(source.analyticsEvent || "").trim().slice(0, 120),
+    selectedBy: source.selectedBy === "user" ? "user" : "assistant",
+    rationale: String(source.rationale || "").trim().slice(0, 600),
+    targetValue: Math.max(0, Number(source.targetValue || 0)),
+    targetPeriodDays: [7, 14, 30, 60, 90].includes(Number(source.targetPeriodDays)) ? Number(source.targetPeriodDays) : 30,
+  };
+}
+
+function normalizeIssueNotes(value, notes) {
+  if (value && typeof value === "object") return { high: String(value.high || ""), attention: String(value.attention || ""), context: String(value.context || "") };
+  const result = { high: "", attention: "", context: "" };
+  for (const section of String(notes || "").split(/\n\s*\n/).map((item) => item.trim()).filter(Boolean)) {
+    const normalized = section.toLowerCase();
+    const bucket = /\[high relevance\]|must not|do not use|unsupported|unverified|not independent evidence|legal|privacy|consent|compliance|prohibited|false|incorrect|material risk|claim/.test(normalized)
+      ? "high"
+      : /\[context|no issue|confirmed|verified|approved/.test(normalized) ? "context" : "attention";
+    const clean = section.replace(/^\[(?:high relevance|needs attention|context[^\]]*)\]\s*/i, "");
+    result[bucket] = [result[bucket], clean].filter(Boolean).join("\n\n");
+  }
+  return result;
 }
 
 function defaultBrand() {
@@ -208,6 +355,10 @@ function defaultBrand() {
     typography: "",
     fontFamilies: [],
     fontSources: [],
+    typographySystems: [],
+    sourceTypographySystems: [],
+    lookAndFeel: "",
+    photographyStyle: "",
     imageryStyle: "",
     notes: "",
   };

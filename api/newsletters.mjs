@@ -4,8 +4,13 @@ import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 import {
   createNewsletterDraft,
   deliverNewsletter,
+  getContactImportDetails,
   getNewsletterDashboard,
+  getSubscriberDetails,
+  importContactList,
   registerSubscriber,
+  stageContactImport,
+  updateNewsletterSettings,
   updateNewsletterDraft,
 } from "../server/newsletters.mjs";
 
@@ -17,12 +22,30 @@ export default async function handler(req, res) {
     const { userId } = await requireUser(req);
     const projectId = String(req.query?.projectId || req.body?.projectId || "project-default").trim().slice(0, 200);
     const accessEnv = await loadUserApiEnv(userId);
-    if (!connectorAllowedForAccess(accessEnv, "mailchimp")) {
+    const action = String(req.body?.action || "");
+    if (["register-subscriber", "import-contact-list", "send", "schedule"].includes(action) && !connectorAllowedForAccess(accessEnv, "mailchimp")) {
       return res.status(403).json({ error: "Newsletter delivery is available after connecting your APIs or activating the managed plan." });
     }
     if (req.method === "GET") return res.status(200).json(await getNewsletterDashboard(userId, projectId));
-    const action = String(req.body?.action || "");
     if (action === "register-subscriber") return res.status(200).json(await registerSubscriber(userId, projectId, req.body));
+    if (action === "contact-import-details") return res.status(200).json(await getContactImportDetails(userId, projectId, req.body));
+    if (action === "subscriber-details") return res.status(200).json(await getSubscriberDetails(userId, projectId, req.body));
+    if (action === "update-welcome-settings") return res.status(200).json(await updateNewsletterSettings(userId, projectId, req.body));
+    if (action === "stage-contact-import") {
+      const staged = await stageContactImport(userId, projectId, req.body);
+      let draft = null;
+      let draftError = "";
+      if (req.body?.createDraft) {
+        try {
+          await consumeAiUsage(userId, "agent", accessEnv);
+          ({ draft } = await createNewsletterDraft(userId, projectId, req.body?.direction, accessEnv));
+        } catch (error) {
+          draftError = String(error?.message || "The contact list was saved, but the newsletter draft could not be created.");
+        }
+      }
+      return res.status(200).json({ ...staged, draft, draftError });
+    }
+    if (action === "import-contact-list") return res.status(200).json(await importContactList(userId, projectId, req.body));
     if (action === "create-draft") {
       await consumeAiUsage(userId, "agent", accessEnv);
       return res.status(200).json(await createNewsletterDraft(userId, projectId, req.body?.direction, accessEnv));
