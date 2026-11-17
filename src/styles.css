@@ -2123,6 +2123,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-optin-invitation > header h3 { margin: 5px 0 4px; font-size: 18px; }
 .op-optin-invitation > header p { margin: 0; color: #6f6a64; font-size: 12px; line-height: 1.5; }
 .op-optin-invitation > header > em { border-radius: 999px; background: #eaf7f0; color: #2f7052; padding: 7px 10px; font-size: 10px; font-style: normal; font-weight: 750; white-space: nowrap; }
+.op-optin-invitation__strategy { display: grid; grid-template-columns: minmax(210px,.65fr) minmax(160px,.45fr) minmax(280px,1fr); gap: 10px; padding: 13px; border: 1px solid #ded8eb; border-radius: 10px; background: #f8f6fc; }
+.op-optin-invitation__strategy label { display: flex; flex-direction: column; gap: 6px; color: #615c56; font-size: 11px; font-weight: 750; }
+.op-optin-invitation__strategy input, .op-optin-invitation__strategy select { width: 100%; min-height: 40px; border: 1px solid #d8d2e4; border-radius: 9px; background: #fff; color: #292722; padding: 9px 10px; font: inherit; font-size: 12px; }
 .op-optin-invitation__content { display: grid; grid-template-columns: minmax(0,1.1fr) minmax(280px,.9fr); gap: 14px; }
 .op-optin-invitation__editor { display: flex; flex-direction: column; gap: 10px; }
 .op-optin-invitation__editor label { display: flex; flex-direction: column; gap: 6px; color: #615c56; font-size: 11px; font-weight: 750; }
@@ -2847,7 +2850,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .op-page { padding: 28px 18px 64px; }
   .op-newsletter-metrics { grid-template-columns: 1fr 1fr; }
   .op-optin-builder, .op-optin-active { grid-template-columns: 1fr; }
-  .op-optin-invitation, .op-optin-invitation__content, .op-optin-invitation__approval { grid-column: auto; grid-template-columns: 1fr; }
+  .op-optin-invitation, .op-optin-invitation__strategy, .op-optin-invitation__content, .op-optin-invitation__approval { grid-column: auto; grid-template-columns: 1fr; }
   .op-optin-invitation__status { grid-template-columns: repeat(2,1fr); }
   .op-optin-funnel { grid-column: auto; }
 }

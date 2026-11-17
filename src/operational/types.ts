@@ -478,6 +478,9 @@ export interface ProspectConversionCampaign {
   promotionText: string;
   invitationSubject: string;
   invitationBody: string;
+  invitationStrategy: "project_first" | "direct_signup" | "custom";
+  invitationCtaLabel: string;
+  invitationUrl: string;
   publicUrl: string;
   invitation: {
     total: number;

@@ -195,7 +195,7 @@ export async function generateProspectConversionCampaign(payload, env = process.
   const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
   const direction = String(payload?.direction || "").trim().slice(0, 6_000);
   const prospectCount = Math.max(0, Number(payload?.prospectCount || 0));
-  const prompt = `Create a finished newsletter invitation campaign for this project. It needs both a public opt-in landing page and the one-to-one invitation email that sends relevant prospects to that page.
+  const prompt = `Create a finished prospect invitation campaign for this project. It includes a public opt-in page as an available subscription path, but the email's first action must follow the project's actual marketing goal rather than automatically asking for a subscription.
 
 PROJECT CONTEXT
 ${buildContext(workspace)}
@@ -206,7 +206,7 @@ ${direction || "Choose the strongest honest reason for this project's relevant a
 STAGED PROSPECT CONTEXT
 ${prospectCount} prospect contact${prospectCount === 1 ? " is" : "s are"} staged for a single direct invitation. They are not subscribers and must never be described as subscribers. Market Agent will send one individual message per address only after the user reviews and approves the campaign; every message includes an opt-out, and recipients who opt out are suppressed.
 
-Write concise, finished copy. Give people a specific, useful reason to subscribe based only on supplied project facts. Do not promise unavailable content, customers, results, discounts, pilots, or access. Do not mention the staged contact list, internal systems, or drafting process. The invitation must not imply an existing relationship or claim that the recipient already subscribed. It should read like a respectful, useful introduction—not a newsletter issue. Use {{first_name}} only where a natural greeting helps, and use {{company}} only where the sentence remains correct if it is empty. The invitation body must contain {{signup_url}} exactly once as the clear action. The privacy note should plainly say that confirmation is required and the subscriber may unsubscribe at any time.`;
+Choose invitationStrategy deliberately. Use "project_first" when the strongest action is to visit a website, experience a demo, review work, request a demo, or understand the offer before subscribing. Use "direct_signup" only when the newsletter itself is the primary offer. Give invitationCtaLabel a specific action such as "Visit the demo", "View the work", "Request a demo", or "Subscribe". Write concise, finished copy grounded only in supplied facts. Do not promise unavailable content, customers, results, discounts, pilots, or access. Do not mention the staged contact list, internal systems, or drafting process. The invitation must not imply an existing relationship or claim that the recipient already subscribed. It should read like a respectful, useful introduction—not a newsletter issue. Use {{first_name}} only where a natural greeting helps, and use {{company}} only where the sentence remains correct if it is empty. The invitation body must contain {{invitation_url}} exactly once as the clear action. If the chosen strategy is project_first, subscription may be presented as an optional next step available at the destination—not the main request. The privacy note should plainly say that confirmation is required and the subscriber may unsubscribe at any time.`;
   return generateStructuredObject({
     env,
     name: "prospect_conversion_campaign",
@@ -892,7 +892,7 @@ function prospectConversionSchema() {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["eyebrow", "title", "description", "ctaLabel", "privacyNote", "promotionText", "invitationSubject", "invitationBody"],
+    required: ["eyebrow", "title", "description", "ctaLabel", "privacyNote", "promotionText", "invitationSubject", "invitationBody", "invitationStrategy", "invitationCtaLabel"],
     properties: {
       eyebrow: { type: "string" },
       title: { type: "string" },
@@ -902,6 +902,8 @@ function prospectConversionSchema() {
       promotionText: { type: "string" },
       invitationSubject: { type: "string" },
       invitationBody: { type: "string" },
+      invitationStrategy: { type: "string", enum: ["project_first", "direct_signup"] },
+      invitationCtaLabel: { type: "string" },
     },
   };
 }

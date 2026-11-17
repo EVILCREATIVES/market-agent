@@ -22,10 +22,10 @@ test("direct delivery accepts one reviewed recipient and rejects additions", () 
   assert.equal(validApprovedRecipient("invented@example.com", run), "");
 });
 
-test("invitation templates personalize one recipient and keep the approved signup destination", () => {
+test("invitation templates personalize one recipient and keep the approved project destination", () => {
   assert.equal(
-    personalizeInvitationTemplate("Hi {{first_name}},\n\nUpdates for {{company}}: {{signup_url}}", { firstName: "Alex", company: "Venue One" }, "https://marketagent.shop/join/example"),
-    "Hi Alex,\n\nUpdates for Venue One: https://marketagent.shop/join/example",
+    personalizeInvitationTemplate("Hi {{first_name}},\n\nUpdates for {{company}}: {{invitation_url}}", { firstName: "Alex", company: "Venue One" }, "https://visit-lumen.com/"),
+    "Hi Alex,\n\nUpdates for Venue One: https://visit-lumen.com/",
   );
   assert.equal(personalizeInvitationTemplate("Hi {{first_name}}", {}, ""), "Hi there");
 });

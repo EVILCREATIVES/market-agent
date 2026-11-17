@@ -52,6 +52,7 @@ export function personalizeInvitationTemplate(template, recipient = {}, signupUr
   return String(template || "")
     .replaceAll("{{first_name}}", firstName || "there")
     .replaceAll("{{company}}", company)
+    .replaceAll("{{invitation_url}}", String(signupUrl || "").trim())
     .replaceAll("{{signup_url}}", String(signupUrl || "").trim())
     .replace(/[ \t]+\n/g, "\n")
     .replace(/ {2,}/g, " ")
@@ -65,11 +66,12 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
   if (!connections.gmail?.canSend) throw deliveryError("Connect this project's mailbox and approve sending access before scheduling invitations.", 409);
   if (!campaign?.id || campaign?.status !== "active") throw deliveryError("Publish the signup page before scheduling its invitation email.", 409);
   const signupUrl = String(campaign.publicUrl || "").trim();
-  if (!/^https:\/\//i.test(signupUrl)) throw deliveryError("The signup page needs a public HTTPS address before invitations can be scheduled.", 409);
+  const invitationUrl = String(input?.invitationUrl || campaign.invitationUrl || signupUrl).trim();
+  if (!/^https:\/\//i.test(invitationUrl)) throw deliveryError("The invitation needs a public HTTPS destination before it can be scheduled.", 409);
   const subjectTemplate = String(input?.subject || campaign.invitationSubject || "").replace(/[\r\n]+/g, " ").trim().slice(0, 300);
   let bodyTemplate = String(input?.body || campaign.invitationBody || "").trim().slice(0, 20_000);
   if (!subjectTemplate || !bodyTemplate) throw deliveryError("Review the invitation subject and message before scheduling it.", 400);
-  if (!bodyTemplate.includes("{{signup_url}}") && !bodyTemplate.includes(signupUrl)) bodyTemplate = `${bodyTemplate}\n\nSubscribe here: {{signup_url}}`;
+  if (!bodyTemplate.includes("{{invitation_url}}") && !bodyTemplate.includes("{{signup_url}}") && !bodyTemplate.includes(invitationUrl)) bodyTemplate = `${bodyTemplate}\n\n${String(input?.invitationCtaLabel || campaign.invitationCtaLabel || "Learn more")}: {{invitation_url}}`;
   const requestedStart = new Date(String(input?.startAt || ""));
   if (!Number.isFinite(requestedStart.getTime()) || requestedStart.getTime() < Date.now() + 10 * 60_000) throw deliveryError("Choose an invitation start time at least ten minutes from now.", 400);
   if (requestedStart.getTime() > Date.now() + 370 * 24 * 60 * 60_000) throw deliveryError("Choose an invitation start time within the next year.", 400);
@@ -99,14 +101,16 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
       const payload = {
         recipient: recipient.email,
         recipientName: [recipient.firstName, recipient.lastName].filter(Boolean).join(" "),
-        subject: personalizeInvitationTemplate(subjectTemplate, recipient, signupUrl),
-        text: personalizeInvitationTemplate(bodyTemplate, recipient, signupUrl),
+        subject: personalizeInvitationTemplate(subjectTemplate, recipient, invitationUrl),
+        text: personalizeInvitationTemplate(bodyTemplate, recipient, invitationUrl),
         scheduledAt,
         campaignApprovalId: approvalId,
         campaignId: campaign.id,
-        campaignType: "subscriber_invitation",
+        campaignType: "prospect_invitation",
         signupUrl,
-        rationale: "One-time invitation to the approved newsletter signup page.",
+        invitationUrl,
+        invitationStrategy: campaign.invitationStrategy || "custom",
+        rationale: "One-time invitation to the approved project destination.",
       };
       const idempotencyKey = createHash("sha256").update(`${userId}:${projectId}:${runId}:${recipient.email}`).digest("hex");
       const result = await client.query(
