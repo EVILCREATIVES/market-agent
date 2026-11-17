@@ -164,6 +164,7 @@ export async function getNewsletterDashboard(userId, projectId, env = process.en
   let members = { members: [], total_items: 0 };
   let campaigns = { campaigns: [] };
   let remoteCampaigns = [];
+  let audienceSignupUrl = "";
   try {
     const { credentials } = await connectionCredentials(userId, projectId, env);
     const audienceId = requireAudience(credentials);
@@ -173,6 +174,7 @@ export async function getNewsletterDashboard(userId, projectId, env = process.en
       mailchimpRequest(credentials, `/campaigns?list_id=${encodeURIComponent(audienceId)}&count=25&sort_field=create_time&sort_dir=DESC`),
     ]);
     await syncSubscriberRegistry(userId, projectId, members.members || [], env);
+    audienceSignupUrl = await resolveMailchimpSignupUrl(credentials, audienceId, audience, false);
     try { await ensureMailchimpWebhook(userId, projectId, credentials, audienceId, env); } catch { /* A manual refresh still keeps subscriber states synchronized. */ }
     remoteCampaigns = await Promise.all((campaigns.campaigns || []).slice(0, 25).map(async (campaign) => {
       let report = null;
@@ -218,7 +220,7 @@ export async function getNewsletterDashboard(userId, projectId, env = process.en
       cleanedCount: Number(audience.stats?.cleaned_count || 0),
       openRate: Number(audience.stats?.open_rate || 0),
       clickRate: Number(audience.stats?.click_rate || 0),
-      signupUrl: safeMailchimpSignupUrl(audience.subscribe_url_short || audience.subscribe_url_long),
+      signupUrl: audienceSignupUrl || signupFormUrlFromResponses(audience),
     },
     members: (members.members || []).map(serializeMember),
     campaigns: remoteCampaigns,
@@ -495,8 +497,8 @@ export async function createOptinCampaign(userId, projectId, direction, userApiE
   const { credentials } = await connectionCredentials(userId, projectId, env);
   const audienceId = requireAudience(credentials);
   const audience = await mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}?fields=id,name,subscribe_url_short,subscribe_url_long`);
-  const signupUrl = safeMailchimpSignupUrl(audience.subscribe_url_short || audience.subscribe_url_long);
-  if (!signupUrl) throw newsletterError("Mailchimp did not provide a hosted signup form for the selected audience.", 409);
+  const signupUrl = await resolveMailchimpSignupUrl(credentials, audienceId, audience, true);
+  if (!signupUrl) throw newsletterError("Mailchimp did not return its hosted signup form after Market Agent initialized the selected audience form. Open Mailchimp Forms settings for this audience once, then retry.", 409);
   const prospectResult = await getPool(env).query(
     "SELECT COALESCE(SUM(unknown_count),0)::int AS count FROM market_agent_contact_imports WHERE user_id = $1 AND project_id = $2",
     [userId, projectId],
@@ -796,6 +798,20 @@ async function mailchimpRequest(credentials, path, options = {}) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw newsletterError(providerMessage(data, "Mailchimp could not complete the request."), response.status === 401 ? 401 : response.status === 400 ? 400 : 502);
   return data;
+}
+
+async function resolveMailchimpSignupUrl(credentials, audienceId, audience = {}, createIfMissing = false) {
+  let signupUrl = signupFormUrlFromResponses(audience);
+  if (signupUrl) return signupUrl;
+  try {
+    const forms = await mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}/signup-forms`);
+    signupUrl = signupFormUrlFromResponses(audience, forms);
+  } catch { /* The audience summary can still provide the URL on older Mailchimp accounts. */ }
+  if (signupUrl || !createIfMissing) return signupUrl;
+  try {
+    const initialized = await mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}/signup-forms`, { method: "POST", body: {} });
+    return signupFormUrlFromResponses(audience, initialized);
+  } catch { return ""; }
 }
 
 async function saveCredentials(userId, projectId, credentials, env) {
@@ -1402,8 +1418,24 @@ export function safeMailchimpSignupUrl(value) {
     const url = new URL(String(value || "").trim());
     const hostname = url.hostname.toLowerCase();
     const allowed = hostname === "eepurl.com" || hostname.endsWith(".eepurl.com") || hostname === "mailchi.mp" || hostname.endsWith(".mailchi.mp") || hostname.endsWith(".list-manage.com") || hostname.endsWith(".mailchimp.com");
-    return url.protocol === "https:" && allowed ? url.toString() : "";
+    if (!allowed || !["http:", "https:"].includes(url.protocol)) return "";
+    url.protocol = "https:";
+    return url.toString();
   } catch { return ""; }
+}
+
+export function signupFormUrlFromResponses(audience = {}, forms = {}) {
+  const candidates = [
+    audience?.subscribe_url_short,
+    audience?.subscribe_url_long,
+    forms?.signup_form_url,
+    ...(Array.isArray(forms?.signup_forms) ? forms.signup_forms.map((form) => form?.signup_form_url) : []),
+  ];
+  for (const candidate of candidates) {
+    const safe = safeMailchimpSignupUrl(candidate);
+    if (safe) return safe;
+  }
+  return "";
 }
 
 function applicationOrigin(env) {

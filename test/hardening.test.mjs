@@ -5,7 +5,7 @@ import { isPrivateAddress } from "../server/agent.mjs";
 import { campaignPublicationTarget, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
 import { scoreMarketingOutput } from "../server/evaluation.mjs";
 import { handleSchedule } from "../server/schedule-handler.mjs";
-import { projectLogoVariants, safeMailchimpSignupUrl, selectNewsletterLogoVariant } from "../server/newsletters.mjs";
+import { projectLogoVariants, safeMailchimpSignupUrl, selectNewsletterLogoVariant, signupFormUrlFromResponses } from "../server/newsletters.mjs";
 import { createBrandLogoAccessUrl } from "../server/brand-logos.mjs";
 
 test("balanced review runs count against the panel budget", () => {
@@ -100,9 +100,14 @@ test("legacy project logos remain available as a primary email-safe variant", ()
 test("public opt-in redirects only to trusted Mailchimp signup hosts", () => {
   assert.equal(safeMailchimpSignupUrl("https://eepurl.com/example"), "https://eepurl.com/example");
   assert.equal(safeMailchimpSignupUrl("https://example.us10.list-manage.com/subscribe?u=abc"), "https://example.us10.list-manage.com/subscribe?u=abc");
-  assert.equal(safeMailchimpSignupUrl("http://eepurl.com/example"), "");
+  assert.equal(safeMailchimpSignupUrl("http://eepurl.com/example"), "https://eepurl.com/example");
   assert.equal(safeMailchimpSignupUrl("https://eepurl.com.evil.example/subscribe"), "");
   assert.equal(safeMailchimpSignupUrl("javascript:alert(1)"), "");
+});
+
+test("signup form lookup falls back to Mailchimp's dedicated forms response", () => {
+  assert.equal(signupFormUrlFromResponses({}, { signup_forms: [{ signup_form_url: "http://example.us1.list-manage.com/subscribe?u=owner&id=list" }] }), "https://example.us1.list-manage.com/subscribe?u=owner&id=list");
+  assert.equal(signupFormUrlFromResponses({}, { signup_forms: [{ signup_form_url: "https://attacker.example/subscribe" }] }), "");
 });
 
 test("email logo access links expose only signed brand-logo paths", () => {
