@@ -509,8 +509,8 @@ export async function createOptinCampaign(userId, projectId, direction, userApiE
   const publicToken = randomBytes(24).toString("base64url");
   const result = await getPool(env).query(
     `INSERT INTO market_agent_optin_campaigns
-      (id,user_id,project_id,public_token,status,eyebrow,title,description,cta_label,privacy_note,promotion_text,signup_url,logo_url,primary_color,background_color,text_color,created_at,updated_at)
-     VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW()) RETURNING *`,
+      (id,user_id,project_id,public_token,status,eyebrow,title,description,cta_label,privacy_note,promotion_text,invitation_subject,invitation_body,signup_url,logo_url,primary_color,background_color,text_color,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW(),NOW()) RETURNING *`,
     [
       id,
       userId,
@@ -522,6 +522,8 @@ export async function createOptinCampaign(userId, projectId, direction, userApiE
       cleanHeader(generated?.ctaLabel, 80) || "Subscribe",
       cleanText(generated?.privacyNote, 400) || "Confirm your email to subscribe. Unsubscribe at any time.",
       cleanText(generated?.promotionText, 2_000),
+      cleanHeader(generated?.invitationSubject, 180) || `An invitation from ${cleanHeader(workspace.name, 100) || "our team"}`,
+      normalizeInvitationBody(generated?.invitationBody, workspace),
       signupUrl,
       projectLogoUrl(workspace),
       safeColor(workspace?.brand?.primaryColor, "#6e50d7"),
@@ -543,7 +545,7 @@ export async function updateOptinCampaign(userId, projectId, id, input, env = pr
   if (!row) throw newsletterError("The opt-in campaign was not found.", 404);
   const status = input?.status === "paused" ? "paused" : "active";
   const result = await getPool(env).query(
-    `UPDATE market_agent_optin_campaigns SET status=$4,eyebrow=$5,title=$6,description=$7,cta_label=$8,privacy_note=$9,promotion_text=$10,updated_at=NOW()
+    `UPDATE market_agent_optin_campaigns SET status=$4,eyebrow=$5,title=$6,description=$7,cta_label=$8,privacy_note=$9,promotion_text=$10,invitation_subject=$11,invitation_body=$12,updated_at=NOW()
      WHERE id=$1 AND user_id=$2 AND project_id=$3 RETURNING *`,
     [
       id,
@@ -556,9 +558,43 @@ export async function updateOptinCampaign(userId, projectId, id, input, env = pr
       cleanHeader(input?.ctaLabel ?? row.cta_label, 80) || "Subscribe",
       cleanText(input?.privacyNote ?? row.privacy_note, 400),
       cleanText(input?.promotionText ?? row.promotion_text, 2_000),
+      cleanHeader(input?.invitationSubject ?? row.invitation_subject, 180),
+      normalizeInvitationBody(input?.invitationBody ?? row.invitation_body),
     ],
   );
   return { campaign: serializeOptinCampaign(result.rows[0], env) };
+}
+
+export async function listProspectInvitationRecipients(userId, projectId, env = process.env) {
+  await ensureTables(env);
+  const [imports, existing] = await Promise.all([
+    getPool(env).query(
+      "SELECT contacts FROM market_agent_contact_imports WHERE user_id = $1 AND project_id = $2 ORDER BY created_at ASC",
+      [userId, projectId],
+    ),
+    getPool(env).query(
+      "SELECT email FROM market_agent_subscribers WHERE user_id = $1 AND project_id = $2",
+      [userId, projectId],
+    ),
+  ]);
+  const excluded = new Set(existing.rows.map((row) => String(row.email || "").trim().toLowerCase()));
+  const recipients = new Map();
+  for (const row of imports.rows) {
+    for (const contact of Array.isArray(row.contacts) ? row.contacts : []) {
+      const email = String(contact?.email || "").trim().toLowerCase();
+      const consent = ["confirmed", "denied"].includes(contact?.consent) ? contact.consent : "unknown";
+      if (consent !== "unknown" || excluded.has(email) || recipients.has(email) || !/^[^\s@<>;,]+@[^\s@<>;,]+\.[^\s@<>;,]+$/.test(email)) continue;
+      recipients.set(email, {
+        email,
+        firstName: cleanHeader(contact?.firstName, 100),
+        lastName: cleanHeader(contact?.lastName, 100),
+        company: cleanHeader(contact?.company, 180),
+      });
+      if (recipients.size >= 1_000) break;
+    }
+    if (recipients.size >= 1_000) break;
+  }
+  return [...recipients.values()];
 }
 
 export async function getPublicOptinCampaign(token, action = "view", env = process.env) {
@@ -1055,11 +1091,14 @@ async function ensureTables(env) {
       status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused')),
       eyebrow TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
       cta_label TEXT NOT NULL DEFAULT '', privacy_note TEXT NOT NULL DEFAULT '', promotion_text TEXT NOT NULL DEFAULT '',
+      invitation_subject TEXT NOT NULL DEFAULT '', invitation_body TEXT NOT NULL DEFAULT '',
       signup_url TEXT NOT NULL DEFAULT '', logo_url TEXT NOT NULL DEFAULT '',
       primary_color TEXT NOT NULL DEFAULT '', background_color TEXT NOT NULL DEFAULT '', text_color TEXT NOT NULL DEFAULT '',
       views INTEGER NOT NULL DEFAULT 0, cta_clicks INTEGER NOT NULL DEFAULT 0,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS invitation_subject TEXT NOT NULL DEFAULT '';
+    ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS invitation_body TEXT NOT NULL DEFAULT '';
     CREATE INDEX IF NOT EXISTS market_agent_optin_campaigns_user_project_idx ON market_agent_optin_campaigns (user_id,project_id,created_at DESC);
   `);
   tablesReady = true;
@@ -1193,6 +1232,7 @@ function serializeDraft(row) {
 }
 
 function serializeOptinCampaign(row, env) {
+  const publicUrl = `${applicationOrigin(env)}/join/${encodeURIComponent(row.public_token)}`;
   return {
     id: row.id,
     status: row.status === "paused" ? "paused" : "active",
@@ -1202,12 +1242,24 @@ function serializeOptinCampaign(row, env) {
     ctaLabel: row.cta_label || "Subscribe",
     privacyNote: row.privacy_note || "Confirm your email to subscribe. Unsubscribe at any time.",
     promotionText: row.promotion_text || "",
-    publicUrl: `${applicationOrigin(env)}/join/${encodeURIComponent(row.public_token)}`,
+    invitationSubject: row.invitation_subject || "An invitation to subscribe",
+    invitationBody: normalizeInvitationBody(row.invitation_body),
+    publicUrl,
     views: Number(row.views || 0),
     ctaClicks: Number(row.cta_clicks || 0),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
+}
+
+function normalizeInvitationBody(value, workspace = {}) {
+  let body = cleanText(value, 20_000);
+  if (!body) {
+    const name = cleanHeader(workspace?.name, 100) || "our team";
+    body = `Hi {{first_name}},\n\nI thought you might find ${name}'s updates useful. If you would like to receive them, you can review the details and subscribe here:\n\n{{signup_url}}\n\nIf this is not relevant, no action is needed.`;
+  }
+  if (!body.includes("{{signup_url}}") && !/https:\/\//i.test(body)) body = `${body}\n\n{{signup_url}}`;
+  return body;
 }
 
 function serializeContactImport(row) {

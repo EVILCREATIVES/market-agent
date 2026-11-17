@@ -22,7 +22,7 @@ export async function listDeliveryJobs(userId, projectId, runId = "", env = proc
   const result = await getPool(env).query(
     `SELECT * FROM market_agent_delivery_jobs
       WHERE user_id = $1 AND project_id = $2${runFilter}
-      ORDER BY created_at ASC LIMIT 100`,
+      ORDER BY created_at ASC LIMIT 500`,
     values,
   );
   const jobs = result.rows.map((row, index) => {
@@ -40,6 +40,121 @@ export async function listDeliveryJobs(userId, projectId, runId = "", env = proc
     coverage = { expected: Math.max(expected, prepared), prepared, missing: Math.max(0, expected - prepared) };
   }
   return { jobs, coverage };
+}
+
+export function prospectInvitationRunId(campaignId) {
+  return `optin-${String(campaignId || "").trim().slice(0, 160)}`;
+}
+
+export function personalizeInvitationTemplate(template, recipient = {}, signupUrl = "") {
+  const firstName = String(recipient?.firstName || "").trim();
+  const company = String(recipient?.company || "").trim();
+  return String(template || "")
+    .replaceAll("{{first_name}}", firstName || "there")
+    .replaceAll("{{company}}", company)
+    .replaceAll("{{signup_url}}", String(signupUrl || "").trim())
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/ {2,}/g, " ")
+    .trim();
+}
+
+export async function scheduleProspectInvitations(userId, projectId, campaign, recipients, input = {}, userApiEnv = {}, env = process.env) {
+  await ensureDeliveryTable(env);
+  if (!channelAllowedForAccess("gmail", userApiEnv)) throw deliveryError("Direct invitation delivery is available after connecting your APIs or activating the managed plan.", 403);
+  const connections = await getConnectionStatus(userId, projectId, env);
+  if (!connections.gmail?.canSend) throw deliveryError("Connect this project's mailbox and approve sending access before scheduling invitations.", 409);
+  if (!campaign?.id || campaign?.status !== "active") throw deliveryError("Publish the signup page before scheduling its invitation email.", 409);
+  const signupUrl = String(campaign.publicUrl || "").trim();
+  if (!/^https:\/\//i.test(signupUrl)) throw deliveryError("The signup page needs a public HTTPS address before invitations can be scheduled.", 409);
+  const subjectTemplate = String(input?.subject || campaign.invitationSubject || "").replace(/[\r\n]+/g, " ").trim().slice(0, 300);
+  let bodyTemplate = String(input?.body || campaign.invitationBody || "").trim().slice(0, 20_000);
+  if (!subjectTemplate || !bodyTemplate) throw deliveryError("Review the invitation subject and message before scheduling it.", 400);
+  if (!bodyTemplate.includes("{{signup_url}}") && !bodyTemplate.includes(signupUrl)) bodyTemplate = `${bodyTemplate}\n\nSubscribe here: {{signup_url}}`;
+  const requestedStart = new Date(String(input?.startAt || ""));
+  if (!Number.isFinite(requestedStart.getTime()) || requestedStart.getTime() < Date.now() + 10 * 60_000) throw deliveryError("Choose an invitation start time at least ten minutes from now.", 400);
+  if (requestedStart.getTime() > Date.now() + 370 * 24 * 60 * 60_000) throw deliveryError("Choose an invitation start time within the next year.", 400);
+  const intervalMinutes = Math.min(30, Math.max(1, Number.parseInt(input?.intervalMinutes, 10) || 2));
+  const unique = new Map();
+  for (const recipient of Array.isArray(recipients) ? recipients : []) {
+    const email = String(recipient?.email || "").trim().toLowerCase();
+    if (/^[^\s@<>;,]+@[^\s@<>;,]+\.[^\s@<>;,]+$/.test(email) && !unique.has(email)) unique.set(email, { ...recipient, email });
+  }
+  if (!unique.size) throw deliveryError("There are no eligible staged prospects to invite.", 409);
+  if (unique.size > 1_000) throw deliveryError("Invitation campaigns are limited to 1,000 individual recipients at a time.", 400);
+  const runId = prospectInvitationRunId(campaign.id);
+  const approvalId = randomUUID();
+  const client = await getPool(env).connect();
+  let inserted = 0;
+  try {
+    await client.query("BEGIN");
+    const suppressionResult = await client.query(
+      "SELECT email FROM market_agent_email_suppressions WHERE user_id = $1 AND project_id = $2",
+      [userId, projectId],
+    );
+    const suppressed = new Set(suppressionResult.rows.map((row) => String(row.email || "").toLowerCase()));
+    let index = 0;
+    for (const recipient of unique.values()) {
+      if (suppressed.has(recipient.email)) continue;
+      const scheduledAt = new Date(requestedStart.getTime() + index * intervalMinutes * 60_000).toISOString();
+      const payload = {
+        recipient: recipient.email,
+        recipientName: [recipient.firstName, recipient.lastName].filter(Boolean).join(" "),
+        subject: personalizeInvitationTemplate(subjectTemplate, recipient, signupUrl),
+        text: personalizeInvitationTemplate(bodyTemplate, recipient, signupUrl),
+        scheduledAt,
+        campaignApprovalId: approvalId,
+        campaignId: campaign.id,
+        campaignType: "subscriber_invitation",
+        signupUrl,
+        rationale: "One-time invitation to the approved newsletter signup page.",
+      };
+      const idempotencyKey = createHash("sha256").update(`${userId}:${projectId}:${runId}:${recipient.email}`).digest("hex");
+      const result = await client.query(
+        `INSERT INTO market_agent_delivery_jobs
+          (id,user_id,project_id,run_id,channel,payload,status,idempotency_key,approved_at,next_attempt_at,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,'gmail',$5::jsonb,'scheduled',$6,NOW(),$7::timestamptz,NOW(),NOW())
+         ON CONFLICT (user_id,idempotency_key) WHERE idempotency_key <> '' DO NOTHING`,
+        [randomUUID(), userId, projectId, runId, JSON.stringify(payload), idempotencyKey, scheduledAt],
+      );
+      inserted += result.rowCount || 0;
+      index += 1;
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+  const summary = await getProspectInvitationStats(userId, projectId, campaign.id, env);
+  return { runId, inserted, sender: connections.gmail.accountEmail, intervalMinutes, ...summary };
+}
+
+export async function getProspectInvitationStats(userId, projectId, campaignId, env = process.env) {
+  await ensureDeliveryTable(env);
+  const runId = prospectInvitationRunId(campaignId);
+  const result = await getPool(env).query(
+    `SELECT COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE status IN ('scheduled','running','submitted'))::int AS scheduled,
+      COUNT(*) FILTER (WHERE status = 'complete')::int AS sent,
+      COUNT(*) FILTER (WHERE status IN ('failed','dead_letter'))::int AS failed,
+      COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled,
+      MIN(NULLIF(payload->>'scheduledAt','')::timestamptz) AS starts_at,
+      MAX(NULLIF(payload->>'scheduledAt','')::timestamptz) AS ends_at
+     FROM market_agent_delivery_jobs
+     WHERE user_id = $1 AND project_id = $2 AND run_id = $3 AND channel = 'gmail'`,
+    [userId, projectId, runId],
+  );
+  const row = result.rows[0] || {};
+  return {
+    total: Number(row.total || 0),
+    scheduled: Number(row.scheduled || 0),
+    sent: Number(row.sent || 0),
+    failed: Number(row.failed || 0),
+    cancelled: Number(row.cancelled || 0),
+    startsAt: row.starts_at ? new Date(row.starts_at).toISOString() : null,
+    endsAt: row.ends_at ? new Date(row.ends_at).toISOString() : null,
+  };
 }
 
 export async function replaceDeliveryMediaFromAsset(userId, projectId, runId, asset, env = process.env) {

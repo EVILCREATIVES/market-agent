@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { isPanelRun } from "../server/db.mjs";
 import { isPrivateAddress } from "../server/agent.mjs";
-import { campaignPublicationTarget, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
+import { campaignPublicationTarget, personalizeInvitationTemplate, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
 import { scoreMarketingOutput } from "../server/evaluation.mjs";
 import { handleSchedule } from "../server/schedule-handler.mjs";
 import { projectLogoVariants, safeMailchimpSignupUrl, selectNewsletterLogoVariant, signupFormUrlFromResponses } from "../server/newsletters.mjs";
@@ -20,6 +20,14 @@ test("direct delivery accepts one reviewed recipient and rejects additions", () 
   assert.equal(validApprovedRecipient("alex@example.com", run), "alex@example.com");
   assert.equal(validApprovedRecipient("alex@example.com, other@example.com", run), "");
   assert.equal(validApprovedRecipient("invented@example.com", run), "");
+});
+
+test("invitation templates personalize one recipient and keep the approved signup destination", () => {
+  assert.equal(
+    personalizeInvitationTemplate("Hi {{first_name}},\n\nUpdates for {{company}}: {{signup_url}}", { firstName: "Alex", company: "Venue One" }, "https://marketagent.shop/join/example"),
+    "Hi Alex,\n\nUpdates for Venue One: https://marketagent.shop/join/example",
+  );
+  assert.equal(personalizeInvitationTemplate("Hi {{first_name}}", {}, ""), "Hi there");
 });
 
 test("campaign coverage recognizes the full promised publication cadence", () => {

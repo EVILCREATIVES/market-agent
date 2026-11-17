@@ -9,12 +9,14 @@ import {
   getNewsletterDashboard,
   getSubscriberDetails,
   importContactList,
+  listProspectInvitationRecipients,
   registerSubscriber,
   stageContactImport,
   updateNewsletterSettings,
   updateNewsletterDraft,
   updateOptinCampaign,
 } from "../server/newsletters.mjs";
+import { getProspectInvitationStats, scheduleProspectInvitations } from "../server/delivery.mjs";
 
 export const config = { maxDuration: 300 };
 
@@ -28,7 +30,19 @@ export default async function handler(req, res) {
     if (["register-subscriber", "import-contact-list", "send", "schedule"].includes(action) && !connectorAllowedForAccess(accessEnv, "mailchimp")) {
       return res.status(403).json({ error: "Newsletter delivery is available after connecting your APIs or activating the managed plan." });
     }
-    if (req.method === "GET") return res.status(200).json(await getNewsletterDashboard(userId, projectId));
+    if (req.method === "GET") {
+      const dashboard = await getNewsletterDashboard(userId, projectId);
+      const [conversionCampaigns, recipients] = await Promise.all([
+        Promise.all((dashboard.conversionCampaigns || []).map(async (campaign) => ({
+          ...campaign,
+          invitation: await getProspectInvitationStats(userId, projectId, campaign.id),
+        }))),
+        listProspectInvitationRecipients(userId, projectId),
+      ]);
+      dashboard.conversionCampaigns = conversionCampaigns;
+      dashboard.prospectInvitationRecipientCount = recipients.length;
+      return res.status(200).json(dashboard);
+    }
     if (action === "register-subscriber") return res.status(200).json(await registerSubscriber(userId, projectId, req.body));
     if (action === "contact-import-details") return res.status(200).json(await getContactImportDetails(userId, projectId, req.body));
     if (action === "subscriber-details") return res.status(200).json(await getSubscriberDetails(userId, projectId, req.body));
@@ -52,9 +66,24 @@ export default async function handler(req, res) {
       if (!connectorAllowedForAccess(accessEnv, "mailchimp")) return res.status(403).json({ error: "Prospect conversion requires an active Mailchimp connection and your APIs or managed plan." });
       if (req.body?.approvalConfirmed !== true) return res.status(400).json({ error: "Approve publishing the public opt-in page first." });
       await consumeAiUsage(userId, "agent", accessEnv);
-      return res.status(200).json(await createOptinCampaign(userId, projectId, req.body?.direction, accessEnv));
+      const created = await createOptinCampaign(userId, projectId, req.body?.direction, accessEnv);
+      created.campaign.invitation = await getProspectInvitationStats(userId, projectId, created.campaign.id);
+      return res.status(200).json(created);
     }
-    if (action === "update-optin-campaign") return res.status(200).json(await updateOptinCampaign(userId, projectId, String(req.body?.id || ""), req.body));
+    if (action === "update-optin-campaign") {
+      const updated = await updateOptinCampaign(userId, projectId, String(req.body?.id || ""), req.body);
+      updated.campaign.invitation = await getProspectInvitationStats(userId, projectId, updated.campaign.id);
+      return res.status(200).json(updated);
+    }
+    if (action === "schedule-optin-invitations") {
+      if (req.body?.approvalConfirmed !== true) return res.status(400).json({ error: "Approve the invitation campaign before it is scheduled." });
+      const dashboard = await getNewsletterDashboard(userId, projectId);
+      const campaign = (dashboard.conversionCampaigns || []).find((item) => item.id === String(req.body?.id || ""));
+      if (!campaign) return res.status(404).json({ error: "The invitation campaign was not found." });
+      const recipients = await listProspectInvitationRecipients(userId, projectId);
+      const result = await scheduleProspectInvitations(userId, projectId, campaign, recipients, req.body, accessEnv);
+      return res.status(200).json({ invitation: result, recipientCount: recipients.length });
+    }
     if (action === "create-draft") {
       await consumeAiUsage(userId, "agent", accessEnv);
       return res.status(200).json(await createNewsletterDraft(userId, projectId, req.body?.direction, accessEnv));

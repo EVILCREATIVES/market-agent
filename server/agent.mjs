@@ -195,7 +195,7 @@ export async function generateProspectConversionCampaign(payload, env = process.
   const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
   const direction = String(payload?.direction || "").trim().slice(0, 6_000);
   const prospectCount = Math.max(0, Number(payload?.prospectCount || 0));
-  const prompt = `Create the public opt-in landing page and promotion copy for this project's newsletter growth campaign.
+  const prompt = `Create a finished newsletter invitation campaign for this project. It needs both a public opt-in landing page and the one-to-one invitation email that sends relevant prospects to that page.
 
 PROJECT CONTEXT
 ${buildContext(workspace)}
@@ -204,9 +204,9 @@ USER DIRECTION
 ${direction || "Choose the strongest honest reason for this project's relevant audience to subscribe."}
 
 STAGED PROSPECT CONTEXT
-${prospectCount} unconsented prospect contact${prospectCount === 1 ? " is" : "s are"} stored for audience research only. They must not be emailed or treated as subscribers. This page will be promoted through public and permission-respecting channels.
+${prospectCount} prospect contact${prospectCount === 1 ? " is" : "s are"} staged for a single direct invitation. They are not subscribers and must never be described as subscribers. Market Agent will send one individual message per address only after the user reviews and approves the campaign; every message includes an opt-out, and recipients who opt out are suppressed.
 
-Write concise, finished public copy. Give people a specific, useful reason to subscribe based only on supplied project facts. Do not promise unavailable content, customers, results, discounts, pilots, or access. Do not mention the staged contact list, internal systems, consent enforcement, or drafting process. The promotion copy must invite people to the opt-in page without implying an existing relationship. The privacy note should plainly say that confirmation is required and the subscriber may unsubscribe at any time.`;
+Write concise, finished copy. Give people a specific, useful reason to subscribe based only on supplied project facts. Do not promise unavailable content, customers, results, discounts, pilots, or access. Do not mention the staged contact list, internal systems, or drafting process. The invitation must not imply an existing relationship or claim that the recipient already subscribed. It should read like a respectful, useful introduction—not a newsletter issue. Use {{first_name}} only where a natural greeting helps, and use {{company}} only where the sentence remains correct if it is empty. The invitation body must contain {{signup_url}} exactly once as the clear action. The privacy note should plainly say that confirmation is required and the subscriber may unsubscribe at any time.`;
   return generateStructuredObject({
     env,
     name: "prospect_conversion_campaign",
@@ -892,7 +892,7 @@ function prospectConversionSchema() {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["eyebrow", "title", "description", "ctaLabel", "privacyNote", "promotionText"],
+    required: ["eyebrow", "title", "description", "ctaLabel", "privacyNote", "promotionText", "invitationSubject", "invitationBody"],
     properties: {
       eyebrow: { type: "string" },
       title: { type: "string" },
@@ -900,6 +900,8 @@ function prospectConversionSchema() {
       ctaLabel: { type: "string" },
       privacyNote: { type: "string" },
       promotionText: { type: "string" },
+      invitationSubject: { type: "string" },
+      invitationBody: { type: "string" },
     },
   };
 }

@@ -2117,6 +2117,33 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-optin-preview { display: flex; flex-direction: column; gap: 8px; }
 .op-optin-preview iframe { width: 100%; min-height: 450px; border: 1px solid #e2ded6; border-radius: 9px; background: #f7f5f0; }
 .op-optin-preview > a { align-self: flex-end; color: #624bc0; font-size: 7.7px; font-weight: 750; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
+.op-optin-invitation { grid-column: 1 / -1; border: 1px solid #cec3eb; border-radius: 12px; background: #fff; padding: 18px; display: flex; flex-direction: column; gap: 15px; }
+.op-optin-invitation > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.op-optin-invitation > header small { color: #694dc7; font-size: 9px; font-weight: 800; letter-spacing: .08em; }
+.op-optin-invitation > header h3 { margin: 5px 0 4px; font-size: 18px; }
+.op-optin-invitation > header p { margin: 0; color: #6f6a64; font-size: 12px; line-height: 1.5; }
+.op-optin-invitation > header > em { border-radius: 999px; background: #eaf7f0; color: #2f7052; padding: 7px 10px; font-size: 10px; font-style: normal; font-weight: 750; white-space: nowrap; }
+.op-optin-invitation__content { display: grid; grid-template-columns: minmax(0,1.1fr) minmax(280px,.9fr); gap: 14px; }
+.op-optin-invitation__editor { display: flex; flex-direction: column; gap: 10px; }
+.op-optin-invitation__editor label { display: flex; flex-direction: column; gap: 6px; color: #615c56; font-size: 11px; font-weight: 750; }
+.op-optin-invitation__editor input, .op-optin-invitation__editor textarea, .op-optin-invitation__approval input, .op-optin-invitation__approval select { width: 100%; border: 1px solid #d8d2e4; border-radius: 9px; background: #fff; color: #292722; padding: 10px 11px; font: inherit; font-size: 12px; }
+.op-optin-invitation__editor textarea { min-height: 180px; resize: vertical; line-height: 1.55; }
+.op-optin-invitation__editor > small { color: #7c766f; font-size: 10px; line-height: 1.45; }
+.op-optin-invitation__preview { min-width: 0; border: 1px solid #e0dbe8; border-radius: 10px; background: #f8f6fb; padding: 18px; }
+.op-optin-invitation__preview > small { color: #7563b8; font-size: 9px; font-weight: 800; letter-spacing: .08em; }
+.op-optin-invitation__preview > strong { display: block; margin: 10px 0 14px; font-size: 15px; }
+.op-optin-invitation__preview > p { margin: 0; color: #47433e; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.op-optin-invitation__approval { display: grid; grid-template-columns: minmax(220px,.7fr) minmax(180px,.45fr) auto; gap: 10px; align-items: end; padding-top: 2px; }
+.op-optin-invitation__approval label { display: flex; flex-direction: column; gap: 6px; color: #615c56; font-size: 11px; font-weight: 750; }
+.op-optin-invitation__approval button { min-height: 40px; border: 0; border-radius: 9px; background: #6e50d7; color: #fff; padding: 10px 14px; font-size: 11px; font-weight: 800; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.op-optin-invitation__approval button.secondary { border: 1px solid #cec3eb; background: #fff; color: #654bc4; }
+.op-optin-invitation__approval button:disabled { opacity: .45; cursor: default; }
+.op-optin-invitation__approval > small { grid-column: 1 / -1; color: #7b756e; font-size: 10px; }
+.op-optin-invitation__status { display: grid; grid-template-columns: repeat(4,minmax(100px,1fr)); gap: 8px; }
+.op-optin-invitation__status > span { border: 1px solid #e2ddeb; border-radius: 9px; background: #faf9fc; padding: 11px; display: flex; flex-direction: column; gap: 4px; }
+.op-optin-invitation__status small { color: #77716a; font-size: 9px; }
+.op-optin-invitation__status strong { font-size: 18px; }
+.op-optin-invitation__status > p { grid-column: 1 / -1; margin: 0; color: #69645e; font-size: 10px; }
 .op-optin-funnel { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(7,auto); align-items: center; justify-content: stretch; gap: 8px; padding: 13px; border: 1px solid #ddd7ea; border-radius: 10px; background: #f8f5ff; }
 .op-optin-funnel span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .op-optin-funnel small { color: #77716e; font-size: 7px; text-transform: uppercase; letter-spacing: .05em; }
@@ -2820,6 +2847,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .op-page { padding: 28px 18px 64px; }
   .op-newsletter-metrics { grid-template-columns: 1fr 1fr; }
   .op-optin-builder, .op-optin-active { grid-template-columns: 1fr; }
+  .op-optin-invitation, .op-optin-invitation__content, .op-optin-invitation__approval { grid-column: auto; grid-template-columns: 1fr; }
+  .op-optin-invitation__status { grid-template-columns: repeat(2,1fr); }
   .op-optin-funnel { grid-column: auto; }
 }
 

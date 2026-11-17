@@ -453,6 +453,7 @@ export interface NewsletterDashboard {
   drafts: NewsletterDraft[];
   contactImports: ContactImport[];
   conversionCampaigns: ProspectConversionCampaign[];
+  prospectInvitationRecipientCount: number;
   subscriberRegistry: {
     counts: { total: number; pending: number; confirmed: number; unsubscribed: number; bounced: number };
     preview: NewsletterSubscriber[];
@@ -475,7 +476,18 @@ export interface ProspectConversionCampaign {
   ctaLabel: string;
   privacyNote: string;
   promotionText: string;
+  invitationSubject: string;
+  invitationBody: string;
   publicUrl: string;
+  invitation: {
+    total: number;
+    scheduled: number;
+    sent: number;
+    failed: number;
+    cancelled: number;
+    startsAt: string | null;
+    endsAt: string | null;
+  };
   views: number;
   ctaClicks: number;
   createdAt: string;
