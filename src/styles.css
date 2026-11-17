@@ -943,6 +943,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-logo-library__head small { max-width: 720px; color: #77736c; font-size: 8px; line-height: 1.45; }
 .op-logo-library__head > button { flex: none; border: 0; border-radius: 8px; background: #6e50d7; color: white; padding: 9px 12px; font-size: 8px; font-weight: 750; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
 .op-logo-library__head > button:disabled { opacity: .55; cursor: default; }
+.op-logo-library__error { margin-top: 10px; padding: 9px 10px; border: 1px solid #e3b4ae; border-radius: 8px; background: #fff0ee; color: #963f36; display: flex; align-items: center; gap: 7px; font-size: 8px; line-height: 1.4; }
+.op-logo-library__error span { flex: 1; }
+.op-logo-library__error button { flex: none; border: 1px solid #dba69f; border-radius: 7px; background: white; color: #903c34; padding: 6px 8px; font-size: 7.5px; font-weight: 750; cursor: pointer; }
 .op-logo-library__grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(190px,1fr)); gap: 10px; margin-top: 13px; }
 .op-logo-library__grid > article { min-width: 0; padding: 10px; border: 1px solid #dedad1; border-radius: 10px; background: white; display: flex; flex-direction: column; gap: 8px; }
 .op-logo-variant__preview { height: 94px; padding: 10px; border: 1px solid #ebe8e1; border-radius: 8px; background: #f7f6f2; display: grid; place-items: center; overflow: hidden; }

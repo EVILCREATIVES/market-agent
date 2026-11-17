@@ -851,6 +851,7 @@ function ProductBrain({ userId, workspace, onSave, onOpenContentLibrary, notify 
   });
   const [chatDraft, setChatDraft] = useState("");
   const [logoUploading, setLogoUploading] = useState(false);
+  const [logoError, setLogoError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const logoInput = useRef<HTMLInputElement>(null);
   const metadataRefreshKey = useRef("");
@@ -891,29 +892,35 @@ function ProductBrain({ userId, workspace, onSave, onOpenContentLibrary, notify 
   const uploadLogo = async (file?: File) => {
     if (!file) return;
     setLogoUploading(true);
+    setLogoError("");
     try {
       const preparedDataUrl = await prepareLogo(file);
       const imageBlob = await (await fetch(preparedDataUrl)).blob();
       const token = await getAccessToken();
       const safeBase = file.name.replace(/\.[^.]+$/, "").replace(/[^a-z0-9._-]+/gi, "-").slice(0, 120) || "logo";
       const pathname = `market-agent-assets/${encodeURIComponent(userId)}/${encodeURIComponent(workspace.id)}/brand-logos/${Date.now()}-${safeBase}.png`;
-      const uploaded = await upload(pathname, imageBlob, {
-        access: "public",
+      const uploaded = await Promise.race([upload(pathname, imageBlob, {
+        access: "private",
         handleUploadUrl: "/api/asset-upload",
         clientPayload: JSON.stringify({ projectId: workspace.id }),
         headers: { Authorization: `Bearer ${token}` },
         contentType: "image/png",
-      });
+      }), new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error("The logo upload timed out. Please try again.")), 45_000))]);
+      const accessResponse = await apiFetch("/api/brand-logo", { method: "POST", body: JSON.stringify({ projectId: workspace.id, pathname: uploaded.pathname }) });
+      const access = await accessResponse.json();
+      if (!accessResponse.ok || !access.url) throw new Error(access.error || "The email-safe logo link could not be created.");
       setForm((current) => {
         const first = !(current.brand.logoVariants || []).length;
-        const variant: BrandLogoVariant = { id: crypto.randomUUID(), name: file.name.replace(/\.[^.]+$/, ""), url: uploaded.url, usage: first ? "primary" : "other", createdAt: new Date().toISOString() };
+        const variant: BrandLogoVariant = { id: crypto.randomUUID(), name: file.name.replace(/\.[^.]+$/, ""), url: access.url, usage: first ? "primary" : "other", createdAt: new Date().toISOString() };
         const logoVariants = [...(current.brand.logoVariants || []), variant].slice(0, 10);
         return { ...current, brand: { ...current.brand, logoVariants, logoDataUrl: first ? variant.url : current.brand.logoDataUrl, logoName: first ? variant.name : current.brand.logoName } };
       });
       setIntakeError("");
       notify("Logo variant added. Save corrections when the set is ready.");
     } catch (error) {
-      setIntakeError(error instanceof Error ? error.message : "The logo could not be read.");
+      const message = error instanceof Error ? error.message : "The logo could not be read.";
+      setLogoError(message);
+      setIntakeError(message);
     } finally {
       setLogoUploading(false);
       if (logoInput.current) logoInput.current.value = "";
@@ -1250,6 +1257,7 @@ function ProductBrain({ userId, workspace, onSave, onOpenContentLibrary, notify 
           <div className="op-brand-grid">
             <div className="op-logo-library">
               <div className="op-logo-library__head"><div><strong>Logo variants</strong><small>Keep the primary mark, email version, light and dark versions, and the small icon together. Email uses the version marked Email, then Primary as fallback.</small></div><input ref={logoInput} hidden type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" onChange={(event) => void uploadLogo(event.target.files?.[0])} /><button disabled={logoUploading || (form.brand.logoVariants || []).length >= 10} onClick={() => logoInput.current?.click()}>{logoUploading ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />}{logoUploading ? "Adding…" : "Add logo"}</button></div>
+              {logoError && <div className="op-logo-library__error"><CircleAlert size={14} /><span>{logoError}</span><button onClick={() => logoInput.current?.click()}>Try again</button></div>}
               {(form.brand.logoVariants || []).length ? <div className="op-logo-library__grid">{form.brand.logoVariants.map((variant) => <article key={variant.id}><div className={`op-logo-variant__preview ${variant.usage === "dark" ? "dark" : ""}`}><img src={variant.url} alt={variant.name} /></div><label><span>Name</span><input value={variant.name} onChange={(event) => updateLogoVariant(variant.id, { name: event.target.value })} /></label><label><span>Use for</span><select value={variant.usage} onChange={(event) => updateLogoVariant(variant.id, { usage: event.target.value as BrandLogoVariant["usage"] })}><option value="primary">Primary</option><option value="email">Email</option><option value="light">Light backgrounds</option><option value="dark">Dark backgrounds</option><option value="icon">Icon / small spaces</option><option value="other">Other</option></select></label><button className="remove" onClick={() => removeLogoVariant(variant.id)}><Trash2 size={13} /> Remove</button></article>)}</div> : <button className="op-logo-library__empty" onClick={() => logoInput.current?.click()}><UploadCloud size={22} /><span><strong>Add the first logo</strong><small>Transparent PNG, JPG, WebP, or SVG. A public email-safe copy is created automatically.</small></span></button>}
             </div>
             <div className="op-color-editor">

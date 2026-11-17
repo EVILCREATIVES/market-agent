@@ -1,4 +1,5 @@
 import http from "node:http";
+import { Readable } from "node:stream";
 import { handleUpload } from "@vercel/blob/client";
 import { buildProductBrain, createRunRecord, readConnectedSourceMetadata, refineProductBrain, runMarketingAgent, runProjectConversation } from "./agent.mjs";
 import { approveAssetProposal, cancelAssetProposal, deleteProjectAsset, getProjectAssetPreviewUrl, listProjectAssets, registerLinkedAsset, registerUploadedAsset, serveProjectFile } from "./assets.mjs";
@@ -15,6 +16,7 @@ import {
 import { createNewsletterDraft, deliverNewsletter, getContactImportDetails, getNewsletterDashboard, getSubscriberDetails, importContactList, registerSubscriber, stageContactImport, updateLatestNewsletterLogo, updateNewsletterDraft, updateNewsletterSettings } from "./newsletters.mjs";
 import { getAgentPerformanceContext } from "./growth.mjs";
 import { getConnectionStatus } from "./connections.mjs";
+import { createBrandLogoAccessUrl, getBrandLogo } from "./brand-logos.mjs";
 
 const port = Number(process.env.PORT || 8787);
 
@@ -36,6 +38,29 @@ async function readJson(req) {
 }
 
 const server = http.createServer(async (req, res) => {
+  const requestUrl = new URL(req.url || "/", `http://localhost:${port}`);
+  if (requestUrl.pathname === "/api/brand-logo" && req.method === "GET") {
+    try {
+      const result = await getBrandLogo(requestUrl.searchParams.get("token"), req.headers["if-none-match"] || "");
+      res.setHeader("Cache-Control", "public, max-age=86400, immutable");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      if (result.blob?.etag) res.setHeader("ETag", result.blob.etag);
+      if (result.statusCode === 304) return res.writeHead(304).end();
+      res.setHeader("Content-Type", result.blob.contentType);
+      return Readable.fromWeb(result.stream).pipe(res);
+    } catch (error) { return json(res, error.statusCode || 500, { error: error.message || "The logo could not be read." }); }
+  }
+  if (requestUrl.pathname === "/api/brand-logo" && req.method === "POST") {
+    try {
+      const { userId } = await requireUser(req);
+      const payload = await readJson(req);
+      const projectId = String(payload?.projectId || "").trim().slice(0, 200);
+      if (!projectId || !payload?.pathname) return json(res, 400, { error: "Project and logo upload are required." });
+      const origin = process.env.APP_BASE_URL || `http://localhost:${port}`;
+      return json(res, 200, { url: createBrandLogoAccessUrl({ userId, projectId, pathname: payload.pathname, origin }) });
+    } catch (error) { return json(res, error.statusCode || 500, { error: error.message || "The logo link could not be created." }); }
+  }
   if (req.method === "GET" && req.url === "/api/health") {
     return json(res, 200, {
       ok: true,

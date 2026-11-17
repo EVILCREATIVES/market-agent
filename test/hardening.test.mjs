@@ -6,6 +6,7 @@ import { campaignPublicationTarget, retryDelayMinutes, validApprovedRecipient } 
 import { scoreMarketingOutput } from "../server/evaluation.mjs";
 import { handleSchedule } from "../server/schedule-handler.mjs";
 import { projectLogoVariants, selectNewsletterLogoVariant } from "../server/newsletters.mjs";
+import { createBrandLogoAccessUrl } from "../server/brand-logos.mjs";
 
 test("balanced review runs count against the panel budget", () => {
   assert.equal(isPanelRun({ executionMode: "panel", model: "Standard analysis" }), true);
@@ -85,4 +86,11 @@ test("legacy project logos remain available as a primary email-safe variant", ()
   assert.deepEqual(projectLogoVariants({ brand: { logoDataUrl: "https://assets.example.com/legacy.png", logoName: "Legacy mark" } }), [
     { id: "legacy-primary-logo", name: "Legacy mark", url: "https://assets.example.com/legacy.png", usage: "primary", createdAt: "" },
   ]);
+});
+
+test("email logo access links expose only signed brand-logo paths", () => {
+  const env = { CONNECTION_ENCRYPTION_KEY: "test-signing-key-with-at-least-24-characters" };
+  const url = createBrandLogoAccessUrl({ userId: "user-1", projectId: "project-1", pathname: "market-agent-assets/user-1/project-1/brand-logos/logo.png", origin: "https://marketagent.shop" }, env);
+  assert.match(url, /^https:\/\/marketagent\.shop\/api\/brand-logo\?token=/);
+  assert.throws(() => createBrandLogoAccessUrl({ userId: "user-1", projectId: "project-1", pathname: "market-agent-assets/user-1/project-1/private-document.pdf", origin: "https://marketagent.shop" }, env), /invalid/);
 });
