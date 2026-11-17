@@ -1464,7 +1464,7 @@ function ChannelCampaignWorkspace({ channel, runs, jobs, connected, onOpen, onSt
   </div>;
 }
 
-function ProspectConversionPanel({ dashboard, direction, onDirection, working, mailchimpReady, onCreate, onUpdate, onConnect, notify }: { dashboard: NewsletterDashboard; direction: string; onDirection: (value: string) => void; working: string; mailchimpReady: boolean; onCreate: () => Promise<void>; onUpdate: (campaign: ProspectConversionCampaign, changes: Partial<ProspectConversionCampaign>) => Promise<void>; onConnect: () => void; notify: (message: string) => void }) {
+function ProspectConversionPanel({ dashboard, direction, onDirection, working, feedback, mailchimpReady, onCreate, onUpdate, onConnect, notify }: { dashboard: NewsletterDashboard; direction: string; onDirection: (value: string) => void; working: string; feedback: string; mailchimpReady: boolean; onCreate: () => Promise<void>; onUpdate: (campaign: ProspectConversionCampaign, changes: Partial<ProspectConversionCampaign>) => Promise<void>; onConnect: () => void; notify: (message: string) => void }) {
   const campaign = dashboard.conversionCampaigns?.[0] || null;
   const prospectCount = dashboard.contactImports.reduce((sum, item) => sum + item.unknownCount, 0);
   const [draft, setDraft] = useState(() => campaign ? { eyebrow: campaign.eyebrow, title: campaign.title, description: campaign.description, ctaLabel: campaign.ctaLabel, privacyNote: campaign.privacyNote, promotionText: campaign.promotionText } : null);
@@ -1476,7 +1476,9 @@ function ProspectConversionPanel({ dashboard, direction, onDirection, working, m
 
   return <section className="op-optin-campaign">
     <div className="op-section-title"><div><small>PROSPECT CONVERSION</small><h2>Turn relevant prospects into subscribers</h2><p>The staged contacts remain prospects. This public page gives people a voluntary path into the selected Mailchimp audience.</p></div><em>{prospectCount.toLocaleString()} staged prospect{prospectCount === 1 ? "" : "s"}</em></div>
-    {!campaign || !draft ? <div className="op-optin-builder"><div><span><UsersRound size={22} /></span><h3>Build the opt-in campaign</h3><p>The agent will write and publish a branded signup page connected to Mailchimp. Nothing will be emailed to the staged list.</p></div><label><span>Optional direction</span><textarea value={direction} onChange={(event) => onDirection(event.target.value)} placeholder="Example: Offer venue teams a useful visitor-experience brief, LUMEN demo updates, and pilot invitations." /></label><button onClick={() => void onCreate()} disabled={working === "create-optin"}>{working === "create-optin" ? <LoaderCircle className="spin" size={15} /> : <WandSparkles size={15} />}{mailchimpReady ? working === "create-optin" ? "Building page…" : "Approve & publish opt-in page" : "Connect Mailchimp first"}</button>{!mailchimpReady && <button className="secondary" onClick={onConnect}>Open connections</button>}</div> : <div className="op-optin-active">
+    <div className="op-optin-flow"><span><b>1</b><small>Market Agent creates a branded public signup page</small></span><i>→</i><span><b>2</b><small>You share its link through approved outreach and channels</small></span><i>→</i><span><b>3</b><small>People choose to subscribe and confirm in Mailchimp</small></span><i>→</i><span><b>4</b><small>Confirmed subscribers and results appear here</small></span></div>
+    {feedback && <div className={`op-optin-feedback ${working === "create-optin" ? "working" : ""}`} role="status" aria-live="polite">{working === "create-optin" ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}<span>{feedback}</span></div>}
+    {!campaign || !draft ? <div className="op-optin-builder"><div><span><UsersRound size={22} /></span><h3>Create the voluntary signup path</h3><p>This creates the page and its shareable link. It does not email, import, or subscribe any of the {prospectCount.toLocaleString()} staged prospects.</p></div><label><span>Optional direction</span><textarea value={direction} onChange={(event) => onDirection(event.target.value)} placeholder="Example: Offer venue teams a useful visitor-experience brief, LUMEN demo updates, and pilot invitations." /></label><button onClick={() => void (mailchimpReady ? onCreate() : Promise.resolve(onConnect()))} disabled={working === "create-optin"}>{working === "create-optin" ? <LoaderCircle className="spin" size={15} /> : mailchimpReady ? <WandSparkles size={15} /> : <Link2 size={15} />}{mailchimpReady ? working === "create-optin" ? "Creating public page…" : "Create & publish signup page" : "Connect Mailchimp to continue"}</button></div> : <div className="op-optin-active">
       <div className="op-optin-editor"><header><div><strong>{campaign.status === "active" ? "Public signup page" : "Signup page paused"}</strong><small>{campaign.publicUrl}</small></div><em className={campaign.status}>{campaign.status}</em></header><label><span>Eyebrow</span><input value={draft.eyebrow} onChange={(event) => setDraft((current) => current && { ...current, eyebrow: event.target.value })} /></label><label><span>Headline</span><input value={draft.title} onChange={(event) => setDraft((current) => current && { ...current, title: event.target.value })} /></label><label><span>Description</span><textarea value={draft.description} onChange={(event) => setDraft((current) => current && { ...current, description: event.target.value })} /></label><div className="op-optin-editor__row"><label><span>Button</span><input value={draft.ctaLabel} onChange={(event) => setDraft((current) => current && { ...current, ctaLabel: event.target.value })} /></label><label><span>Confirmation note</span><input value={draft.privacyNote} onChange={(event) => setDraft((current) => current && { ...current, privacyNote: event.target.value })} /></label></div><label><span>Promotion copy</span><textarea value={draft.promotionText} onChange={(event) => setDraft((current) => current && { ...current, promotionText: event.target.value })} /></label><footer><button disabled={!changed || working === `optin-${campaign.id}`} onClick={() => void onUpdate(campaign, draft)}><Save size={14} /> Save public page</button><button className="secondary" onClick={() => void copy(campaign.publicUrl, "Signup link copied.")}><Link2 size={14} /> Copy link</button><button className="secondary" onClick={() => void copy(draft.promotionText, "Promotion copy copied.")}><Megaphone size={14} /> Copy promotion</button><button className="secondary" onClick={() => void onUpdate(campaign, { status: campaign.status === "active" ? "paused" : "active" })}>{campaign.status === "active" ? "Pause page" : "Publish again"}</button></footer></div>
       <div className="op-optin-preview"><iframe title="Public opt-in page preview" src={`${campaign.publicUrl}?preview=1`} /><a href={campaign.publicUrl} target="_blank" rel="noreferrer">Open full page <ArrowRight size={12} /></a></div>
       <div className="op-optin-funnel"><span><small>Prospects</small><strong>{prospectCount.toLocaleString()}</strong></span><i>→</i><span><small>Page views</small><strong>{campaign.views.toLocaleString()}</strong></span><i>→</i><span><small>Signup clicks</small><strong>{campaign.ctaClicks.toLocaleString()}</strong></span><i>→</i><span><small>Confirmed in audience</small><strong>{dashboard.subscriberRegistry.counts.confirmed.toLocaleString()}</strong></span></div>
@@ -2929,6 +2931,7 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
   const [working, setWorking] = useState("");
   const [direction, setDirection] = useState("");
   const [optinDirection, setOptinDirection] = useState("");
+  const [optinFeedback, setOptinFeedback] = useState("");
   const [selectedId, setSelectedId] = useState("");
   const [scheduleTime, setScheduleTime] = useState(() => nextQuarterLocal());
   const [subscriberOpen, setSubscriberOpen] = useState(false);
@@ -2965,6 +2968,7 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
     setSection(requestedSection === "newsletter" ? "newsletter" : "overview");
     setContactDetails({});
     setSubscriberDetails(null);
+    setOptinFeedback("");
     void refresh();
     void refreshDeliveryJobs();
     const handleUpdate = (event: Event) => {
@@ -2998,20 +3002,31 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
 
   const createOptin = async () => {
     if (!mailchimp.canManage) {
-      notify("Connect Mailchimp and choose this project's audience before publishing an opt-in page.");
+      const message = "Connect Mailchimp and choose this project's audience. Then Market Agent can create the public signup page and show it here.";
+      setOptinFeedback(message);
+      notify(message);
       onConnect();
       return;
     }
-    if (!window.confirm("Approve and publish a public signup page connected to this project's Mailchimp audience? The staged prospect list will not be emailed or imported.")) return;
+    if (!window.confirm("Approve and publish a public signup page connected to this project's Mailchimp audience? The staged prospect list will not be emailed or imported.")) {
+      setOptinFeedback("No page was created because publishing approval was cancelled.");
+      return;
+    }
     setWorking("create-optin");
+    setOptinFeedback("Creating the branded page, connecting its button to the selected Mailchimp audience, and preparing a shareable link…");
     try {
       const response = await apiFetch("/api/newsletters", { method: "POST", body: JSON.stringify({ action: "create-optin-campaign", projectId, direction: optinDirection, approvalConfirmed: true }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The opt-in campaign could not be created.");
       setDashboard((current) => current ? { ...current, conversionCampaigns: [data.campaign as ProspectConversionCampaign, ...(current.conversionCampaigns || [])] } : current);
       setOptinDirection("");
+      setOptinFeedback("Signup page published. Its live preview, shareable link, promotion copy, and conversion funnel are now visible below.");
       notify("Public opt-in page published. The prospect list remains uncontacted.");
-    } catch (error) { notify(error instanceof Error ? error.message : "The opt-in campaign could not be created."); }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The opt-in campaign could not be created.";
+      setOptinFeedback(`The signup page was not created: ${message}`);
+      notify(message);
+    }
     finally { setWorking(""); }
   };
 
@@ -3165,7 +3180,7 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
 
       {loading && !dashboard ? <div className="op-analytics-loading"><LoaderCircle className="spin" size={22} /> Reading campaign contacts and newsletters…</div> : dashboard && <>
         <section className="op-newsletter-drafts op-newsletter-preview-section"><div className="op-section-title"><div><small>EMAIL PREVIEW</small><h2>Newsletter preview and editor</h2><p>See the selected newsletter exactly as recipients will receive it. Edit the complete email, choose any saved Brand logo, then approve delivery only when it is ready.</p></div></div>{dashboard.drafts.length ? <div className="op-newsletter-draft-layout"><aside>{dashboard.drafts.map((draft) => <button key={draft.id} className={selected?.id === draft.id ? "active" : ""} onClick={() => setSelectedId(draft.id)}><span><strong>{draft.content.subject}</strong><small>{new Date(draft.createdAt).toLocaleString()}</small></span><em className={`status-${draft.status}`}>{newsletterStatus(draft)}</em></button>)}</aside>{selected && <NewsletterReview draft={selected} logoVariants={workspace.brand.logoVariants || []} scheduleTime={scheduleTime} onScheduleTime={setScheduleTime} working={working} onSave={updateDraft} onDeliver={deliver} />}</div> : <div className="op-newsletter-preview-empty"><span><FileText size={24} /></span><div><h3>No newsletter preview yet</h3><p>Describe the campaign above, or let the agent choose the strongest supported topic, then generate the first complete email preview.</p></div><button onClick={() => void createDraft()} disabled={working === "create"}><Sparkles size={14} />{working === "create" ? "Creating preview…" : "Generate preview"}</button></div>}</section>
-        <ProspectConversionPanel dashboard={dashboard} direction={optinDirection} onDirection={setOptinDirection} working={working} mailchimpReady={mailchimp.canManage} onCreate={createOptin} onUpdate={updateOptin} onConnect={onConnect} notify={notify} />
+        <ProspectConversionPanel dashboard={dashboard} direction={optinDirection} onDirection={setOptinDirection} working={working} feedback={optinFeedback} mailchimpReady={mailchimp.canManage} onCreate={createOptin} onUpdate={updateOptin} onConnect={onConnect} notify={notify} />
         {dashboard.contactImports.length > 0 && <section className="op-contact-imports"><div className="op-section-title"><div><small>CAMPAIGN CONTACTS</small><h2>Contact lists</h2><p>Uploaded contact CSVs live here—not in the Content Library. Open a list to search and review every contact; permission remains explicit.</p></div></div><div>{dashboard.contactImports.map((contactImport) => <ContactImportCard key={contactImport.id} contactImport={contactImport} details={contactDetails[contactImport.id]} working={working} deliveryReady={mailchimp.canManage} onLoad={loadContactDetails} onImport={importContacts} onConnect={onConnect} />)}</div></section>}
         <section className="op-newsletter-metrics">
           <article><small>Audience</small><strong>{dashboard.audience.memberCount.toLocaleString()}</strong><span>subscribers</span></article>
