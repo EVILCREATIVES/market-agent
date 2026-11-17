@@ -3,6 +3,7 @@ import { consumeAiUsage, connectorAllowedForAccess } from "../server/billing.mjs
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 import {
   createNewsletterDraft,
+  createOptinCampaign,
   deliverNewsletter,
   getContactImportDetails,
   getNewsletterDashboard,
@@ -12,6 +13,7 @@ import {
   stageContactImport,
   updateNewsletterSettings,
   updateNewsletterDraft,
+  updateOptinCampaign,
 } from "../server/newsletters.mjs";
 
 export const config = { maxDuration: 300 };
@@ -46,6 +48,13 @@ export default async function handler(req, res) {
       return res.status(200).json({ ...staged, draft, draftError });
     }
     if (action === "import-contact-list") return res.status(200).json(await importContactList(userId, projectId, req.body));
+    if (action === "create-optin-campaign") {
+      if (!connectorAllowedForAccess(accessEnv, "mailchimp")) return res.status(403).json({ error: "Prospect conversion requires an active Mailchimp connection and your APIs or managed plan." });
+      if (req.body?.approvalConfirmed !== true) return res.status(400).json({ error: "Approve publishing the public opt-in page first." });
+      await consumeAiUsage(userId, "agent", accessEnv);
+      return res.status(200).json(await createOptinCampaign(userId, projectId, req.body?.direction, accessEnv));
+    }
+    if (action === "update-optin-campaign") return res.status(200).json(await updateOptinCampaign(userId, projectId, String(req.body?.id || ""), req.body));
     if (action === "create-draft") {
       await consumeAiUsage(userId, "agent", accessEnv);
       return res.status(200).json(await createNewsletterDraft(userId, projectId, req.body?.direction, accessEnv));

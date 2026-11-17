@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { del, get } from "@vercel/blob";
 import { EncryptJWT, jwtDecrypt } from "jose";
-import { generateNewsletterDraft } from "./agent.mjs";
+import { generateNewsletterDraft, generateProspectConversionCampaign } from "./agent.mjs";
 import { getPool, loadStateForUser } from "./db.mjs";
 import { newsletterDraftPlaceholders } from "./email-content.mjs";
 
@@ -155,11 +155,12 @@ export async function disconnectMailchimp(userId, projectId, env = process.env) 
 export async function getNewsletterDashboard(userId, projectId, env = process.env) {
   await ensureTables(env);
   await migrateLegacyContactAssets(userId, projectId, env);
-  const [local, contactImports] = await Promise.all([
+  const [local, contactImports, optinCampaigns] = await Promise.all([
     getPool(env).query("SELECT * FROM market_agent_newsletters WHERE user_id = $1 AND project_id = $2 ORDER BY created_at DESC LIMIT 40", [userId, projectId]),
     getPool(env).query("SELECT * FROM market_agent_contact_imports WHERE user_id = $1 AND project_id = $2 ORDER BY created_at DESC LIMIT 30", [userId, projectId]),
+    getPool(env).query("SELECT * FROM market_agent_optin_campaigns WHERE user_id = $1 AND project_id = $2 ORDER BY created_at DESC LIMIT 10", [userId, projectId]),
   ]);
-  let audience = { id: "", name: "Market Agent contacts", stats: {} };
+  let audience = { id: "", name: "Market Agent contacts", stats: {}, subscribe_url_short: "", subscribe_url_long: "" };
   let members = { members: [], total_items: 0 };
   let campaigns = { campaigns: [] };
   let remoteCampaigns = [];
@@ -167,7 +168,7 @@ export async function getNewsletterDashboard(userId, projectId, env = process.en
     const { credentials } = await connectionCredentials(userId, projectId, env);
     const audienceId = requireAudience(credentials);
     [audience, members, campaigns] = await Promise.all([
-      mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}?fields=id,name,stats.member_count,stats.unsubscribe_count,stats.cleaned_count,stats.open_rate,stats.click_rate`),
+      mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}?fields=id,name,subscribe_url_short,subscribe_url_long,stats.member_count,stats.unsubscribe_count,stats.cleaned_count,stats.open_rate,stats.click_rate`),
       fetchAudienceMembers(credentials, audienceId),
       mailchimpRequest(credentials, `/campaigns?list_id=${encodeURIComponent(audienceId)}&count=25&sort_field=create_time&sort_dir=DESC`),
     ]);
@@ -217,11 +218,13 @@ export async function getNewsletterDashboard(userId, projectId, env = process.en
       cleanedCount: Number(audience.stats?.cleaned_count || 0),
       openRate: Number(audience.stats?.open_rate || 0),
       clickRate: Number(audience.stats?.click_rate || 0),
+      signupUrl: safeMailchimpSignupUrl(audience.subscribe_url_short || audience.subscribe_url_long),
     },
     members: (members.members || []).map(serializeMember),
     campaigns: remoteCampaigns,
     drafts: hydratedDrafts,
     contactImports: contactImports.rows.map(serializeContactImport),
+    conversionCampaigns: optinCampaigns.rows.map((row) => serializeOptinCampaign(row, env)),
     subscriberRegistry: {
       counts: normalizeSubscriberCounts(registryCounts.rows[0]),
       preview: registry.rows.map(serializeSubscriber),
@@ -356,10 +359,10 @@ export async function importContactList(userId, projectId, input, env = process.
   );
   const row = result.rows[0];
   if (!row) throw newsletterError("The staged contact list was not found.", 404);
-  const mode = input?.mode === "confirmed" ? "confirmed" : input?.mode === "double-opt-in" ? "double-opt-in" : "";
-  if (!mode) throw newsletterError("Choose how the contacts should be registered.", 400);
-  const contacts = (Array.isArray(row.contacts) ? row.contacts : []).filter((contact) => mode === "confirmed" ? contact.consent === "confirmed" : contact.consent !== "denied");
-  if (!contacts.length) throw newsletterError(mode === "confirmed" ? "This file has no contacts marked with confirmed newsletter permission." : "This file has no eligible contacts.", 409);
+  const mode = input?.mode === "confirmed" ? "confirmed" : "";
+  if (!mode) throw newsletterError("Contacts with unknown permission must use the public opt-in campaign. Only contacts already marked as consented can be imported.", 400);
+  const contacts = (Array.isArray(row.contacts) ? row.contacts : []).filter((contact) => contact.consent === "confirmed");
+  if (!contacts.length) throw newsletterError("This file has no contacts marked with confirmed newsletter permission.", 409);
   const { credentials } = await connectionCredentials(userId, projectId, env);
   const audienceId = requireAudience(credentials);
   await getPool(env).query("UPDATE market_agent_contact_imports SET status = 'importing', error = '', updated_at = NOW() WHERE id = $1", [row.id]);
@@ -368,13 +371,12 @@ export async function importContactList(userId, projectId, input, env = process.
   for (const contact of contacts) {
     try {
       const memberId = createHash("md5").update(contact.email).digest("hex");
-      const subscribed = mode === "confirmed";
       await mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}/members/${memberId}`, {
         method: "PUT",
         body: {
           email_address: contact.email,
-          status_if_new: subscribed ? "subscribed" : "pending",
-          ...(subscribed ? { status: "subscribed" } : {}),
+          status_if_new: "subscribed",
+          status: "subscribed",
           merge_fields: { FNAME: contact.firstName || "", LNAME: contact.lastName || "" },
           tags: ["Market Agent"],
         },
@@ -384,9 +386,9 @@ export async function importContactList(userId, projectId, input, env = process.
         firstName: contact.firstName,
         lastName: contact.lastName,
         company: contact.company,
-        status: subscribed ? "confirmed" : "pending",
+        status: "confirmed",
         remoteId: memberId,
-        confirmedAt: subscribed ? new Date().toISOString() : null,
+        confirmedAt: new Date().toISOString(),
       }, env);
       importedCount += 1;
     } catch {
@@ -401,9 +403,7 @@ export async function importContactList(userId, projectId, input, env = process.
   );
   return {
     contactImport: serializeContactImport(updated.rows[0]),
-    message: mode === "confirmed"
-      ? `${importedCount} consented contact${importedCount === 1 ? " was" : "s were"} added to the delivery audience.`
-      : `${importedCount} contact${importedCount === 1 ? " was" : "s were"} sent a confirmation request. They are not subscribed until they opt in.`,
+    message: `${importedCount} consented contact${importedCount === 1 ? " was" : "s were"} added to the delivery audience.`,
   };
 }
 
@@ -485,6 +485,108 @@ export async function createNewsletterDraft(userId, projectId, direction, userAp
     [id, userId, projectId, cleanText(direction, 12_000), JSON.stringify(draft), html],
   );
   return { draft: serializeDraft(result.rows[0]) };
+}
+
+export async function createOptinCampaign(userId, projectId, direction, userApiEnv, env = process.env) {
+  await ensureTables(env);
+  const { state } = await loadStateForUser(userId, env);
+  const workspace = state.projects.find((item) => item.id === projectId);
+  if (!workspace) throw newsletterError("The project could not be found.", 404);
+  const { credentials } = await connectionCredentials(userId, projectId, env);
+  const audienceId = requireAudience(credentials);
+  const audience = await mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}?fields=id,name,subscribe_url_short,subscribe_url_long`);
+  const signupUrl = safeMailchimpSignupUrl(audience.subscribe_url_short || audience.subscribe_url_long);
+  if (!signupUrl) throw newsletterError("Mailchimp did not provide a hosted signup form for the selected audience.", 409);
+  const prospectResult = await getPool(env).query(
+    "SELECT COALESCE(SUM(unknown_count),0)::int AS count FROM market_agent_contact_imports WHERE user_id = $1 AND project_id = $2",
+    [userId, projectId],
+  );
+  const prospectCount = Number(prospectResult.rows[0]?.count || 0);
+  const generated = await generateProspectConversionCampaign({ workspace, direction, prospectCount }, userApiEnv);
+  const id = randomUUID();
+  const publicToken = randomBytes(24).toString("base64url");
+  const result = await getPool(env).query(
+    `INSERT INTO market_agent_optin_campaigns
+      (id,user_id,project_id,public_token,status,eyebrow,title,description,cta_label,privacy_note,promotion_text,signup_url,logo_url,primary_color,background_color,text_color,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW()) RETURNING *`,
+    [
+      id,
+      userId,
+      projectId,
+      publicToken,
+      cleanHeader(generated?.eyebrow, 80) || "NEWSLETTER",
+      cleanHeader(generated?.title, 180) || `Updates from ${cleanHeader(workspace.name, 100) || "this project"}`,
+      cleanText(generated?.description, 1_200),
+      cleanHeader(generated?.ctaLabel, 80) || "Subscribe",
+      cleanText(generated?.privacyNote, 400) || "Confirm your email to subscribe. Unsubscribe at any time.",
+      cleanText(generated?.promotionText, 2_000),
+      signupUrl,
+      projectLogoUrl(workspace),
+      safeColor(workspace?.brand?.primaryColor, "#6e50d7"),
+      safeColor(workspace?.brand?.neutralLightColor, "#f6f5ef"),
+      safeColor(workspace?.brand?.neutralDarkColor, "#24231f"),
+    ],
+  );
+  return { campaign: serializeOptinCampaign(result.rows[0], env), prospectCount };
+}
+
+export async function updateOptinCampaign(userId, projectId, id, input, env = process.env) {
+  await ensureTables(env);
+  if (input?.approvalConfirmed !== true) throw newsletterError("Approve the public opt-in page change first.", 400);
+  const current = await getPool(env).query(
+    "SELECT * FROM market_agent_optin_campaigns WHERE id = $1 AND user_id = $2 AND project_id = $3 LIMIT 1",
+    [id, userId, projectId],
+  );
+  const row = current.rows[0];
+  if (!row) throw newsletterError("The opt-in campaign was not found.", 404);
+  const status = input?.status === "paused" ? "paused" : "active";
+  const result = await getPool(env).query(
+    `UPDATE market_agent_optin_campaigns SET status=$4,eyebrow=$5,title=$6,description=$7,cta_label=$8,privacy_note=$9,promotion_text=$10,updated_at=NOW()
+     WHERE id=$1 AND user_id=$2 AND project_id=$3 RETURNING *`,
+    [
+      id,
+      userId,
+      projectId,
+      status,
+      cleanHeader(input?.eyebrow ?? row.eyebrow, 80),
+      cleanHeader(input?.title ?? row.title, 180),
+      cleanText(input?.description ?? row.description, 1_200),
+      cleanHeader(input?.ctaLabel ?? row.cta_label, 80) || "Subscribe",
+      cleanText(input?.privacyNote ?? row.privacy_note, 400),
+      cleanText(input?.promotionText ?? row.promotion_text, 2_000),
+    ],
+  );
+  return { campaign: serializeOptinCampaign(result.rows[0], env) };
+}
+
+export async function getPublicOptinCampaign(token, action = "view", env = process.env) {
+  await ensureTables(env);
+  const publicToken = String(token || "").trim();
+  if (!/^[A-Za-z0-9_-]{24,80}$/.test(publicToken)) throw newsletterError("This signup page is unavailable.", 404);
+  const result = await getPool(env).query(
+    "SELECT * FROM market_agent_optin_campaigns WHERE public_token = $1 AND status = 'active' LIMIT 1",
+    [publicToken],
+  );
+  const row = result.rows[0];
+  if (!row) throw newsletterError("This signup page is unavailable.", 404);
+  if (action === "join") {
+    await getPool(env).query("UPDATE market_agent_optin_campaigns SET cta_clicks=cta_clicks+1,updated_at=NOW() WHERE id=$1", [row.id]);
+    return { redirectUrl: safeMailchimpSignupUrl(row.signup_url) };
+  }
+  if (action !== "preview") await getPool(env).query("UPDATE market_agent_optin_campaigns SET views=views+1,updated_at=NOW() WHERE id=$1", [row.id]);
+  return {
+    campaign: {
+      eyebrow: row.eyebrow || "NEWSLETTER",
+      title: row.title || "Subscribe for updates",
+      description: row.description || "",
+      ctaLabel: row.cta_label || "Subscribe",
+      privacyNote: row.privacy_note || "Confirm your email to subscribe. Unsubscribe at any time.",
+      logoUrl: safeEmailImage(row.logo_url),
+      primaryColor: safeColor(row.primary_color, "#6e50d7"),
+      backgroundColor: safeColor(row.background_color, "#f6f5ef"),
+      textColor: safeColor(row.text_color, "#24231f"),
+    },
+  };
 }
 
 export async function updateNewsletterDraft(userId, projectId, id, changes, env = process.env) {
@@ -932,6 +1034,17 @@ async function ensureTables(env) {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (user_id,project_id)
     );
+    CREATE TABLE IF NOT EXISTS market_agent_optin_campaigns (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL, project_id TEXT NOT NULL, public_token TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused')),
+      eyebrow TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+      cta_label TEXT NOT NULL DEFAULT '', privacy_note TEXT NOT NULL DEFAULT '', promotion_text TEXT NOT NULL DEFAULT '',
+      signup_url TEXT NOT NULL DEFAULT '', logo_url TEXT NOT NULL DEFAULT '',
+      primary_color TEXT NOT NULL DEFAULT '', background_color TEXT NOT NULL DEFAULT '', text_color TEXT NOT NULL DEFAULT '',
+      views INTEGER NOT NULL DEFAULT 0, cta_clicks INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS market_agent_optin_campaigns_user_project_idx ON market_agent_optin_campaigns (user_id,project_id,created_at DESC);
   `);
   tablesReady = true;
 }
@@ -1058,6 +1171,24 @@ function serializeDraft(row) {
     approvedAt: iso(row.approved_at),
     scheduledFor: iso(row.scheduled_for),
     sentAt: iso(row.sent_at),
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+  };
+}
+
+function serializeOptinCampaign(row, env) {
+  return {
+    id: row.id,
+    status: row.status === "paused" ? "paused" : "active",
+    eyebrow: row.eyebrow || "NEWSLETTER",
+    title: row.title || "Subscribe for updates",
+    description: row.description || "",
+    ctaLabel: row.cta_label || "Subscribe",
+    privacyNote: row.privacy_note || "Confirm your email to subscribe. Unsubscribe at any time.",
+    promotionText: row.promotion_text || "",
+    publicUrl: `${applicationOrigin(env)}/join/${encodeURIComponent(row.public_token)}`,
+    views: Number(row.views || 0),
+    ctaClicks: Number(row.cta_clicks || 0),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
@@ -1264,6 +1395,25 @@ function normalizeHttpUrl(value) {
     const url = new URL(String(value || "").trim());
     return /^https?:$/.test(url.protocol) ? url.toString() : "";
   } catch { return ""; }
+}
+
+export function safeMailchimpSignupUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    const hostname = url.hostname.toLowerCase();
+    const allowed = hostname === "eepurl.com" || hostname.endsWith(".eepurl.com") || hostname === "mailchi.mp" || hostname.endsWith(".mailchi.mp") || hostname.endsWith(".list-manage.com") || hostname.endsWith(".mailchimp.com");
+    return url.protocol === "https:" && allowed ? url.toString() : "";
+  } catch { return ""; }
+}
+
+function applicationOrigin(env) {
+  for (const value of [env.APP_BASE_URL, env.MAILCHIMP_REDIRECT_BASE_URL, "https://www.marketagent.shop"]) {
+    try {
+      const url = new URL(String(value || ""));
+      if (url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) return url.origin;
+    } catch { /* Try the next configured application origin. */ }
+  }
+  return "https://www.marketagent.shop";
 }
 
 function providerMessage(data, fallback) {

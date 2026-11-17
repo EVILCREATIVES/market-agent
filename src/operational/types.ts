@@ -431,6 +431,7 @@ export interface NewsletterDashboard {
     cleanedCount: number;
     openRate: number;
     clickRate: number;
+    signupUrl: string;
   };
   members: Array<{ id: string; email: string; firstName: string; lastName: string; status: string; confirmedAt: string | null }>;
   campaigns: Array<{
@@ -450,6 +451,7 @@ export interface NewsletterDashboard {
   }>;
   drafts: NewsletterDraft[];
   contactImports: ContactImport[];
+  conversionCampaigns: ProspectConversionCampaign[];
   subscriberRegistry: {
     counts: { total: number; pending: number; confirmed: number; unsubscribed: number; bounced: number };
     preview: NewsletterSubscriber[];
@@ -461,6 +463,22 @@ export interface NewsletterDashboard {
     enabledAt: string | null;
   };
   fetchedAt: string;
+}
+
+export interface ProspectConversionCampaign {
+  id: string;
+  status: "active" | "paused";
+  eyebrow: string;
+  title: string;
+  description: string;
+  ctaLabel: string;
+  privacyNote: string;
+  promotionText: string;
+  publicUrl: string;
+  views: number;
+  ctaClicks: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface NewsletterSubscriber {

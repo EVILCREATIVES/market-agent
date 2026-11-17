@@ -186,6 +186,36 @@ Return final subscriber-facing copy, not advice or a production brief. Keep it c
   });
 }
 
+export async function generateProspectConversionCampaign(payload, env = process.env) {
+  if (!env.OPENAI_API_KEY && !env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    const error = new Error("Connect your private analysis APIs or activate the managed plan before creating an opt-in campaign.");
+    error.statusCode = 503;
+    throw error;
+  }
+  const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
+  const direction = String(payload?.direction || "").trim().slice(0, 6_000);
+  const prospectCount = Math.max(0, Number(payload?.prospectCount || 0));
+  const prompt = `Create the public opt-in landing page and promotion copy for this project's newsletter growth campaign.
+
+PROJECT CONTEXT
+${buildContext(workspace)}
+
+USER DIRECTION
+${direction || "Choose the strongest honest reason for this project's relevant audience to subscribe."}
+
+STAGED PROSPECT CONTEXT
+${prospectCount} unconsented prospect contact${prospectCount === 1 ? " is" : "s are"} stored for audience research only. They must not be emailed or treated as subscribers. This page will be promoted through public and permission-respecting channels.
+
+Write concise, finished public copy. Give people a specific, useful reason to subscribe based only on supplied project facts. Do not promise unavailable content, customers, results, discounts, pilots, or access. Do not mention the staged contact list, internal systems, consent enforcement, or drafting process. The promotion copy must invite people to the opt-in page without implying an existing relationship. The privacy note should plainly say that confirmation is required and the subscriber may unsubscribe at any time.`;
+  return generateStructuredObject({
+    env,
+    name: "prospect_conversion_campaign",
+    system: "You are a senior audience-growth editor. Create accurate, compelling opt-in copy grounded only in the supplied project facts. Return only structured data.",
+    prompt,
+    schema: prospectConversionSchema(),
+  });
+}
+
 export async function runProjectConversation(payload, env = process.env) {
   const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
   const connections = payload?.connections && typeof payload.connections === "object" ? payload.connections : {};
@@ -853,6 +883,22 @@ function newsletterDraftSchema() {
       ctaLabel: { type: "string" },
       ctaUrl: { type: "string" },
       closing: { type: "string" },
+    },
+  };
+}
+
+function prospectConversionSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["eyebrow", "title", "description", "ctaLabel", "privacyNote", "promotionText"],
+    properties: {
+      eyebrow: { type: "string" },
+      title: { type: "string" },
+      description: { type: "string" },
+      ctaLabel: { type: "string" },
+      privacyNote: { type: "string" },
+      promotionText: { type: "string" },
     },
   };
 }

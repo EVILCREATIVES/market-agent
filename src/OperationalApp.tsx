@@ -25,6 +25,7 @@ import {
   LoaderCircle,
   LogOut,
   Menu,
+  Megaphone,
   MessageCircle,
   MessageSquareText,
   MoreHorizontal,
@@ -67,7 +68,7 @@ import { prepareLogo, prepareMaterial, type PreparedMaterial } from "./operation
 import { upload } from "@vercel/blob/client";
 import { apiFetch, getAccessToken } from "./auth";
 import BrandLogo from "./BrandLogo";
-import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, BillingStatus, BrandLogoVariant, ConnectionStatus, ContactImport, DeliveryJob, GrowthObjective, GrowthReport, HealthState, MediaBudgetSummary, MediaJob, NewsletterDashboard, NewsletterDraft, NewsletterSubscriber, PrimaryConversion, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, RunAssetReference, RunStatus, SocialAnalyticsReport, SourceMediaAsset, TikTokPublishingOptions, YouTubePublishingOptions } from "./operational/types";
+import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, BillingStatus, BrandLogoVariant, ConnectionStatus, ContactImport, DeliveryJob, GrowthObjective, GrowthReport, HealthState, MediaBudgetSummary, MediaJob, NewsletterDashboard, NewsletterDraft, NewsletterSubscriber, PrimaryConversion, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, ProspectConversionCampaign, RunAssetReference, RunStatus, SocialAnalyticsReport, SourceMediaAsset, TikTokPublishingOptions, YouTubePublishingOptions } from "./operational/types";
 
 type Page = "agent" | "brain" | "issues" | "research" | "campaigns" | "calendar" | "content" | "analytics" | "integrations";
 type CampaignIntensity = "careful" | "assertive" | "aggressive";
@@ -1462,14 +1463,34 @@ function ChannelCampaignWorkspace({ channel, runs, jobs, connected, onOpen, onSt
   </div>;
 }
 
-function ContactImportCard({ contactImport, details, working, deliveryReady, onLoad, onImport, onConnect }: { contactImport: ContactImport; details?: { total: number; contacts: Array<{ email: string; firstName: string; lastName: string; company: string; consent: "confirmed" | "unknown" | "denied" }>; loading?: boolean; search?: string }; working: string; deliveryReady: boolean; onLoad: (contactImport: ContactImport, search?: string, append?: boolean) => Promise<void>; onImport: (contactImport: ContactImport, mode: "confirmed" | "double-opt-in") => Promise<void>; onConnect: () => void }) {
+function ProspectConversionPanel({ dashboard, direction, onDirection, working, mailchimpReady, onCreate, onUpdate, onConnect, notify }: { dashboard: NewsletterDashboard; direction: string; onDirection: (value: string) => void; working: string; mailchimpReady: boolean; onCreate: () => Promise<void>; onUpdate: (campaign: ProspectConversionCampaign, changes: Partial<ProspectConversionCampaign>) => Promise<void>; onConnect: () => void; notify: (message: string) => void }) {
+  const campaign = dashboard.conversionCampaigns?.[0] || null;
+  const prospectCount = dashboard.contactImports.reduce((sum, item) => sum + item.unknownCount, 0);
+  const [draft, setDraft] = useState(() => campaign ? { eyebrow: campaign.eyebrow, title: campaign.title, description: campaign.description, ctaLabel: campaign.ctaLabel, privacyNote: campaign.privacyNote, promotionText: campaign.promotionText } : null);
+  useEffect(() => setDraft(campaign ? { eyebrow: campaign.eyebrow, title: campaign.title, description: campaign.description, ctaLabel: campaign.ctaLabel, privacyNote: campaign.privacyNote, promotionText: campaign.promotionText } : null), [campaign?.id, campaign?.updatedAt]);
+  const changed = Boolean(campaign && draft && ["eyebrow", "title", "description", "ctaLabel", "privacyNote", "promotionText"].some((key) => draft[key as keyof typeof draft] !== campaign[key as keyof ProspectConversionCampaign]));
+  const copy = async (value: string, message: string) => {
+    try { await navigator.clipboard.writeText(value); notify(message); } catch { notify("Copy failed. Select and copy the text manually."); }
+  };
+
+  return <section className="op-optin-campaign">
+    <div className="op-section-title"><div><small>PROSPECT CONVERSION</small><h2>Turn relevant prospects into subscribers</h2><p>The staged contacts remain prospects. This public page gives people a voluntary path into the selected Mailchimp audience.</p></div><em>{prospectCount.toLocaleString()} staged prospect{prospectCount === 1 ? "" : "s"}</em></div>
+    {!campaign || !draft ? <div className="op-optin-builder"><div><span><UsersRound size={22} /></span><h3>Build the opt-in campaign</h3><p>The agent will write and publish a branded signup page connected to Mailchimp. Nothing will be emailed to the staged list.</p></div><label><span>Optional direction</span><textarea value={direction} onChange={(event) => onDirection(event.target.value)} placeholder="Example: Offer venue teams a useful visitor-experience brief, LUMEN demo updates, and pilot invitations." /></label><button onClick={() => void onCreate()} disabled={working === "create-optin"}>{working === "create-optin" ? <LoaderCircle className="spin" size={15} /> : <WandSparkles size={15} />}{mailchimpReady ? working === "create-optin" ? "Building page…" : "Approve & publish opt-in page" : "Connect Mailchimp first"}</button>{!mailchimpReady && <button className="secondary" onClick={onConnect}>Open connections</button>}</div> : <div className="op-optin-active">
+      <div className="op-optin-editor"><header><div><strong>{campaign.status === "active" ? "Public signup page" : "Signup page paused"}</strong><small>{campaign.publicUrl}</small></div><em className={campaign.status}>{campaign.status}</em></header><label><span>Eyebrow</span><input value={draft.eyebrow} onChange={(event) => setDraft((current) => current && { ...current, eyebrow: event.target.value })} /></label><label><span>Headline</span><input value={draft.title} onChange={(event) => setDraft((current) => current && { ...current, title: event.target.value })} /></label><label><span>Description</span><textarea value={draft.description} onChange={(event) => setDraft((current) => current && { ...current, description: event.target.value })} /></label><div className="op-optin-editor__row"><label><span>Button</span><input value={draft.ctaLabel} onChange={(event) => setDraft((current) => current && { ...current, ctaLabel: event.target.value })} /></label><label><span>Confirmation note</span><input value={draft.privacyNote} onChange={(event) => setDraft((current) => current && { ...current, privacyNote: event.target.value })} /></label></div><label><span>Promotion copy</span><textarea value={draft.promotionText} onChange={(event) => setDraft((current) => current && { ...current, promotionText: event.target.value })} /></label><footer><button disabled={!changed || working === `optin-${campaign.id}`} onClick={() => void onUpdate(campaign, draft)}><Save size={14} /> Save public page</button><button className="secondary" onClick={() => void copy(campaign.publicUrl, "Signup link copied.")}><Link2 size={14} /> Copy link</button><button className="secondary" onClick={() => void copy(draft.promotionText, "Promotion copy copied.")}><Megaphone size={14} /> Copy promotion</button><button className="secondary" onClick={() => void onUpdate(campaign, { status: campaign.status === "active" ? "paused" : "active" })}>{campaign.status === "active" ? "Pause page" : "Publish again"}</button></footer></div>
+      <div className="op-optin-preview"><iframe title="Public opt-in page preview" src={`${campaign.publicUrl}?preview=1`} /><a href={campaign.publicUrl} target="_blank" rel="noreferrer">Open full page <ArrowRight size={12} /></a></div>
+      <div className="op-optin-funnel"><span><small>Prospects</small><strong>{prospectCount.toLocaleString()}</strong></span><i>→</i><span><small>Page views</small><strong>{campaign.views.toLocaleString()}</strong></span><i>→</i><span><small>Signup clicks</small><strong>{campaign.ctaClicks.toLocaleString()}</strong></span><i>→</i><span><small>Confirmed subscribers</small><strong>{dashboard.subscriberRegistry.counts.confirmed.toLocaleString()}</strong></span></div>
+    </div>}
+  </section>;
+}
+
+function ContactImportCard({ contactImport, details, working, deliveryReady, onLoad, onImport, onConnect }: { contactImport: ContactImport; details?: { total: number; contacts: Array<{ email: string; firstName: string; lastName: string; company: string; consent: "confirmed" | "unknown" | "denied" }>; loading?: boolean; search?: string }; working: string; deliveryReady: boolean; onLoad: (contactImport: ContactImport, search?: string, append?: boolean) => Promise<void>; onImport: (contactImport: ContactImport, mode: "confirmed") => Promise<void>; onConnect: () => void }) {
   const [search, setSearch] = useState("");
   const expanded = Boolean(details);
   const contacts = details?.contacts || [];
   return <article><header><div><strong>{contactImport.sourceName}</strong><small>{new Date(contactImport.createdAt).toLocaleString()}</small></div><em className={`status-${contactImport.status}`}>{contactImportStatus(contactImport)}</em></header><div className="op-contact-imports__counts"><span><small>Valid</small><strong>{contactImport.validCount}</strong></span><span><small>Confirmed</small><strong>{contactImport.consentedCount}</strong></span><span><small>Permission unknown</small><strong>{contactImport.unknownCount}</strong></span><span><small>Excluded</small><strong>{contactImport.invalidCount + contactImport.duplicateCount + contactImport.deniedCount}</strong></span></div>
     {!expanded && <>{contactImport.preview.length > 0 && <div className="op-contact-imports__preview">{contactImport.preview.map((contact, index) => <span key={`${contact.email}-${index}`}><b>{[contact.firstName, contact.lastName].filter(Boolean).join(" ") || contact.email}</b><small>{contact.company || contact.email} · {contact.consent === "confirmed" ? "permission confirmed" : contact.consent === "denied" ? "excluded" : "permission unknown"}</small></span>)}</div>}<button className="op-contact-imports__open" onClick={() => void onLoad(contactImport)}>{details?.loading ? <LoaderCircle className="spin" size={13} /> : <UsersRound size={13} />} View all {contactImport.validCount} contacts</button><small className="op-contact-imports__preview-note">Showing a protected preview of {Math.min(5, contactImport.validCount)} of {contactImport.validCount}.</small></>}
     {details && <section className="op-contact-directory"><header><form onSubmit={(event) => { event.preventDefault(); void onLoad(contactImport, search); }}><Search size={13} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, email, or company" /><button type="submit" disabled={details.loading}>Search</button></form><button onClick={() => onLoad(contactImport, "__close__")} className="close-directory">Close</button></header><div>{contacts.map((contact, index) => <span key={`${contact.email}-${index}`}><b>{[contact.firstName, contact.lastName].filter(Boolean).join(" ") || "Unnamed contact"}</b><a href={`mailto:${contact.email}`}>{contact.email}</a><small>{contact.company || "—"}</small><em className={`consent-${contact.consent}`}>{contact.consent === "confirmed" ? "Confirmed" : contact.consent === "denied" ? "Excluded" : "Permission unknown"}</em></span>)}</div>{details.loading && <p><LoaderCircle className="spin" size={14} /> Loading contacts…</p>}{!details.loading && contacts.length < details.total && <button className="load-more" onClick={() => void onLoad(contactImport, details.search || "", true)}>Show {Math.min(100, details.total - contacts.length)} more</button>}<small>{contacts.length} of {details.total} shown</small></section>}
-    {contactImport.error && <p className="error"><CircleAlert size={13} />{contactImport.error}</p>}{["staged", "partial", "failed"].includes(contactImport.status) && <footer>{contactImport.consentedCount > 0 && <button onClick={() => void onImport(contactImport, "confirmed")} disabled={Boolean(working)}><UsersRound size={14} />{working === `import-${contactImport.id}-confirmed` ? "Importing…" : `Import ${contactImport.consentedCount} consented`}</button>}{contactImport.unknownCount + contactImport.consentedCount > 0 && <button className="secondary" onClick={() => void onImport(contactImport, "double-opt-in")} disabled={Boolean(working)}><Send size={14} />{working === `import-${contactImport.id}-double-opt-in` ? "Requesting…" : "Request opt-in"}</button>}{!deliveryReady && <button className="secondary" onClick={onConnect}>Connect delivery</button>}</footer>}
+    {contactImport.error && <p className="error"><CircleAlert size={13} />{contactImport.error}</p>}{["staged", "partial", "failed"].includes(contactImport.status) && <footer>{contactImport.consentedCount > 0 && <button onClick={() => void onImport(contactImport, "confirmed")} disabled={Boolean(working)}><UsersRound size={14} />{working === `import-${contactImport.id}-confirmed` ? "Importing…" : `Import ${contactImport.consentedCount} consented`}</button>}{contactImport.unknownCount > 0 && <small>{contactImport.unknownCount} contact{contactImport.unknownCount === 1 ? " has" : "s have"} unknown permission. Use the Prospect conversion campaign above; they will not be emailed or imported.</small>}{!deliveryReady && <button className="secondary" onClick={onConnect}>Connect delivery</button>}</footer>}
   </article>;
 }
 
@@ -2906,6 +2927,7 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
   const [loading, setLoading] = useState(false);
   const [working, setWorking] = useState("");
   const [direction, setDirection] = useState("");
+  const [optinDirection, setOptinDirection] = useState("");
   const [selectedId, setSelectedId] = useState("");
   const [scheduleTime, setScheduleTime] = useState(() => nextQuarterLocal());
   const [subscriberOpen, setSubscriberOpen] = useState(false);
@@ -2973,6 +2995,37 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
     finally { setWorking(""); }
   };
 
+  const createOptin = async () => {
+    if (!mailchimp.canManage) {
+      notify("Connect Mailchimp and choose this project's audience before publishing an opt-in page.");
+      onConnect();
+      return;
+    }
+    if (!window.confirm("Approve and publish a public signup page connected to this project's Mailchimp audience? The staged prospect list will not be emailed or imported.")) return;
+    setWorking("create-optin");
+    try {
+      const response = await apiFetch("/api/newsletters", { method: "POST", body: JSON.stringify({ action: "create-optin-campaign", projectId, direction: optinDirection, approvalConfirmed: true }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The opt-in campaign could not be created.");
+      setDashboard((current) => current ? { ...current, conversionCampaigns: [data.campaign as ProspectConversionCampaign, ...(current.conversionCampaigns || [])] } : current);
+      setOptinDirection("");
+      notify("Public opt-in page published. The prospect list remains uncontacted.");
+    } catch (error) { notify(error instanceof Error ? error.message : "The opt-in campaign could not be created."); }
+    finally { setWorking(""); }
+  };
+
+  const updateOptin = async (campaign: ProspectConversionCampaign, changes: Partial<ProspectConversionCampaign>) => {
+    setWorking(`optin-${campaign.id}`);
+    try {
+      const response = await apiFetch("/api/newsletters", { method: "POST", body: JSON.stringify({ action: "update-optin-campaign", projectId, id: campaign.id, ...changes, approvalConfirmed: true }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The opt-in campaign could not be updated.");
+      setDashboard((current) => current ? { ...current, conversionCampaigns: (current.conversionCampaigns || []).map((item) => item.id === campaign.id ? data.campaign as ProspectConversionCampaign : item) } : current);
+      notify(data.campaign.status === "paused" ? "Signup page paused." : "Public signup page updated.");
+    } catch (error) { notify(error instanceof Error ? error.message : "The opt-in campaign could not be updated."); }
+    finally { setWorking(""); }
+  };
+
   const updateDraft = async (draft: NewsletterDraft, changes: Partial<NewsletterDraft["content"]>) => {
     setWorking(`save-${draft.id}`);
     try {
@@ -3022,16 +3075,14 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
     finally { setWorking(""); }
   };
 
-  const importContacts = async (contactImport: ContactImport, mode: "confirmed" | "double-opt-in") => {
+  const importContacts = async (contactImport: ContactImport, mode: "confirmed") => {
     if (!mailchimp.canManage) {
       notify("The contact list is safely staged in Market Agent. Connect a delivery service before importing it to an audience.");
       onConnect();
       return;
     }
-    const count = mode === "confirmed" ? contactImport.consentedCount : contactImport.consentedCount + contactImport.unknownCount;
-    const description = mode === "confirmed"
-      ? `Import ${count} contact${count === 1 ? "" : "s"} marked with confirmed permission to ${mailchimp.audienceName}?`
-      : `Ask ${count} contact${count === 1 ? "" : "s"} to confirm their subscription? Mailchimp will send the confirmation request.`;
+    const count = contactImport.consentedCount;
+    const description = `Import ${count} contact${count === 1 ? "" : "s"} marked with confirmed permission to ${mailchimp.audienceName}?`;
     if (!window.confirm(description)) return;
     setWorking(`import-${contactImport.id}-${mode}`);
     try {
@@ -3113,6 +3164,7 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
 
       {loading && !dashboard ? <div className="op-analytics-loading"><LoaderCircle className="spin" size={22} /> Reading campaign contacts and newsletters…</div> : dashboard && <>
         <section className="op-newsletter-drafts op-newsletter-preview-section"><div className="op-section-title"><div><small>EMAIL PREVIEW</small><h2>Newsletter preview and editor</h2><p>See the selected newsletter exactly as recipients will receive it. Edit the complete email, choose any saved Brand logo, then approve delivery only when it is ready.</p></div></div>{dashboard.drafts.length ? <div className="op-newsletter-draft-layout"><aside>{dashboard.drafts.map((draft) => <button key={draft.id} className={selected?.id === draft.id ? "active" : ""} onClick={() => setSelectedId(draft.id)}><span><strong>{draft.content.subject}</strong><small>{new Date(draft.createdAt).toLocaleString()}</small></span><em className={`status-${draft.status}`}>{newsletterStatus(draft)}</em></button>)}</aside>{selected && <NewsletterReview draft={selected} logoVariants={workspace.brand.logoVariants || []} scheduleTime={scheduleTime} onScheduleTime={setScheduleTime} working={working} onSave={updateDraft} onDeliver={deliver} />}</div> : <div className="op-newsletter-preview-empty"><span><FileText size={24} /></span><div><h3>No newsletter preview yet</h3><p>Describe the campaign above, or let the agent choose the strongest supported topic, then generate the first complete email preview.</p></div><button onClick={() => void createDraft()} disabled={working === "create"}><Sparkles size={14} />{working === "create" ? "Creating preview…" : "Generate preview"}</button></div>}</section>
+        <ProspectConversionPanel dashboard={dashboard} direction={optinDirection} onDirection={setOptinDirection} working={working} mailchimpReady={mailchimp.canManage} onCreate={createOptin} onUpdate={updateOptin} onConnect={onConnect} notify={notify} />
         {dashboard.contactImports.length > 0 && <section className="op-contact-imports"><div className="op-section-title"><div><small>CAMPAIGN CONTACTS</small><h2>Contact lists</h2><p>Uploaded contact CSVs live here—not in the Content Library. Open a list to search and review every contact; permission remains explicit.</p></div></div><div>{dashboard.contactImports.map((contactImport) => <ContactImportCard key={contactImport.id} contactImport={contactImport} details={contactDetails[contactImport.id]} working={working} deliveryReady={mailchimp.canManage} onLoad={loadContactDetails} onImport={importContacts} onConnect={onConnect} />)}</div></section>}
         <section className="op-newsletter-metrics">
           <article><small>Audience</small><strong>{dashboard.audience.memberCount.toLocaleString()}</strong><span>subscribers</span></article>

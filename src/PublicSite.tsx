@@ -1,18 +1,53 @@
-import { ArrowRight, BarChart3, Check, CircleAlert, FileLock2, Mail, Megaphone, ShieldCheck } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ArrowRight, BarChart3, Check, CircleAlert, FileLock2, LoaderCircle, Mail, Megaphone, ShieldCheck } from "lucide-react";
 import BrandLogo from "./BrandLogo";
 
 const updated = "November 10, 2026";
 
 export function isPublicRoute(pathname = window.location.pathname) {
-  return ["/about", "/privacy", "/terms", "/connection-result"].includes(normalizePath(pathname));
+  const path = normalizePath(pathname);
+  return path.startsWith("/join/") || ["/about", "/privacy", "/terms", "/connection-result"].includes(path);
 }
 
 export default function PublicSite() {
   const pathname = normalizePath(window.location.pathname);
+  if (pathname.startsWith("/join/")) return <NewsletterJoinPage />;
   if (pathname === "/connection-result") return <ConnectionResult />;
   if (pathname === "/privacy") return <PrivacyPolicy />;
   if (pathname === "/terms") return <TermsOfService />;
   return <AboutMarketAgent />;
+}
+
+function NewsletterJoinPage() {
+  const token = normalizePath(window.location.pathname).split("/")[2] || "";
+  const preview = new URLSearchParams(window.location.search).get("preview") === "1";
+  const [state, setState] = useState<{ loading: boolean; error: string; campaign: null | { eyebrow: string; title: string; description: string; ctaLabel: string; privacyNote: string; logoUrl: string; primaryColor: string; backgroundColor: string; textColor: string } }>({ loading: true, error: "", campaign: null });
+
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/newsletter-optin?token=${encodeURIComponent(token)}${preview ? "&preview=1" : ""}`)
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "This signup page is unavailable.");
+        if (active) setState({ loading: false, error: "", campaign: data.campaign });
+      })
+      .catch((error) => { if (active) setState({ loading: false, error: error instanceof Error ? error.message : "This signup page is unavailable.", campaign: null }); });
+    return () => { active = false; };
+  }, [token, preview]);
+
+  if (state.loading) return <div className="optin-public-state"><LoaderCircle className="spin" size={25} /><p>Opening signup page…</p></div>;
+  if (!state.campaign) return <div className="optin-public-state"><CircleAlert size={25} /><h1>Signup page unavailable</h1><p>{state.error}</p></div>;
+  const campaign = state.campaign;
+  return <main className="optin-public-page" style={{ background: campaign.backgroundColor, color: campaign.textColor }}>
+    <section style={{ borderColor: `${campaign.primaryColor}33` }}>
+      {campaign.logoUrl && <img src={campaign.logoUrl} alt="" />}
+      <small style={{ color: campaign.primaryColor }}>{campaign.eyebrow}</small>
+      <h1>{campaign.title}</h1>
+      <p>{campaign.description}</p>
+      <a href={`/api/newsletter-optin?token=${encodeURIComponent(token)}&join=1`} style={{ background: campaign.primaryColor }}>{campaign.ctaLabel} <ArrowRight size={16} /></a>
+      <em>{campaign.privacyNote}</em>
+    </section>
+  </main>;
 }
 
 function ConnectionResult() {

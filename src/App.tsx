@@ -3,7 +3,8 @@ import CloudApp from "./CloudApp";
 import { enableMarketAnalytics, marketAnalyticsPreference, saveMarketAnalyticsPreference } from "./market-analytics";
 
 export default function App() {
-  return <><CloudApp /><AnalyticsConsent /></>;
+  const publicOptin = window.location.pathname.toLowerCase().startsWith("/join/");
+  return <><CloudApp />{!publicOptin && <AnalyticsConsent />}</>;
 }
 
 function AnalyticsConsent() {
