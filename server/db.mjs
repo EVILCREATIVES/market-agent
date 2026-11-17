@@ -125,6 +125,47 @@ export async function appendRunForUser(userId, run, env = process.env) {
   return normalizeState(result.rows[0].state);
 }
 
+export async function deleteRunForUser(userId, runId, env = process.env) {
+  const id = String(runId || "").trim().slice(0, 200);
+  if (!id) {
+    const error = new Error("Choose a campaign to delete.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const client = await getPool(env).connect();
+  try {
+    await client.query("BEGIN");
+    const active = await client.query("SELECT COUNT(*)::int AS count FROM market_agent_delivery_jobs WHERE user_id = $1 AND run_id = $2 AND status IN ('running','submitted')", [userId, id]).catch(() => ({ rows: [{ count: 0 }] }));
+    if (Number(active.rows[0]?.count || 0) > 0) {
+      const error = new Error("This campaign has a publication currently processing. Wait for the platform result before deleting it.");
+      error.statusCode = 409;
+      throw error;
+    }
+    await client.query("DELETE FROM market_agent_delivery_jobs WHERE user_id = $1 AND run_id = $2 AND status <> 'complete'", [userId, id]).catch(() => undefined);
+    const deleted = await client.query("DELETE FROM market_agent_runs WHERE user_id = $1 AND id = $2 RETURNING id", [userId, id]);
+    if (!deleted.rows[0]) {
+      const error = new Error("The campaign was already removed.");
+      error.statusCode = 404;
+      throw error;
+    }
+    const updated = await client.query(
+      `UPDATE market_agent_states SET state = jsonb_set(
+         state, '{runs}',
+         COALESCE((SELECT jsonb_agg(item) FROM jsonb_array_elements(COALESCE(state->'runs','[]'::jsonb)) AS item WHERE item->>'id' <> $2), '[]'::jsonb),
+         true), revision = revision + 1, updated_at = NOW()
+       WHERE user_id = $1 RETURNING revision`,
+      [userId, id],
+    );
+    await client.query("COMMIT");
+    return { ok: true, id, revision: Number(updated.rows[0]?.revision || 0) };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function markScheduleRunForUser(userId, projectId, ranAt, env = process.env) {
   const database = getPool(env);
   await database.query(

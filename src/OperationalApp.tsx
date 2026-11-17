@@ -5,6 +5,7 @@ import {
   Bot,
   Bookmark,
   BrainCircuit,
+  CalendarDays,
   ChartColumn,
   Check,
   ChevronDown,
@@ -75,7 +76,7 @@ type ServiceLogoProvider = ConnectionProvider | "neon" | "google" | "anthropic";
 type ConnectionGuide = { message: string; targetId: ConnectionProvider | null; targetName: string; recommendedNames: string[] };
 type ConnectionGuideTarget = { id: ConnectionProvider; requestId: number } | null;
 type IssueFindings = { high?: string[]; attention?: string[] };
-type CampaignWorkspaceSection = "overview" | "newsletter" | "linkedin" | "instagram" | "tiktok" | "youtube" | "x" | "discord" | "reddit";
+type CampaignWorkspaceSection = "overview" | "calendar" | "newsletter" | "linkedin" | "instagram" | "tiktok" | "youtube" | "x" | "discord" | "reddit";
 
 type ServiceIcon = { title: string; path: string; hex: string };
 const serviceIcons: Partial<Record<ServiceLogoProvider, ServiceIcon>> = {
@@ -405,9 +406,16 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
   };
   const updateRunStatus = (id: string, status: RunStatus) => setState((current) => ({ ...current, runs: current.runs.map((run) => run.id === id ? { ...run, status } : run) }));
   const updateRunOutput = (id: string, output: string) => setState((current) => ({ ...current, runs: current.runs.map((run) => run.id === id ? { ...run, output } : run) }));
-  const deleteRun = (id: string) => {
-    setState((current) => ({ ...current, runs: current.runs.filter((run) => run.id !== id) }));
-    if (selectedRunId === id) setSelectedRunId(null);
+  const deleteRun = async (id: string) => {
+    try {
+      const response = await apiFetch(`/api/state?runId=${encodeURIComponent(id)}`, { method: "DELETE" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The campaign could not be deleted.");
+      cloudRevisionRef.current = Math.max(cloudRevisionRef.current, Number(data.revision || 0));
+      setState((current) => ({ ...current, runs: current.runs.filter((run) => run.id !== id) }));
+      if (selectedRunId === id) setSelectedRunId(null);
+      notify("Campaign deleted. Unpublished scheduled items were cancelled.");
+    } catch (error) { notify(error instanceof Error ? error.message : "The campaign could not be deleted."); }
   };
 
   const createProject = () => {
@@ -1234,6 +1242,87 @@ function ProductBrain({ workspace, onSave, onOpenContentLibrary, notify }: { wor
   </div>;
 }
 
+type CampaignCalendarEvent = {
+  id: string;
+  runId: string;
+  date: string;
+  channel: string;
+  title: string;
+  status: string;
+  needsAsset: boolean;
+  newsletter: boolean;
+};
+
+function CampaignCalendar({ runs, jobs, newsletters, onOpen, onOpenNewsletter }: { runs: AgentRun[]; jobs: DeliveryJob[]; newsletters: NewsletterDraft[]; onOpen: (id: string) => void; onOpenNewsletter: () => void }) {
+  const events = buildCampaignCalendarEvents(runs, jobs, newsletters);
+  const firstUpcoming = events.find((event) => new Date(event.date).getTime() >= Date.now()) || events.at(-1);
+  const [month, setMonth] = useState(() => { const date = firstUpcoming ? new Date(firstUpcoming.date) : new Date(); return new Date(date.getFullYear(), date.getMonth(), 1); });
+  const monthStart = new Date(month.getFullYear(), month.getMonth(), 1);
+  const gridStart = new Date(monthStart);
+  gridStart.setDate(1 - monthStart.getDay());
+  const days = Array.from({ length: 42 }, (_, index) => { const date = new Date(gridStart); date.setDate(gridStart.getDate() + index); return date; });
+  const dateKey = (value: Date | string) => { const date = value instanceof Date ? value : new Date(value); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; };
+  const byDate = new Map<string, CampaignCalendarEvent[]>();
+  for (const event of events) { const key = dateKey(event.date); byDate.set(key, [...(byDate.get(key) || []), event]); }
+  const upcoming = events.filter((event) => new Date(event.date).getTime() >= new Date().setHours(0, 0, 0, 0) && !["complete", "sent", "cancelled"].includes(event.status)).slice(0, 8);
+  return <div className="op-campaign-calendar"><section className="op-calendar-board"><header><div><small>CAMPAIGN SCHEDULE</small><h2>{month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</h2><p>Every approved, planned, incomplete, and published item appears here.</p></div><nav><button aria-label="Previous month" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}><ArrowLeft size={14} /></button><button onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Today</button><button aria-label="Next month" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ArrowRight size={14} /></button></nav></header><div className="op-calendar-weekdays">{["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => <span key={day}>{day}</span>)}</div><div className="op-calendar-grid">{days.map((day) => { const key = dateKey(day); const dayEvents = byDate.get(key) || []; const outside = day.getMonth() !== month.getMonth(); const today = key === dateKey(new Date()); return <article key={key} className={`${outside ? "outside" : ""} ${today ? "today" : ""}`}><time>{day.getDate()}</time><div>{dayEvents.slice(0, 3).map((event) => <button key={event.id} className={`channel-${event.channel} status-${event.status}`} onClick={() => event.newsletter ? onOpenNewsletter() : onOpen(event.runId)} title={`${event.title} · ${campaignCalendarStatus(event)}`}><i />{event.title}</button>)}{dayEvents.length > 3 && <small>+{dayEvents.length - 3} more</small>}</div></article>; })}</div></section><aside className="op-calendar-agenda"><header><CalendarDays size={18} /><div><small>NEXT EVENTS</small><h3>Upcoming work</h3></div></header>{upcoming.length ? upcoming.map((event) => <button key={`agenda-${event.id}`} onClick={() => event.newsletter ? onOpenNewsletter() : onOpen(event.runId)}><time>{new Date(event.date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}<small>{new Date(event.date).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</small></time><span><strong>{event.title}</strong><small>{deliveryChannelLabel(event.channel as DeliveryJob["channel"])} · {campaignCalendarStatus(event)}</small></span><ArrowRight size={13} /></button>) : <div className="op-calendar-empty"><Check size={18} /><p>No future item is ready. Planned gaps remain visible in the month grid.</p></div>}</aside></div>;
+}
+
+function buildCampaignCalendarEvents(runs: AgentRun[], jobs: DeliveryJob[], newsletters: NewsletterDraft[]): CampaignCalendarEvent[] {
+  const events: CampaignCalendarEvent[] = [];
+  for (const run of runs) {
+    const runJobs = jobs.filter((job) => job.runId === run.id).sort((left, right) => String(left.payload.scheduledAt || left.createdAt).localeCompare(String(right.payload.scheduledAt || right.createdAt)));
+    const plan = run.campaignPlan?.items?.length ? run.campaignPlan.items.map((item, index) => ({ date: item.scheduledAt, channel: item.channel, title: calendarTitle(item.text || item.subject, index), needsAsset: ["instagram", "tiktok", "youtube"].includes(item.channel) && !item.mediaUrl })) : extractRunCalendarPlan(run);
+    const count = Math.max(plan.length, runJobs.length);
+    for (let index = 0; index < count; index += 1) {
+      const job = runJobs[index];
+      const planned = plan[index];
+      const rawDate = job?.payload.scheduledAt || job?.completedAt || job?.createdAt || planned?.date;
+      if (!rawDate || !Number.isFinite(new Date(rawDate).getTime())) continue;
+      events.push({
+        id: job?.id || `plan-${run.id}-${index}`,
+        runId: run.id,
+        date: new Date(rawDate).toISOString(),
+        channel: job?.channel || planned?.channel || "instagram",
+        title: planned?.title || calendarTitle(job?.payload.text || job?.payload.subject, index),
+        status: job?.status || "planned",
+        needsAsset: !job && Boolean(planned?.needsAsset),
+        newsletter: false,
+      });
+    }
+  }
+  for (const draft of newsletters) {
+    const date = draft.scheduledFor || draft.sentAt;
+    if (!date) continue;
+    events.push({ id: `newsletter-${draft.id}`, runId: "", date, channel: "gmail", title: draft.content.subject || "Newsletter", status: draft.status === "sent" ? "sent" : draft.status, needsAsset: false, newsletter: true });
+  }
+  return events.sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function extractRunCalendarPlan(run: AgentRun) {
+  const result: Array<{ date: string; channel: DeliveryJob["channel"]; title: string; needsAsset: boolean }> = [];
+  const pattern = /^###\s+(\d+)\s*[·.-]\s*Day\s+(\d+)\s*[·.-]\s*([^\n]+)/gim;
+  const start = new Date(run.createdAt);
+  for (const match of String(run.output || "").matchAll(pattern)) {
+    const day = Math.max(1, Number(match[2] || 1));
+    const date = new Date(start);
+    date.setDate(start.getDate() + day - 1);
+    date.setHours(12, 0, 0, 0);
+    result.push({ date: date.toISOString(), channel: "instagram", title: String(match[3] || `Post ${match[1]}`).replace(/\s*[·.-]\s*(?:Static|Carousel|Reel).*$/i, "").trim(), needsAsset: true });
+  }
+  return result;
+}
+
+function calendarTitle(value: unknown, index: number) {
+  const clean = String(value || "").replace(/[*_>#`]/g, "").split("\n").map((line) => line.trim()).find(Boolean) || `Campaign item ${index + 1}`;
+  return clean.length > 54 ? `${clean.slice(0, 51)}…` : clean;
+}
+
+function campaignCalendarStatus(event: CampaignCalendarEvent) {
+  if (event.status === "planned" && event.needsAsset) return "Asset needed";
+  return ({ awaiting_approval: "Waiting for approval", scheduled: "Approved and scheduled", running: "Publishing", submitted: "Processing", complete: "Published", failed: "Needs attention", dead_letter: "Delivery stopped", cancelled: "Cancelled", sent: "Sent", planned: "Planned" } as Record<string, string>)[event.status] || event.status;
+}
+
 function CampaignOverview({ runs, jobs, newsletters, onOpen, onOpenNewsletter, onStart }: { runs: AgentRun[]; jobs: DeliveryJob[]; newsletters: NewsletterDraft[]; onOpen: (id: string) => void; onOpenNewsletter: () => void; onStart: () => void }) {
   const activeRuns = runs.filter((run) => campaignRunIsActive(run, jobs));
   const archivedRuns = runs.filter((run) => !campaignRunIsActive(run, jobs));
@@ -1248,7 +1337,7 @@ function CampaignOverview({ runs, jobs, newsletters, onOpen, onOpenNewsletter, o
   </div>;
 }
 
-function ChannelCampaignWorkspace({ channel, runs, jobs, connected, onOpen, onStart, onConnect }: { channel: Exclude<CampaignWorkspaceSection, "overview" | "newsletter">; runs: AgentRun[]; jobs: DeliveryJob[]; connected: boolean; onOpen: (id: string) => void; onStart: () => void; onConnect: () => void }) {
+function ChannelCampaignWorkspace({ channel, runs, jobs, connected, onOpen, onStart, onConnect }: { channel: Exclude<CampaignWorkspaceSection, "overview" | "calendar" | "newsletter">; runs: AgentRun[]; jobs: DeliveryJob[]; connected: boolean; onOpen: (id: string) => void; onStart: () => void; onConnect: () => void }) {
   const channelJobs = jobs.filter((job) => job.channel === channel);
   const relatedRuns = runs.filter((run) => channelJobs.some((job) => job.runId === run.id) || runMentionsChannel(run, channel));
   const activeRuns = relatedRuns.filter((run) => {
@@ -2755,7 +2844,9 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
     window.addEventListener("market-agent-newsletter-updated", handleUpdate);
     const handleDeliveryUpdate = () => { void refreshDeliveryJobs(); };
     window.addEventListener("market-agent-delivery-updated", handleDeliveryUpdate);
+    const deliveryPoll = window.setInterval(() => void refreshDeliveryJobs(), 60_000);
     return () => {
+      window.clearInterval(deliveryPoll);
       window.removeEventListener("market-agent-newsletter-updated", handleUpdate);
       window.removeEventListener("market-agent-delivery-updated", handleDeliveryUpdate);
     };
@@ -2895,6 +2986,7 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
 
   const campaignTabs: Array<{ id: CampaignWorkspaceSection; label: string; count: number }> = [
     { id: "overview", label: "Overview", count: runs.filter((run) => campaignRunIsActive(run, deliveryJobs)).length + (dashboard?.drafts.filter((draft) => draft.status !== "sent").length || 0) },
+    { id: "calendar", label: "Calendar", count: buildCampaignCalendarEvents(runs, deliveryJobs, dashboard?.drafts || []).filter((event) => !["cancelled", "sent"].includes(event.status)).length },
     { id: "newsletter", label: "Newsletter", count: (dashboard?.drafts.length || 0) + (dashboard?.contactImports.length || 0) },
     ...(["linkedin", "instagram", "tiktok", "youtube", "x", "discord", "reddit"] as const).map((channel) => ({ id: channel, label: deliveryChannelLabel(channel), count: deliveryJobs.filter((job) => job.channel === channel && deliveryJobIsActive(job)).length })),
   ];
@@ -2904,6 +2996,7 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
     <section className="op-campaign-goal"><span><Rocket size={17} /></span><div><small>{campaignGoal.selectedBy === "assistant" ? "ASSISTANT-SELECTED OUTCOME" : "PROJECT OUTCOME"}</small><strong>{growthObjectiveLabel(campaignGoal.objective)}</strong><p>Each campaign should move toward <b>{primaryConversionLabel(campaignGoal.primaryConversion).toLowerCase()}</b>, not activity for its own sake.</p></div><button onClick={onGrowth}>Review in Growth <ArrowRight size={12} /></button></section>
     <nav className="op-campaign-tabs" aria-label="Campaign channels">{campaignTabs.map((tab) => <button key={tab.id} className={section === tab.id ? "active" : ""} onClick={() => setSection(tab.id)}><span>{tab.label}</span>{tab.count > 0 && <em>{tab.count}</em>}</button>)}</nav>
     {section === "overview" && <CampaignOverview runs={runs} jobs={deliveryJobs} newsletters={dashboard?.drafts || []} onOpen={onOpen} onOpenNewsletter={() => setSection("newsletter")} onStart={onStart} />}
+    {section === "calendar" && <CampaignCalendar runs={runs} jobs={deliveryJobs} newsletters={dashboard?.drafts || []} onOpen={onOpen} onOpenNewsletter={() => setSection("newsletter")} />}
     {section === "newsletter" && <>
     {!mailchimp.connected && <section className="op-newsletter-connect"><span><Send size={21} /></span><div><small>OPTIONAL DELIVERY CONNECTION</small><h2>Campaign work stays in Market Agent</h2><p>Create the contacts, newsletter, schedule, and approval here. Connect Mailchimp only when you are ready to import subscribers and deliver; another bulk-email provider can be added later.</p></div><button onClick={onConnect}>Connect Mailchimp <ArrowRight size={14} /></button></section>}
     {mailchimp.connected && !mailchimp.canManage && <section className="op-newsletter-connect"><span><UsersRound size={21} /></span><div><small>DELIVERY CONNECTED</small><h2>Choose this project’s audience</h2><p>{mailchimp.accountLabel} is authorized. Select the audience once; campaign creation and review remain in Market Agent.</p></div><button onClick={onConnect}>Choose audience <ArrowRight size={14} /></button></section>}
@@ -2931,7 +3024,7 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
         <section className="op-newsletter-results"><div className="op-section-title"><div><small>DELIVERY PERFORMANCE</small><h2>Newsletter performance</h2><p>{mailchimp.canManage ? "Delivered, opens, clicks, bounces, and unsubscribes are read from the connected delivery account." : "Verified delivery statistics will appear after a bulk-email service is connected and the first campaign is sent."}</p></div><button className="secondary" onClick={() => void refresh()} disabled={loading}>{loading ? "Refreshing…" : "Refresh"}</button></div>{dashboard.campaigns.length ? <div className="op-newsletter-report-list">{dashboard.campaigns.map((campaign) => <article key={campaign.id}><header><div><strong>{campaign.subject || campaign.title}</strong><small>{campaign.sendTime ? new Date(campaign.sendTime).toLocaleString() : campaign.status}</small></div><em>{campaign.status}</em></header><div><span><small>Sent</small><strong>{campaign.emailsSent.toLocaleString()}</strong></span><span><small>Open rate</small><strong>{formatPercent(campaign.openRate)}</strong></span><span><small>Click rate</small><strong>{formatPercent(campaign.clickRate)}</strong></span><span><small>Bounces</small><strong>{campaign.bounces.toLocaleString()}</strong></span><span><small>Unsubscribed</small><strong>{campaign.unsubscribed.toLocaleString()}</strong></span></div>{campaign.archiveUrl && <a href={campaign.archiveUrl} target="_blank" rel="noreferrer">Open newsletter <ArrowRight size={12} /></a>}</article>)}</div> : <div className="op-empty op-empty--compact"><span><ChartColumn size={22} /></span><h2>No sent newsletters yet</h2><p>Verified performance appears here after the first approved campaign is delivered.</p></div>}</section>
       </>}
     </>}
-    {section !== "overview" && section !== "newsletter" && <ChannelCampaignWorkspace channel={section} runs={runs} jobs={deliveryJobs} connected={campaignChannelConnected(section, connections)} onOpen={onOpen} onStart={onStart} onConnect={onConnect} />}
+    {section !== "overview" && section !== "calendar" && section !== "newsletter" && <ChannelCampaignWorkspace channel={section} runs={runs} jobs={deliveryJobs} connected={campaignChannelConnected(section, connections)} onOpen={onOpen} onStart={onStart} onConnect={onConnect} />}
   </div>;
 }
 
@@ -2980,7 +3073,7 @@ function campaignRunIsActive(run: AgentRun, jobs: DeliveryJob[]) {
   return !runJobs.length || runJobs.some(deliveryJobIsActive);
 }
 
-function runMentionsChannel(run: AgentRun, channel: Exclude<CampaignWorkspaceSection, "overview" | "newsletter">) {
+function runMentionsChannel(run: AgentRun, channel: Exclude<CampaignWorkspaceSection, "overview" | "calendar" | "newsletter">) {
   const text = `${run.title} ${run.prompt} ${run.output}`.toLowerCase();
   const patterns: Record<typeof channel, RegExp> = {
     linkedin: /\blinked\s?in\b/,
@@ -2994,7 +3087,7 @@ function runMentionsChannel(run: AgentRun, channel: Exclude<CampaignWorkspaceSec
   return patterns[channel].test(text);
 }
 
-function campaignChannelConnected(channel: Exclude<CampaignWorkspaceSection, "overview" | "newsletter">, connections: ConnectionStatus) {
+function campaignChannelConnected(channel: Exclude<CampaignWorkspaceSection, "overview" | "calendar" | "newsletter">, connections: ConnectionStatus) {
   return Boolean(connections[channel]?.canPublish);
 }
 
@@ -3030,10 +3123,11 @@ function RunRow({ run, onOpen }: { run: AgentRun; onOpen: (id: string) => void }
   return <button className="op-run-row" onClick={() => onOpen(run.id)}><span className={`op-run-icon op-run-icon--${run.action}`}>{run.action === "research" ? <Globe2 size={17} /> : run.action === "audience" ? <UsersRound size={17} /> : run.action === "campaign" ? <Rocket size={17} /> : run.action === "social" ? <MessageSquareText size={17} /> : <Bot size={17} />}</span><div><strong>{run.title}</strong><p>{run.prompt || actionMeta[run.action].description}</p><small>{new Date(run.createdAt).toLocaleString()}</small></div><em className={run.status === "Approved" ? "approved" : ""}>{run.status}</em><ArrowRight size={16} /></button>;
 }
 
-function RunDetail({ run, connections, onBack, onConnect, onStatus, onOutput, onDelete, notify }: { run: AgentRun; connections: ConnectionStatus; onBack: () => void; onConnect: () => void; onStatus: (id: string, status: RunStatus) => void; onOutput: (id: string, output: string) => void; onDelete: (id: string) => void; notify: (message: string) => void }) {
+function RunDetail({ run, connections, onBack, onConnect, onStatus, onOutput, onDelete, notify }: { run: AgentRun; connections: ConnectionStatus; onBack: () => void; onConnect: () => void; onStatus: (id: string, status: RunStatus) => void; onOutput: (id: string, output: string) => void; onDelete: (id: string) => Promise<void>; notify: (message: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [output, setOutput] = useState(run.output);
   const [deliveryJobs, setDeliveryJobs] = useState<DeliveryJob[]>([]);
+  const [deliveryCoverage, setDeliveryCoverage] = useState({ expected: 0, prepared: 0, missing: 0 });
   const [deliveryWorking, setDeliveryWorking] = useState("");
   const [tiktokOptions, setTikTokOptions] = useState<Record<string, TikTokPublishingOptions>>({});
   const [youtubeOptions, setYouTubeOptions] = useState<Record<string, YouTubePublishingOptions>>({});
@@ -3041,9 +3135,12 @@ function RunDetail({ run, connections, onBack, onConnect, onStatus, onOutput, on
   const youtubeOptionsRequested = useRef(new Set<string>());
   const operationalChannels = [connections.gmail.canSend && "Email", connections.shopify.canManage && "Shopify", connections.linkedin.canPublish && "LinkedIn", connections.instagram.canPublish && "Instagram", connections.tiktok.canPublish && "TikTok", connections.youtube.canPublish && "YouTube", connections.x.canPublish && "X", connections.discord.canPublish && "Discord", connections.reddit.canPublish && "Reddit"].filter(Boolean) as string[];
   useEffect(() => {
-    apiFetch(`/api/delivery?projectId=${encodeURIComponent(run.projectId)}&runId=${encodeURIComponent(run.id)}`)
-      .then(async (response) => { const data = await response.json(); if (response.ok) setDeliveryJobs(Array.isArray(data.jobs) ? data.jobs : []); })
+    const refreshRunDelivery = () => apiFetch(`/api/delivery?projectId=${encodeURIComponent(run.projectId)}&runId=${encodeURIComponent(run.id)}`)
+      .then(async (response) => { const data = await response.json(); if (response.ok) { setDeliveryJobs(Array.isArray(data.jobs) ? data.jobs : []); setDeliveryCoverage(data.coverage || { expected: data.jobs?.length || 0, prepared: data.jobs?.length || 0, missing: 0 }); } })
       .catch(() => undefined);
+    void refreshRunDelivery();
+    const poll = window.setInterval(() => void refreshRunDelivery(), 45_000);
+    return () => window.clearInterval(poll);
   }, [run.id, run.projectId]);
   useEffect(() => {
     const update = (event: Event) => {
@@ -3092,6 +3189,7 @@ function RunDetail({ run, connections, onBack, onConnect, onStatus, onOutput, on
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The approval queue could not be prepared.");
       setDeliveryJobs(Array.isArray(data.jobs) ? data.jobs : []);
+      setDeliveryCoverage(data.coverage || { expected: data.jobs?.length || 0, prepared: data.jobs?.length || 0, missing: 0 });
       notify(data.jobs?.length ? "Approval queue prepared. Nothing has been sent." : "No executable item was found. Recipients and public media are never invented.");
     } catch (error) { notify(error instanceof Error ? error.message : "The approval queue could not be prepared."); }
     finally { setDeliveryWorking(""); }
@@ -3114,6 +3212,7 @@ function RunDetail({ run, connections, onBack, onConnect, onStatus, onOutput, on
   const approveCampaignSchedule = async () => {
     const pending = deliveryJobs.filter((job) => job.status === "awaiting_approval");
     if (!pending.length) return;
+    if (deliveryCoverage.missing > 0) { notify(`Only ${deliveryCoverage.prepared} of ${deliveryCoverage.expected} planned items are ready. Complete the missing copy or assets before approving the full schedule.`); return; }
     const incompleteTikTok = pending.find((job) => job.channel === "tiktok" && (!tiktokOptions[job.id] || !job.payload.privacyLevel || !job.payload.musicConsent || (job.payload.commercialContentToggle && !job.payload.brandOrganicToggle && !job.payload.brandContentToggle)));
     if (incompleteTikTok) { notify("Complete the required TikTok choices in each TikTok preview before approving the schedule."); return; }
     const incompleteYouTube = pending.find((job) => job.channel === "youtube" && !youtubeOptions[job.id]);
@@ -3132,6 +3231,7 @@ function RunDetail({ run, connections, onBack, onConnect, onStatus, onOutput, on
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The campaign schedule could not be approved.");
       setDeliveryJobs(Array.isArray(data.jobs) ? data.jobs : []);
+      setDeliveryCoverage(data.coverage || deliveryCoverage);
       notify("Campaign schedule approved. Future items will publish automatically without another approval.");
     } catch (error) { notify(error instanceof Error ? error.message : "The campaign schedule could not be approved."); }
     finally { setDeliveryWorking(""); }
@@ -3189,7 +3289,7 @@ function RunDetail({ run, connections, onBack, onConnect, onStatus, onOutput, on
   return <div className="op-stack">
     <button className="op-back" onClick={onBack}><ArrowLeft size={15} /> Back to workspace</button>
     <section className="op-run-detail">
-      <header><div><div className="op-eyebrow">{actionMeta[run.action].title} · {new Date(run.createdAt).toLocaleString()}</div><h1>{run.title}</h1><p>{run.prompt || actionMeta[run.action].description}</p></div><div><span className={`op-review-state ${run.status === "Approved" ? "approved" : ""}`}>{run.status === "Approved" && <Check size={13} />}{run.status}</span><button className="op-more" onClick={() => { if (window.confirm("Delete this saved agent run?")) onDelete(run.id); }}><Trash2 size={16} /></button></div></header>
+      <header><div><div className="op-eyebrow">{actionMeta[run.action].title} · {new Date(run.createdAt).toLocaleString()}</div><h1>{run.title}</h1><p>{run.prompt || actionMeta[run.action].description}</p></div><div><span className={`op-review-state ${run.status === "Approved" ? "approved" : ""}`}>{run.status === "Approved" && <Check size={13} />}{run.status}</span><button className="op-more" onClick={() => { if (window.confirm("Delete this campaign and cancel every unpublished scheduled item? Already published posts remain on their platforms.")) void onDelete(run.id); }}><Trash2 size={16} /></button></div></header>
       {distributionRun && (run.assetReferences || []).length > 0 && <section className="op-campaign-assets"><div><small>CAMPAIGN ASSETS</small><strong>Selected by the project agent</strong><p>These files remain in the Content Library and are linked here for this campaign.</p></div><div>{run.assetReferences?.map((asset) => <article key={asset.id}><span>{asset.kind === "image" ? <ImageIcon size={16} /> : asset.kind === "video" ? <Video size={16} /> : <FileText size={16} />}</span><div><strong>{asset.name}</strong><p>{asset.summary}</p><small>{asset.routingRationale}</small></div></article>)}</div></section>}
       {distributionRun && campaignIssues.length > 0 && <section className="op-campaign-issues"><div><small>CAMPAIGN CHECKS</small><strong>{campaignIssues.length} {campaignIssues.length === 1 ? "item" : "items"} to review before publishing</strong><p>These apply only to this campaign and do not appear in the project Issues panel.</p></div><ul>{campaignIssues.map((issue, index) => <li className={issue.severity} key={`${issue.severity}-${index}`}><CircleAlert size={15} /><span>{issue.text}</span></li>)}</ul></section>}
       {distributionRun && <div className={`op-execution-state ${operationalChannels.length ? "connected" : ""}`}><span>{operationalChannels.length ? <Check size={19} /> : <Send size={19} />}</span><div><small>EXECUTION STATUS</small><strong>{operationalChannels.length ? `${operationalChannels.join(", ")} operational` : "Prepared — not launched"}</strong><p>{operationalChannels.length ? "Review the full calendar once. You can publish one item now or approve the complete schedule for automatic delivery." : "No operational delivery channel is connected, so nothing can be sent or published."}</p></div><button onClick={onConnect}>{operationalChannels.length ? "Manage connections" : "Connection setup"} <ArrowRight size={14} /></button></div>}
@@ -3199,7 +3299,7 @@ function RunDetail({ run, connections, onBack, onConnect, onStatus, onOutput, on
           {run.status === "Approved" && deliveryJobs.length === 0 && <button onClick={() => void prepareDelivery()} disabled={deliveryWorking === "prepare"}>{deliveryWorking === "prepare" ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}{deliveryWorking === "prepare" ? "Preparing…" : "Prepare actions"}</button>}
         </div>
         {run.status !== "Approved" && <div className="op-delivery-empty"><CircleAlert size={16} /> Mark this work approved before creating external actions.</div>}
-        {awaitingDeliveryJobs.length > 0 && <div className="op-campaign-schedule-approval"><div><small>ONE APPROVAL FOR THE CAMPAIGN</small><strong>{awaitingDeliveryJobs.length} item{awaitingDeliveryJobs.length === 1 ? "" : "s"} ready across {new Set(awaitingDeliveryJobs.map((job) => job.channel)).size} channel{new Set(awaitingDeliveryJobs.map((job) => job.channel)).size === 1 ? "" : "s"}</strong><p>Dates remain editable below. Paid media is never included unless a separate budget is explicitly approved.</p></div><button onClick={() => void approveCampaignSchedule()} disabled={Boolean(deliveryWorking)}>{deliveryWorking === "approve-campaign" ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />} Approve full schedule</button></div>}
+        {awaitingDeliveryJobs.length > 0 && <div className={`op-campaign-schedule-approval ${deliveryCoverage.missing > 0 ? "incomplete" : ""}`}><div><small>{deliveryCoverage.missing > 0 ? "CAMPAIGN INCOMPLETE" : "ONE APPROVAL FOR THE CAMPAIGN"}</small><strong>{deliveryCoverage.missing > 0 ? `${deliveryCoverage.prepared} of ${deliveryCoverage.expected} planned items ready` : `${awaitingDeliveryJobs.length} item${awaitingDeliveryJobs.length === 1 ? "" : "s"} ready across ${new Set(awaitingDeliveryJobs.map((job) => job.channel)).size} channel${new Set(awaitingDeliveryJobs.map((job) => job.channel)).size === 1 ? "" : "s"}`}</strong><p>{deliveryCoverage.missing > 0 ? `${deliveryCoverage.missing} planned item${deliveryCoverage.missing === 1 ? " still needs" : "s still need"} final copy or an approved asset. The app will not call a partial queue a full campaign.` : "Dates remain editable below. Paid media is never included unless a separate budget is explicitly approved."}</p></div><button onClick={() => void approveCampaignSchedule()} disabled={Boolean(deliveryWorking) || deliveryCoverage.missing > 0}>{deliveryWorking === "approve-campaign" ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />} {deliveryCoverage.missing > 0 ? "Complete campaign first" : "Approve full schedule"}</button></div>}
         {scheduledDeliveryJobs.length > 0 && <div className="op-campaign-schedule-approval scheduled"><div><small>AUTOMATIC PUBLISHING ACTIVE</small><strong>{scheduledDeliveryJobs.length} future item{scheduledDeliveryJobs.length === 1 ? "" : "s"} approved</strong><p>The cloud scheduler will publish these exact items on their dates. Changes and new items require approval again.</p></div><button className="secondary" onClick={() => void pauseCampaignSchedule()} disabled={Boolean(deliveryWorking)}>{deliveryWorking === "pause-campaign" ? <LoaderCircle className="spin" size={14} /> : <CircleAlert size={14} />} Pause future posts</button></div>}
         {deliveryJobs.length > 0 && <div className="op-delivery-list">{deliveryJobs.map((job) => <DeliveryApprovalCard
           key={job.id}

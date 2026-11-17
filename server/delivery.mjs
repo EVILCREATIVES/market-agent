@@ -25,12 +25,21 @@ export async function listDeliveryJobs(userId, projectId, runId = "", env = proc
       ORDER BY created_at ASC LIMIT 100`,
     values,
   );
-  return { jobs: result.rows.map((row, index) => {
+  const jobs = result.rows.map((row, index) => {
     const job = serializeDeliveryJob(row);
     if (!job.payload?.scheduledAt && job.status === "awaiting_approval") job.payload.scheduledAt = normalizeScheduledAt("", index);
     if (job.payload?.sourceAssetId) job.payload.mediaUrl = createPublicProjectAssetUrl(job.payload.sourceAssetId, env);
     return job;
-  }) };
+  });
+  let coverage = { expected: jobs.length, prepared: jobs.filter((job) => job.status !== "cancelled").length, missing: 0 };
+  if (runId) {
+    const { state } = await loadStateForUser(userId, env);
+    const run = state.runs.find((item) => item.id === runId && item.projectId === projectId);
+    const expected = campaignPublicationTarget(run);
+    const prepared = jobs.filter((job) => job.status !== "cancelled").length;
+    coverage = { expected: Math.max(expected, prepared), prepared, missing: Math.max(0, expected - prepared) };
+  }
+  return { jobs, coverage };
 }
 
 export async function replaceDeliveryMediaFromAsset(userId, projectId, runId, asset, env = process.env) {
@@ -188,6 +197,11 @@ export async function approveDeliveryCampaign(userId, projectId, runId, items = 
   const approvalId = randomUUID();
   try {
     await client.query("BEGIN");
+    const runResult = await client.query("SELECT data FROM market_agent_runs WHERE user_id = $1 AND project_id = $2 AND id = $3 LIMIT 1", [userId, projectId, runId]);
+    const expected = campaignPublicationTarget(runResult.rows[0]?.data);
+    const preparedResult = await client.query("SELECT COUNT(*)::int AS count FROM market_agent_delivery_jobs WHERE user_id = $1 AND project_id = $2 AND run_id = $3 AND status <> 'cancelled'", [userId, projectId, runId]);
+    const prepared = Number(preparedResult.rows[0]?.count || 0);
+    if (expected > prepared) throw deliveryError(`Only ${prepared} of ${expected} planned campaign items are executable. Complete the missing copy or assets before approving the full schedule.`, 409);
     const result = await client.query(
       `SELECT * FROM market_agent_delivery_jobs
         WHERE user_id = $1 AND project_id = $2 AND run_id = $3 AND status = 'awaiting_approval'
@@ -451,6 +465,24 @@ function channelAllowedForAccess(channel, accessEnv) {
   if (channel === "x") return mode === "managed";
   if (mode === "byok" || mode === "managed") return true;
   return mode === "trial" && channel === "linkedin";
+}
+
+export function campaignPublicationTarget(run) {
+  if (!run || typeof run !== "object") return 0;
+  const planCount = Array.isArray(run.campaignPlan?.items) ? run.campaignPlan.items.length : 0;
+  const text = `${String(run.prompt || "")}\n${String(run.output || "")}`;
+  const numberedDays = [...text.matchAll(/^###\s+\d+\s*[·.-]\s*Day\s+\d+/gim)].length;
+  const explicitPosts = [...text.matchAll(/\b(\d{1,2})\s+(?:posts?|publications?|captions?)\b/gi)].map((match) => Number(match[1] || 0));
+  const weekly = text.match(/\b(\d{1,2}|one|two|three|four|five|six|seven)\s+posts?\s+(?:per|a|each)\s+week\b/i);
+  const weeks = text.match(/\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)[-\s]+week\b/i);
+  const cadenceCount = weekly && weeks ? wordNumber(weekly[1]) * wordNumber(weeks[1]) : 0;
+  return Math.min(45, Math.max(planCount, numberedDays, cadenceCount, ...explicitPosts, 0));
+}
+
+function wordNumber(value) {
+  const words = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+  const normalized = String(value || "").toLowerCase();
+  return Number(normalized) || words[normalized] || 0;
 }
 
 function normalizeDeliveryItems(values, channels, workspace, run = {}) {

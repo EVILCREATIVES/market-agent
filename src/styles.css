@@ -2061,6 +2061,43 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-campaign-tabs button.active { border-color: #d6cbed; background: #eee8ff; color: #5f44c3; }
 .op-campaign-tabs button em { min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: #ded5f7; color: #5f44c3; font-size: 7px; font-style: normal; display: grid; place-items: center; }
 .op-campaign-overview, .op-channel-campaigns { display: flex; flex-direction: column; gap: 14px; }
+.op-campaign-calendar { display: grid; grid-template-columns: minmax(0,1fr) 270px; gap: 14px; align-items: start; }
+.op-calendar-board, .op-calendar-agenda { border: 1px solid #ddd9d0; border-radius: 12px; background: white; box-shadow: var(--shadow); overflow: hidden; }
+.op-calendar-board > header { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; padding: 16px 18px; border-bottom: 1px solid #e6e2da; }
+.op-calendar-board > header small, .op-calendar-agenda > header small { color: #6b51ca; font-size: 7.2px; font-weight: 800; letter-spacing: .08em; }
+.op-calendar-board > header h2 { margin: 4px 0; font-size: 15px; }
+.op-calendar-board > header p { margin: 0; color: #7a766f; font-size: 8px; }
+.op-calendar-board > header nav { display: flex; gap: 5px; }
+.op-calendar-board > header button { min-height: 30px; border: 1px solid #d9d3e8; border-radius: 7px; background: white; color: #654dc0; padding: 0 9px; display: grid; place-items: center; font-size: 8px; font-weight: 750; cursor: pointer; }
+.op-calendar-weekdays, .op-calendar-grid { display: grid; grid-template-columns: repeat(7,minmax(0,1fr)); }
+.op-calendar-weekdays { background: #f6f4ef; border-bottom: 1px solid #e2dfd7; }
+.op-calendar-weekdays span { padding: 7px 8px; color: #77726a; font-size: 7px; font-weight: 800; text-transform: uppercase; }
+.op-calendar-grid > article { min-width: 0; min-height: 102px; padding: 7px; border-right: 1px solid #ece9e2; border-bottom: 1px solid #ece9e2; background: #fff; }
+.op-calendar-grid > article:nth-child(7n) { border-right: 0; }
+.op-calendar-grid > article.outside { background: #faf9f6; color: #aaa69f; }
+.op-calendar-grid > article.today { box-shadow: inset 0 0 0 2px #8f77e1; }
+.op-calendar-grid time { display: block; margin-bottom: 6px; color: #69655f; font-size: 7.5px; font-weight: 800; }
+.op-calendar-grid article > div { display: flex; flex-direction: column; gap: 4px; }
+.op-calendar-grid button { width: 100%; min-width: 0; border: 0; border-radius: 5px; background: #eee9ff; color: #5e46b8; padding: 5px 6px; display: flex; align-items: center; gap: 5px; overflow: hidden; text-align: left; white-space: nowrap; text-overflow: ellipsis; font-size: 6.8px; font-weight: 720; cursor: pointer; }
+.op-calendar-grid button i { flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.op-calendar-grid button.status-complete, .op-calendar-grid button.status-sent { background: #e5f4ec; color: #2d7354; }
+.op-calendar-grid button.status-planned { background: #fff2d9; color: #8c5d13; }
+.op-calendar-grid button.status-failed, .op-calendar-grid button.status-dead_letter { background: #ffe9e6; color: #a24439; }
+.op-calendar-grid button.status-scheduled { background: #e5f4ec; color: #2b7252; }
+.op-calendar-grid article > div > small { color: #8d887f; font-size: 6.5px; }
+.op-calendar-agenda > header { display: flex; gap: 9px; align-items: center; padding: 15px; border-bottom: 1px solid #e4e1da; color: #654cc0; }
+.op-calendar-agenda > header h3 { margin: 3px 0 0; color: #282622; font-size: 11px; }
+.op-calendar-agenda > button { width: 100%; border: 0; border-bottom: 1px solid #ece9e2; background: white; padding: 11px 12px; display: grid; grid-template-columns: 42px minmax(0,1fr) auto; align-items: center; gap: 8px; text-align: left; cursor: pointer; }
+.op-calendar-agenda > button:hover { background: #faf8ff; }
+.op-calendar-agenda > button time { color: #684fc3; font-size: 8px; font-weight: 800; }
+.op-calendar-agenda > button time small { display: block; margin-top: 2px; color: #8b867e; font-size: 6.7px; font-weight: 600; }
+.op-calendar-agenda > button span { min-width: 0; }
+.op-calendar-agenda > button strong { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 8px; }
+.op-calendar-agenda > button span small { display: block; margin-top: 3px; color: #817c74; font-size: 6.8px; }
+.op-calendar-empty { padding: 18px; color: #77716b; text-align: center; }
+.op-calendar-empty p { margin: 7px 0 0; font-size: 8px; line-height: 1.45; }
+.op-campaign-schedule-approval.incomplete { border-color: #e5bf75; background: #fff8e9; }
+.op-campaign-schedule-approval.incomplete button { background: #d2c5ac; cursor: default; }
 .op-campaign-summary { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; }
 .op-campaign-summary article { padding: 15px; border: 1px solid #dfdcd4; border-radius: 11px; background: #fbfbf8; display: flex; flex-direction: column; gap: 4px; }
 .op-campaign-summary article small { color: #7c7972; font-size: 7.5px; text-transform: uppercase; letter-spacing: .06em; }
@@ -2183,8 +2220,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .op-contact-imports > div:last-child { grid-template-columns: 1fr; }
   .op-channel-campaigns__hero { grid-template-columns: 42px minmax(0,1fr); }
   .op-channel-campaigns__hero > button { grid-column: 1 / -1; width: 100%; justify-content: center; }
+  .op-campaign-calendar { grid-template-columns: 1fr; }
 }
 @media (max-width: 600px) {
+  .op-calendar-board { overflow-x: auto; }
+  .op-calendar-board > header, .op-calendar-weekdays, .op-calendar-grid { min-width: 720px; }
   .op-access-choice { inset: 0; width: 100%; max-height: 100vh; border-radius: 0; }
   .op-access-intro { margin: 18px 15px 0; }
   .op-access-options { padding: 14px 15px 20px; }
