@@ -810,7 +810,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-dropzone strong { color: #393832; font-size: 10.5px; }
 .op-dropzone span { color: #8a8982; font-size: 8px; }
 .op-connector-pills { margin-top: 15px; display: flex; flex-wrap: wrap; gap: 6px; }
-.op-connector-pills span { padding: 4px 8px 4px 5px; border-radius: 12px; background: #eeeaff; color: #654bc6; font-size: 7.8px; font-weight: 650; display: inline-flex; align-items: center; gap: 5px; }
+.op-connector-pills span { padding: 2px 8px 2px 0; border-radius: 0; background: transparent; color: #514d59; font-size: 7.8px; font-weight: 650; display: inline-flex; align-items: center; gap: 5px; }
 .op-source-service-icon { --source-service-color: #6650c1; width: 24px; height: 24px; flex: none; border-radius: 0; background: transparent; color: var(--source-service-color); display: inline-grid; place-items: center; }
 .op-source-service-icon svg { width: 16px; height: 16px; fill: currentColor; }
 .op-source-service-icon.compact { width: 18px; height: 18px; border-radius: 0; background: transparent; }
