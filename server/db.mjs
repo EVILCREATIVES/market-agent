@@ -264,6 +264,7 @@ function defaultProject(name = "New project", id = "project-default") {
     sourceWarnings: [],
     protectedFields: [],
     chatMessages: [],
+    emailIdentity: defaultEmailIdentity(),
     growth: defaultGrowthPlan(),
     updatedAt: new Date().toISOString(),
   };
@@ -304,7 +305,22 @@ function normalizeProject(value, index) {
     sourceWarnings: Array.isArray(project.sourceWarnings) ? project.sourceWarnings : [],
     protectedFields: Array.isArray(project.protectedFields) ? project.protectedFields.map(String).slice(0, 30) : [],
     chatMessages: Array.isArray(project.chatMessages) ? project.chatMessages.slice(-80) : [],
+    emailIdentity: normalizeEmailIdentity(project.emailIdentity),
     growth: normalizeGrowthPlan(project.growth),
+  };
+}
+
+function defaultEmailIdentity() {
+  return { senderName: "", businessDetails: "", physicalAddress: "", addressPreference: "ask" };
+}
+
+function normalizeEmailIdentity(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    senderName: String(source.senderName || "").trim().slice(0, 160),
+    businessDetails: String(source.businessDetails || "").trim().slice(0, 600),
+    physicalAddress: String(source.physicalAddress || "").trim().slice(0, 600),
+    addressPreference: ["ask", "include", "omit"].includes(source.addressPreference) ? source.addressPreference : "ask",
   };
 }
 

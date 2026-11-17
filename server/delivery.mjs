@@ -9,6 +9,7 @@ import { getSocialPostStatus } from "./social-connections.mjs";
 import { createShopifyDraft } from "./shopify.mjs";
 import { createPublicProjectAssetUrl } from "./assets.mjs";
 import { loadUserApiEnv } from "./user-api-credentials.mjs";
+import { unresolvedEmailPlaceholders } from "./email-content.mjs";
 
 let deliveryTableReady = false;
 
@@ -462,6 +463,8 @@ function normalizeDeliveryItems(values, channels, workspace, run = {}) {
     const textLimit = channel === "x" ? 280 : channel === "linkedin" ? 3000 : channel === "gmail" ? 100_000 : channel === "shopify" ? 50_000 : channel === "discord" ? 2000 : channel === "reddit" ? 40_000 : channel === "youtube" ? 5000 : 2200;
     const rawText = String(value?.text || "").trim();
     if (!rawText) continue;
+    const rawSubject = String(value?.subject || "");
+    if (channel === "gmail" && unresolvedEmailPlaceholders(rawSubject, rawText).length) continue;
     const tracked = applyCampaignTracking(rawText, workspace, run, channel, items.length);
     const text = tracked.text.slice(0, textLimit).trim();
     if (!text) continue;
@@ -475,7 +478,7 @@ function normalizeDeliveryItems(values, channels, workspace, run = {}) {
     if (["instagram", "tiktok", "youtube"].includes(channel) && !mediaUrl) continue;
     const recipient = channel === "gmail" ? validApprovedRecipient(value?.recipient, run) : "";
     if (channel === "gmail" && !recipient) continue;
-    const subject = ["gmail", "reddit", "youtube", "shopify"].includes(channel) ? String(value?.subject || "").replace(/[\r\n]+/g, " ").trim().slice(0, channel === "youtube" ? 100 : channel === "shopify" ? 255 : 300) : "";
+    const subject = ["gmail", "reddit", "youtube", "shopify"].includes(channel) ? rawSubject.replace(/[\r\n]+/g, " ").trim().slice(0, channel === "youtube" ? 100 : channel === "shopify" ? 255 : 300) : "";
     if (["gmail", "reddit", "youtube", "shopify"].includes(channel) && !subject) continue;
     items.push({
       channel,

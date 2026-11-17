@@ -3,6 +3,7 @@ import { del, get } from "@vercel/blob";
 import { EncryptJWT, jwtDecrypt } from "jose";
 import { generateNewsletterDraft } from "./agent.mjs";
 import { getPool, loadStateForUser } from "./db.mjs";
+import { newsletterDraftPlaceholders } from "./email-content.mjs";
 
 let tablesReady = false;
 
@@ -193,6 +194,20 @@ export async function getNewsletterDashboard(userId, projectId, env = process.en
       FROM market_agent_subscribers WHERE user_id = $1 AND project_id = $2`, [userId, projectId]),
     getNewsletterSettings(userId, projectId, env),
   ]);
+  let workspace = {};
+  try {
+    const loaded = await loadStateForUser(userId, env);
+    workspace = loaded.state.projects.find((item) => item.id === projectId) || {};
+  } catch { /* Existing drafts remain readable if project context is temporarily unavailable. */ }
+  const hydratedDrafts = await Promise.all(local.rows.map(async (row) => {
+    const draft = normalizeDraft(row.draft || {}, workspace);
+    draft.issues = newsletterDraftIssues(draft, workspace);
+    const html = renderNewsletterHtml(draft, workspace);
+    if (JSON.stringify(draft) !== JSON.stringify(row.draft || {}) || html !== row.html) {
+      await getPool(env).query("UPDATE market_agent_newsletters SET draft = $4::jsonb, html = $5, updated_at = NOW() WHERE id = $1 AND user_id = $2 AND project_id = $3", [row.id, userId, projectId, JSON.stringify(draft), html]).catch(() => undefined);
+    }
+    return serializeDraft({ ...row, draft, html });
+  }));
   return {
     audience: {
       id: String(audience.id || ""),
@@ -205,7 +220,7 @@ export async function getNewsletterDashboard(userId, projectId, env = process.en
     },
     members: (members.members || []).map(serializeMember),
     campaigns: remoteCampaigns,
-    drafts: local.rows.map(serializeDraft),
+    drafts: hydratedDrafts,
     contactImports: contactImports.rows.map(serializeContactImport),
     subscriberRegistry: {
       counts: normalizeSubscriberCounts(registryCounts.rows[0]),
@@ -461,6 +476,7 @@ export async function createNewsletterDraft(userId, projectId, direction, userAp
   const generated = await generateNewsletterDraft({ workspace, direction, approvedWork }, userApiEnv);
   const id = randomUUID();
   const draft = normalizeDraft(generated, workspace);
+  draft.issues = newsletterDraftIssues(draft, workspace);
   draft.ctaUrl = trackedNewsletterUrl(draft.ctaUrl, id, draft.subject);
   const html = renderNewsletterHtml(draft, workspace);
   const result = await getPool(env).query(
@@ -480,6 +496,7 @@ export async function updateNewsletterDraft(userId, projectId, id, changes, env 
   const { state } = await loadStateForUser(userId, env);
   const workspace = state.projects.find((item) => item.id === projectId);
   const draft = normalizeDraft({ ...row.draft, ...changes }, workspace || {});
+  draft.issues = newsletterDraftIssues(draft, workspace || {});
   draft.ctaUrl = trackedNewsletterUrl(draft.ctaUrl, id, draft.subject);
   const html = renderNewsletterHtml(draft, workspace || {});
   const result = await getPool(env).query(
@@ -531,12 +548,14 @@ export async function deliverNewsletter(userId, projectId, id, mode, scheduleTim
   const row = claim.rows[0];
   if (!row) throw newsletterError("This newsletter is no longer waiting for approval.", 409);
   try {
+    const draftIssues = newsletterDraftIssues(row.draft || {}, {});
+    if (draftIssues.length) throw newsletterError(`Resolve the newsletter details before delivery: ${draftIssues.join(" ")}`, 409);
     const { row: connection, credentials } = await connectionCredentials(userId, projectId, env);
     const audienceId = requireAudience(credentials);
     const list = await mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}`);
     const defaults = list.campaign_defaults || {};
     const replyTo = String(defaults.from_email || connection.account_email || "").trim();
-    const fromName = String(defaults.from_name || connection.account_label || "").trim();
+    const fromName = String(row.draft?.senderName || defaults.from_name || connection.account_label || "").trim();
     if (!replyTo || !fromName) throw newsletterError("The selected Mailchimp audience needs a verified sender name and reply-to email before Market Agent can send.", 409);
     let campaignId = row.external_id || "";
     let campaign;
@@ -878,6 +897,13 @@ async function ensureTables(env) {
 
 function normalizeDraft(value, workspace) {
   const safeUrl = safeCtaUrl(value?.ctaUrl, workspace);
+  const identity = workspace?.emailIdentity && typeof workspace.emailIdentity === "object" ? workspace.emailIdentity : {};
+  const senderName = cleanHeader(value?.senderName || identity.senderName, 160);
+  const businessDetails = cleanText(value?.businessDetails || identity.businessDetails, 600);
+  const addressPreference = ["include", "omit"].includes(value?.addressPreference || identity.addressPreference) ? (value?.addressPreference || identity.addressPreference) : "ask";
+  const physicalAddress = cleanText(value?.physicalAddress || identity.physicalAddress, 600);
+  const logoUrl = safeEmailImage(value?.logoUrl) || projectLogoUrl(workspace);
+  const hero = projectHeroImage(workspace);
   return {
     subject: cleanHeader(value?.subject, 100) || `An update from ${cleanHeader(workspace?.name, 70) || "our team"}`,
     previewText: cleanHeader(value?.previewText, 150),
@@ -887,7 +913,46 @@ function normalizeDraft(value, workspace) {
     ctaLabel: safeUrl ? cleanHeader(value?.ctaLabel, 80) || "Learn more" : "",
     ctaUrl: safeUrl,
     closing: cleanText(value?.closing, 1_000),
+    logoUrl,
+    heroImageUrl: safeEmailImage(value?.heroImageUrl) || hero.url,
+    heroImageAlt: cleanHeader(value?.heroImageAlt, 180) || hero.alt,
+    senderName,
+    businessDetails,
+    physicalAddress,
+    addressPreference,
+    issues: Array.isArray(value?.issues) ? value.issues.map((item) => cleanText(item, 300)).filter(Boolean).slice(0, 10) : [],
   };
+}
+
+function newsletterDraftIssues(draft, workspace) {
+  const issues = [];
+  const placeholders = newsletterDraftPlaceholders(draft);
+  if (placeholders.length) issues.push(`Replace unresolved fields: ${placeholders.join(", ")}.`);
+  if (!cleanHeader(draft?.senderName || workspace?.emailIdentity?.senderName, 160)) issues.push("Add the sender name.");
+  if (!cleanText(draft?.businessDetails || workspace?.emailIdentity?.businessDetails, 600)) issues.push("Add the business contact details, or explicitly choose to omit them.");
+  const preference = draft?.addressPreference || workspace?.emailIdentity?.addressPreference || "ask";
+  if (preference === "ask") issues.push("Choose whether the editorial signature should show the physical address.");
+  if (preference === "include" && !cleanText(draft?.physicalAddress || workspace?.emailIdentity?.physicalAddress, 600)) issues.push("Add the physical address or choose to omit it from the editorial signature.");
+  return [...new Set(issues)];
+}
+
+function projectLogoUrl(workspace) {
+  const direct = safeEmailImage(workspace?.brand?.logoDataUrl);
+  if (direct) return direct;
+  const media = Array.isArray(workspace?.sourceMedia) ? workspace.sourceMedia : [];
+  return safeEmailImage(media.find((item) => /\b(logo|wordmark|brand mark)\b/i.test(`${item?.name || ""} ${item?.role || ""} ${(item?.tags || []).join(" ")}`))?.url);
+}
+
+function projectHeroImage(workspace) {
+  const media = Array.isArray(workspace?.sourceMedia) ? workspace.sourceMedia : [];
+  const item = media.find((candidate) => candidate?.kind === "image" && candidate?.recommendation === "reuse" && !/\b(logo|favicon|icon|wordmark|brand mark)\b/i.test(`${candidate?.name || ""} ${candidate?.role || ""} ${(candidate?.tags || []).join(" ")}`))
+    || media.find((candidate) => candidate?.kind === "image" && !/\b(logo|favicon|icon|wordmark|brand mark)\b/i.test(`${candidate?.name || ""} ${candidate?.role || ""} ${(candidate?.tags || []).join(" ")}`));
+  return { url: safeEmailImage(item?.url), alt: cleanHeader(item?.name || item?.role, 180) };
+}
+
+function safeEmailImage(value) {
+  const image = String(value || "").trim();
+  return /^(?:https:\/\/|data:image\/(?:png|jpeg|jpg|webp|gif);base64,)/i.test(image) ? image : "";
 }
 
 function safeCtaUrl(value, workspace) {
@@ -910,9 +975,12 @@ function renderNewsletterHtml(draft, workspace) {
   const background = safeColor(workspace?.brand?.neutralLightColor, "#f6f5f2");
   const text = safeColor(workspace?.brand?.neutralDarkColor, "#202020");
   const name = escapeHtml(workspace?.name || "Newsletter");
+  const logo = draft.logoUrl ? `<img src="${escapeAttribute(draft.logoUrl)}" alt="${name}" style="display:block;max-width:190px;max-height:72px;width:auto;height:auto">` : `<div style="font:700 13px Arial,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:${primary}">${name}</div>`;
+  const hero = draft.heroImageUrl ? `<tr><td><img src="${escapeAttribute(draft.heroImageUrl)}" alt="${escapeAttribute(draft.heroImageAlt || "")}" width="640" style="display:block;width:100%;max-width:640px;height:auto;max-height:420px;object-fit:cover"></td></tr>` : "";
+  const signature = [draft.senderName, draft.businessDetails, draft.addressPreference === "include" ? draft.physicalAddress : ""].filter(Boolean).map((line) => paragraphs(line)).join("<br>");
   const sections = draft.sections.map((section) => `<tr><td style="padding:0 34px 24px"><h2 style="margin:0 0 8px;font:700 20px/1.25 Arial,sans-serif;color:${text}">${escapeHtml(section.heading)}</h2><p style="margin:0;font:400 16px/1.6 Arial,sans-serif;color:${text}">${paragraphs(section.body)}</p></td></tr>`).join("");
   const button = draft.ctaUrl ? `<tr><td style="padding:2px 34px 30px"><a href="${escapeAttribute(draft.ctaUrl)}" style="display:inline-block;padding:13px 20px;background:${primary};color:#ffffff;text-decoration:none;border-radius:7px;font:700 15px Arial,sans-serif">${escapeHtml(draft.ctaLabel)}</a></td></tr>` : "";
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeHtml(draft.subject)}</title></head><body style="margin:0;padding:0;background:${background}"><div style="display:none;max-height:0;overflow:hidden">${escapeHtml(draft.previewText)}</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:${background};padding:28px 12px"><tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border-radius:12px;overflow:hidden"><tr><td style="height:8px;background:${primary}"></td></tr><tr><td style="padding:28px 34px 14px"><div style="font:700 13px Arial,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:${primary}">${name}</div><h1 style="margin:14px 0 12px;font:700 34px/1.15 Arial,sans-serif;color:${text}">${escapeHtml(draft.headline)}</h1><p style="margin:0;font:400 17px/1.6 Arial,sans-serif;color:${text}">${paragraphs(draft.introduction)}</p></td></tr>${sections}${button}<tr><td style="padding:0 34px 28px"><p style="margin:0;font:400 15px/1.6 Arial,sans-serif;color:${text}">${paragraphs(draft.closing)}</p></td></tr><tr><td style="padding:20px 34px;background:#f2f1ee;font:400 12px/1.5 Arial,sans-serif;color:#666">You are receiving this because you subscribed to updates from ${name}.<br>*|LIST:DESCRIPTION|*<br><a href="*|UNSUB|*" style="color:#555">Unsubscribe</a> · <a href="*|UPDATE_PROFILE|*" style="color:#555">Update preferences</a><br>*|HTML:LIST_ADDRESS_HTML|*</td></tr></table></td></tr></table></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeHtml(draft.subject)}</title></head><body style="margin:0;padding:0;background:${background}"><div style="display:none;max-height:0;overflow:hidden">${escapeHtml(draft.previewText)}</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:${background};padding:28px 12px"><tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border-radius:12px;overflow:hidden"><tr><td style="height:8px;background:${primary}"></td></tr><tr><td style="padding:28px 34px 22px">${logo}</td></tr>${hero}<tr><td style="padding:28px 34px 14px"><h1 style="margin:0 0 12px;font:700 34px/1.15 Arial,sans-serif;color:${text}">${escapeHtml(draft.headline)}</h1><p style="margin:0;font:400 17px/1.6 Arial,sans-serif;color:${text}">${paragraphs(draft.introduction)}</p></td></tr>${sections}${button}<tr><td style="padding:0 34px 28px"><p style="margin:0;font:400 15px/1.6 Arial,sans-serif;color:${text}">${paragraphs(draft.closing)}</p>${signature ? `<p style="margin:18px 0 0;font:600 14px/1.55 Arial,sans-serif;color:${text}">${signature}</p>` : ""}</td></tr><tr><td style="padding:20px 34px;background:#f2f1ee;font:400 12px/1.5 Arial,sans-serif;color:#666">You are receiving this because you subscribed to updates from ${name}.<br>*|LIST:DESCRIPTION|*<br><a href="*|UNSUB|*" style="color:#555">Unsubscribe</a> · <a href="*|UPDATE_PROFILE|*" style="color:#555">Update preferences</a><br>*|HTML:LIST_ADDRESS_HTML|*</td></tr></table></td></tr></table></body></html>`;
 }
 
 function serializeDraft(row) {

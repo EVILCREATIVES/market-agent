@@ -43,6 +43,7 @@ export function createEmptyProject(name: string = "New project", id: string = cr
     sourceWarnings: [],
     protectedFields: [],
     chatMessages: [],
+    emailIdentity: { senderName: "", businessDetails: "", physicalAddress: "", addressPreference: "ask" },
     growth: createDefaultGrowthPlan(),
     updatedAt: new Date().toISOString(),
   };
@@ -151,6 +152,12 @@ function normalizeProject(project: Partial<ProductWorkspace>, index: number): Pr
     sourceWarnings: Array.isArray(project.sourceWarnings) ? project.sourceWarnings : [],
     protectedFields: Array.isArray(project.protectedFields) ? project.protectedFields.map(String).slice(0, 30) : [],
     chatMessages: Array.isArray(project.chatMessages) ? project.chatMessages.slice(-80) : [],
+    emailIdentity: {
+      senderName: String(project.emailIdentity?.senderName || "").trim().slice(0, 160),
+      businessDetails: String(project.emailIdentity?.businessDetails || "").trim().slice(0, 600),
+      physicalAddress: String(project.emailIdentity?.physicalAddress || "").trim().slice(0, 600),
+      addressPreference: project.emailIdentity?.addressPreference === "include" || project.emailIdentity?.addressPreference === "omit" ? project.emailIdentity.addressPreference : "ask",
+    },
     growth: normalizeGrowthPlan(project.growth),
   };
 }

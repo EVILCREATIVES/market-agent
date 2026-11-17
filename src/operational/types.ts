@@ -107,6 +107,12 @@ export interface ProductWorkspace {
   sourceWarnings: string[];
   protectedFields: string[];
   chatMessages: ProjectChatMessage[];
+  emailIdentity: {
+    senderName: string;
+    businessDetails: string;
+    physicalAddress: string;
+    addressPreference: "ask" | "include" | "omit";
+  };
   growth: ProjectGrowthPlan;
   updatedAt: string;
 }
@@ -362,6 +368,14 @@ export interface NewsletterDraft {
     ctaLabel: string;
     ctaUrl: string;
     closing: string;
+    logoUrl: string;
+    heroImageUrl: string;
+    heroImageAlt: string;
+    senderName: string;
+    businessDetails: string;
+    physicalAddress: string;
+    addressPreference: "ask" | "include" | "omit";
+    issues: string[];
   };
   html: string;
   status: "draft" | "preparing" | "scheduled" | "sent" | "failed";
