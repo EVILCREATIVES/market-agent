@@ -314,6 +314,43 @@ Never infer a Brand-source refresh merely because draft copy contains words such
   });
 }
 
+export async function rewriteProspectInvitation(payload, env = process.env) {
+  const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
+  const invitation = payload?.invitation && typeof payload.invitation === "object" ? payload.invitation : {};
+  const direction = String(payload?.message || "").trim().slice(0, 12_000);
+  if (!direction) throw new Error("Describe how the prospect invitation should change.");
+  const projectName = String(workspace.name || "the project");
+  const projectWebsite = String(workspace.website || invitation.invitationUrl || "");
+  const result = await generateStructuredObject({
+    env,
+    name: "prospect_invitation_revision",
+    system: `${operatorSystem} Write concise, credible one-to-one prospect invitations. Return final saved-draft fields only.`,
+    prompt: `PROJECT
+Name: ${projectName}
+Website or demo: ${projectWebsite}
+Description: ${String(workspace.description || "").slice(0, 3_000)}
+Audience: ${String(workspace.audience || "").slice(0, 2_000)}
+Voice: ${String(workspace.voice || "").slice(0, 1_500)}
+Sender: ${String(workspace.emailIdentity?.senderName || "").slice(0, 160)}
+
+CURRENT SAVED INVITATION
+${JSON.stringify(invitation, null, 2).slice(0, 12_000)}
+
+USER CORRECTION
+${direction}
+
+Rewrite the saved prospect invitation exactly as requested. This is an invitation to one prospect, not a newsletter. Keep it human and specific. Do not describe the workflow, do not add headings such as RECIPIENT PREVIEW, and do not add bracket placeholders. {{first_name}} is allowed for the greeting and {{invitation_url}} must appear exactly once in the body. If the direction says people should experience a project or demo before deciding whether to subscribe, use project_first, direct them to the project website, and make subscription an optional later action rather than the email's request. The call to action must match the destination.`,
+    schema: prospectInvitationRevisionSchema(),
+  });
+  return {
+    invitationSubject: String(result.subject || "").trim(),
+    invitationBody: String(result.body || "").trim(),
+    invitationCtaLabel: String(result.ctaLabel || "").trim(),
+    invitationUrl: String(result.url || projectWebsite).trim(),
+    invitationStrategy: ["project_first", "direct_signup", "custom"].includes(result.strategy) ? result.strategy : "project_first",
+  };
+}
+
 function isTypographyInspectionRequest(message) {
   const value = String(message || "").toLowerCase();
   return /\b(fonts?|typefaces?|typography)\b/i.test(value)
@@ -967,6 +1004,21 @@ function projectInterfaceActionsSchema() {
           },
         },
       },
+    },
+  };
+}
+
+function prospectInvitationRevisionSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["subject", "body", "ctaLabel", "url", "strategy"],
+    properties: {
+      subject: { type: "string" },
+      body: { type: "string" },
+      ctaLabel: { type: "string" },
+      url: { type: "string" },
+      strategy: { type: "string", enum: ["project_first", "direct_signup", "custom"] },
     },
   };
 }

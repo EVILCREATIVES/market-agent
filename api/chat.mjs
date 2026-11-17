@@ -1,5 +1,5 @@
 import { requireUser } from "../server/auth.mjs";
-import { planProjectInterfaceActions, runProjectConversation } from "../server/agent.mjs";
+import { planProjectInterfaceActions, rewriteProspectInvitation, runProjectConversation } from "../server/agent.mjs";
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 import { consumeAiUsage } from "../server/billing.mjs";
 import { getConnectionStatus } from "../server/connections.mjs";
@@ -62,20 +62,30 @@ export default async function handler(req, res) {
       });
     }
     await consumeAiUsage(userId, "chat", userApiEnv);
-    if (mayRequestInterfaceAction(message)) {
+    if (mayRequestInterfaceAction(message) || isInvitationEditRequest(message)) {
       const uiContext = req.body?.uiContext && typeof req.body.uiContext === "object" ? req.body.uiContext : {};
       const campaignRunIdForContext = uiContext.page === "campaigns" && uiContext.campaignSection !== "newsletter" ? runId : "";
       const [newsletterContext, campaignContext] = await Promise.all([
         getNewsletterActionContext(userId, projectId, { newsletterId: uiContext.selectedNewsletterId }).catch(() => ({ newsletter: null, invitation: null })),
         getCampaignActionContext(userId, projectId, campaignRunIdForContext).catch(() => null),
       ]);
-      const plan = await planProjectInterfaceActions({
-        projectId,
-        message,
-        workspace: { ...(req.body?.workspace || {}), contentLibraryAssets: libraryContext },
-        uiContext,
-        editable: { uiContext, newsletter: newsletterContext.newsletter, invitation: newsletterContext.invitation, campaign: campaignContext },
-      }, userApiEnv).catch(() => ({ summary: "", actions: [] }));
+      const actionWorkspace = { ...(req.body?.workspace || {}), contentLibraryAssets: libraryContext };
+      let plan;
+      if (newsletterContext.invitation && isInvitationEditRequest(message)) {
+        const revision = await rewriteProspectInvitation({ workspace: actionWorkspace, invitation: newsletterContext.invitation, message }, userApiEnv);
+        plan = {
+          summary: "Update the saved prospect invitation.",
+          actions: [{ type: "update_invitation", targetId: newsletterContext.invitation.id, subject: revision.invitationSubject, body: revision.invitationBody, ctaLabel: revision.invitationCtaLabel, url: revision.invitationUrl, strategy: revision.invitationStrategy }],
+        };
+      } else {
+        plan = await planProjectInterfaceActions({
+          projectId,
+          message,
+          workspace: actionWorkspace,
+          uiContext,
+          editable: { uiContext, newsletter: newsletterContext.newsletter, invitation: newsletterContext.invitation, campaign: campaignContext },
+        }, userApiEnv);
+      }
       const execution = await executeInterfaceActions({ userId, projectId, runId: campaignRunIdForContext, workspace: req.body?.workspace || {}, plan, newsletterContext, userApiEnv });
       if (execution.attempted) {
         return res.status(200).json({
@@ -207,6 +217,14 @@ function mayRequestInterfaceAction(value) {
   const instruction = /\b(update|change|replace|rewrite|revise|fix|correct|edit|add|remove|use|save|create|make|set|move|swap|improve|redo|apply|start)\b/i.test(message);
   const rejection = /\b(wrong|awful|bad|terrible|shit|bullshit|useless|stupid|confusing|nothing happens|does not work|doesn't work|did not|didn't|don['’]t like|do not like|cazzo|merda|schifo)\b/i.test(message);
   return subject && (instruction || rejection);
+}
+
+function isInvitationEditRequest(value) {
+  const message = String(value || "").toLowerCase();
+  const invitation = /\b(invitation|invite|invito|prospect email|recipient preview)\b/i.test(message)
+    || (/\b(demo|project|subscribe|subscription)\b/i.test(message) && /\b(email|message|copy|subject)\b/i.test(message));
+  const correction = /\b(update|change|replace|rewrite|revise|fix|correct|edit|improve|redo|should|want|prefer|ask|don['’]t like|do not like|not subscribe|instead)\b/i.test(message);
+  return invitation && correction;
 }
 
 function isCampaignAssetReplacement(value) {
