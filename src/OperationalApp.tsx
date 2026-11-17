@@ -69,14 +69,14 @@ import { apiFetch, getAccessToken } from "./auth";
 import BrandLogo from "./BrandLogo";
 import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, BillingStatus, ConnectionStatus, ContactImport, DeliveryJob, GrowthObjective, GrowthReport, HealthState, MediaBudgetSummary, MediaJob, NewsletterDashboard, NewsletterDraft, NewsletterSubscriber, PrimaryConversion, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, RunAssetReference, RunStatus, SocialAnalyticsReport, SourceMediaAsset, TikTokPublishingOptions, YouTubePublishingOptions } from "./operational/types";
 
-type Page = "agent" | "brain" | "issues" | "research" | "campaigns" | "content" | "analytics" | "integrations";
+type Page = "agent" | "brain" | "issues" | "research" | "campaigns" | "calendar" | "content" | "analytics" | "integrations";
 type CampaignIntensity = "careful" | "assertive" | "aggressive";
 type ConnectionProvider = "google-analytics" | "google-gmail" | "mailchimp" | "shopify" | "linkedin" | "instagram" | "tiktok" | "youtube" | "x" | "discord" | "reddit";
 type ServiceLogoProvider = ConnectionProvider | "neon" | "google" | "anthropic";
 type ConnectionGuide = { message: string; targetId: ConnectionProvider | null; targetName: string; recommendedNames: string[] };
 type ConnectionGuideTarget = { id: ConnectionProvider; requestId: number } | null;
 type IssueFindings = { high?: string[]; attention?: string[] };
-type CampaignWorkspaceSection = "overview" | "calendar" | "newsletter" | "linkedin" | "instagram" | "tiktok" | "youtube" | "x" | "discord" | "reddit";
+type CampaignWorkspaceSection = "overview" | "newsletter" | "linkedin" | "instagram" | "tiktok" | "youtube" | "x" | "discord" | "reddit";
 
 type ServiceIcon = { title: string; path: string; hex: string };
 const serviceIcons: Partial<Record<ServiceLogoProvider, ServiceIcon>> = {
@@ -118,6 +118,7 @@ const nav = [
   { id: "brain" as const, label: "Brand", icon: BrainCircuit },
   { id: "research" as const, label: "Research", icon: Search },
   { id: "campaigns" as const, label: "Campaigns", icon: Rocket },
+  { id: "calendar" as const, label: "Calendar", icon: CalendarDays },
   { id: "content" as const, label: "Content library", icon: Library },
   { id: "analytics" as const, label: "Growth", icon: ChartColumn },
   { id: "integrations" as const, label: "Integrations", icon: Settings2 },
@@ -512,6 +513,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
             {page === "issues" && <IssuesCenter workspace={activeProject} onSave={updateWorkspace} onOpenBrand={() => navigate("brain")} notify={notify} />}
             {page === "research" && <RunLibrary title="Research" description={`Live market and audience work grounded in ${activeProject.name || "this project"}'s Brand.`} empty="No research has been run for this project yet." runs={projectRuns.filter((run) => ["research", "audience"].includes(run.action))} onOpen={setSelectedRunId} onStart={() => navigate("agent")} />}
             {page === "campaigns" && <CampaignWorkspace workspace={activeProject} runs={campaignRuns} connections={connections} onSaveWorkspace={updateWorkspace} onOpen={setSelectedRunId} onStart={() => navigate("agent")} onConnect={() => navigate("integrations")} onGrowth={() => navigate("analytics")} notify={notify} />}
+            {page === "calendar" && <CalendarWorkspace workspace={activeProject} runs={campaignRuns} onOpen={setSelectedRunId} onOpenNewsletter={() => { window.sessionStorage.setItem(`market-agent:campaign-section:${activeProject.id}`, "newsletter"); navigate("campaigns"); }} />}
             {page === "content" && <ContentLibrary userId={userId} workspace={activeProject} runs={projectRuns.filter((run) => run.action === "social")} mediaConfigured={apiCredentials.mediaReady} videoConfigured={apiCredentials.videoReady} onSave={updateWorkspace} onIssuesFound={addProactiveIssues} onOpen={setSelectedRunId} onStart={() => navigate("agent")} notify={notify} />}
             {page === "analytics" && <AnalyticsDashboard workspace={activeProject} connections={connections} onSave={updateWorkspace} onConnect={() => navigate("integrations")} />}
             {page === "integrations" && <OperationalIntegrations workspace={activeProject} projectId={activeProject.id} userEmail={userEmail} health={{ ...health, agentConfigured: runtimeReady, mediaConfigured: apiCredentials.mediaReady }} apiCredentials={apiCredentials} onApiCredentials={setApiCredentials} billing={billing} accessMode={accessMode} billingBusy={billingBusy} onSubscribe={() => void startManagedSubscription()} onCancelPlan={() => void cancelManagedPlan()} connections={connections} onConnections={setConnections} guideTarget={connectionGuideTarget} notify={notify} />}
@@ -1266,6 +1268,61 @@ function CampaignCalendar({ runs, jobs, newsletters, onOpen, onOpenNewsletter }:
   for (const event of events) { const key = dateKey(event.date); byDate.set(key, [...(byDate.get(key) || []), event]); }
   const upcoming = events.filter((event) => new Date(event.date).getTime() >= new Date().setHours(0, 0, 0, 0) && !["complete", "sent", "cancelled"].includes(event.status)).slice(0, 8);
   return <div className="op-campaign-calendar"><section className="op-calendar-board"><header><div><small>CAMPAIGN SCHEDULE</small><h2>{month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</h2><p>Every approved, planned, incomplete, and published item appears here.</p></div><nav><button aria-label="Previous month" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}><ArrowLeft size={14} /></button><button onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Today</button><button aria-label="Next month" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ArrowRight size={14} /></button></nav></header><div className="op-calendar-weekdays">{["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => <span key={day}>{day}</span>)}</div><div className="op-calendar-grid">{days.map((day) => { const key = dateKey(day); const dayEvents = byDate.get(key) || []; const outside = day.getMonth() !== month.getMonth(); const today = key === dateKey(new Date()); return <article key={key} className={`${outside ? "outside" : ""} ${today ? "today" : ""}`}><time>{day.getDate()}</time><div>{dayEvents.slice(0, 3).map((event) => <button key={event.id} className={`channel-${event.channel} status-${event.status}`} onClick={() => event.newsletter ? onOpenNewsletter() : onOpen(event.runId)} title={`${event.title} · ${campaignCalendarStatus(event)}`}><i />{event.title}</button>)}{dayEvents.length > 3 && <small>+{dayEvents.length - 3} more</small>}</div></article>; })}</div></section><aside className="op-calendar-agenda"><header><CalendarDays size={18} /><div><small>NEXT EVENTS</small><h3>Upcoming work</h3></div></header>{upcoming.length ? upcoming.map((event) => <button key={`agenda-${event.id}`} onClick={() => event.newsletter ? onOpenNewsletter() : onOpen(event.runId)}><time>{new Date(event.date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}<small>{new Date(event.date).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</small></time><span><strong>{event.title}</strong><small>{deliveryChannelLabel(event.channel as DeliveryJob["channel"])} · {campaignCalendarStatus(event)}</small></span><ArrowRight size={13} /></button>) : <div className="op-calendar-empty"><Check size={18} /><p>No future item is ready. Planned gaps remain visible in the month grid.</p></div>}</aside></div>;
+}
+
+function CalendarWorkspace({ workspace, runs, onOpen, onOpenNewsletter }: { workspace: ProductWorkspace; runs: AgentRun[]; onOpen: (id: string) => void; onOpenNewsletter: () => void }) {
+  const [jobs, setJobs] = useState<DeliveryJob[]>([]);
+  const [newsletters, setNewsletters] = useState<NewsletterDraft[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const refresh = async () => {
+    const errors: string[] = [];
+    try {
+      const response = await apiFetch(`/api/delivery?projectId=${encodeURIComponent(workspace.id)}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Scheduled campaign items could not be read.");
+      setJobs(Array.isArray(data.jobs) ? data.jobs : []);
+    } catch (reason) {
+      errors.push(reason instanceof Error ? reason.message : "Scheduled campaign items could not be read.");
+    }
+    try {
+      const response = await apiFetch(`/api/newsletters?projectId=${encodeURIComponent(workspace.id)}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Newsletter schedules could not be read.");
+      setNewsletters(Array.isArray(data.drafts) ? data.drafts : []);
+    } catch (reason) {
+      errors.push(reason instanceof Error ? reason.message : "Newsletter schedules could not be read.");
+    }
+    setError(errors.join(" "));
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    setJobs([]);
+    setNewsletters([]);
+    setLoading(true);
+    void refresh();
+    const handleUpdate = (event: Event) => {
+      const detail = (event as CustomEvent<{ projectId?: string }>).detail;
+      if (!detail?.projectId || detail.projectId === workspace.id) void refresh();
+    };
+    window.addEventListener("market-agent-delivery-updated", handleUpdate);
+    window.addEventListener("market-agent-newsletter-updated", handleUpdate);
+    const poll = window.setInterval(() => void refresh(), 60_000);
+    return () => {
+      window.clearInterval(poll);
+      window.removeEventListener("market-agent-delivery-updated", handleUpdate);
+      window.removeEventListener("market-agent-newsletter-updated", handleUpdate);
+    };
+  }, [workspace.id]);
+
+  const events = buildCampaignCalendarEvents(runs, jobs, newsletters);
+  return <div className="op-stack op-calendar-workspace">
+    <div className="op-heading"><div className="op-eyebrow">Project schedule</div><h1>Calendar</h1><p>All planned, approved, scheduled, published, and incomplete campaign work for {workspace.name || "this project"} in one place.</p></div>
+    {error && <div className="op-analytics-error"><CircleAlert size={17} />{error}<button onClick={() => { setLoading(true); void refresh(); }}>Try again</button></div>}
+    {loading && events.length === 0 ? <div className="op-analytics-loading"><LoaderCircle className="spin" size={22} /> Reading the project schedule…</div> : <CampaignCalendar runs={runs} jobs={jobs} newsletters={newsletters} onOpen={onOpen} onOpenNewsletter={onOpenNewsletter} />}
+  </div>;
 }
 
 function buildCampaignCalendarEvents(runs: AgentRun[], jobs: DeliveryJob[], newsletters: NewsletterDraft[]): CampaignCalendarEvent[] {
@@ -2832,7 +2889,9 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
   useEffect(() => {
     setDashboard(null);
     setSelectedId("");
-    setSection("overview");
+    const requestedSection = window.sessionStorage.getItem(`market-agent:campaign-section:${projectId}`) as CampaignWorkspaceSection | null;
+    window.sessionStorage.removeItem(`market-agent:campaign-section:${projectId}`);
+    setSection(requestedSection === "newsletter" ? "newsletter" : "overview");
     setContactDetails({});
     setSubscriberDetails(null);
     void refresh();
@@ -2986,7 +3045,6 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
 
   const campaignTabs: Array<{ id: CampaignWorkspaceSection; label: string; count: number }> = [
     { id: "overview", label: "Overview", count: runs.filter((run) => campaignRunIsActive(run, deliveryJobs)).length + (dashboard?.drafts.filter((draft) => draft.status !== "sent").length || 0) },
-    { id: "calendar", label: "Calendar", count: buildCampaignCalendarEvents(runs, deliveryJobs, dashboard?.drafts || []).filter((event) => !["cancelled", "sent"].includes(event.status)).length },
     { id: "newsletter", label: "Newsletter", count: (dashboard?.drafts.length || 0) + (dashboard?.contactImports.length || 0) },
     ...(["linkedin", "instagram", "tiktok", "youtube", "x", "discord", "reddit"] as const).map((channel) => ({ id: channel, label: deliveryChannelLabel(channel), count: deliveryJobs.filter((job) => job.channel === channel && deliveryJobIsActive(job)).length })),
   ];
@@ -2996,7 +3054,6 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
     <section className="op-campaign-goal"><span><Rocket size={17} /></span><div><small>{campaignGoal.selectedBy === "assistant" ? "ASSISTANT-SELECTED OUTCOME" : "PROJECT OUTCOME"}</small><strong>{growthObjectiveLabel(campaignGoal.objective)}</strong><p>Each campaign should move toward <b>{primaryConversionLabel(campaignGoal.primaryConversion).toLowerCase()}</b>, not activity for its own sake.</p></div><button onClick={onGrowth}>Review in Growth <ArrowRight size={12} /></button></section>
     <nav className="op-campaign-tabs" aria-label="Campaign channels">{campaignTabs.map((tab) => <button key={tab.id} className={section === tab.id ? "active" : ""} onClick={() => setSection(tab.id)}><span>{tab.label}</span>{tab.count > 0 && <em>{tab.count}</em>}</button>)}</nav>
     {section === "overview" && <CampaignOverview runs={runs} jobs={deliveryJobs} newsletters={dashboard?.drafts || []} onOpen={onOpen} onOpenNewsletter={() => setSection("newsletter")} onStart={onStart} />}
-    {section === "calendar" && <CampaignCalendar runs={runs} jobs={deliveryJobs} newsletters={dashboard?.drafts || []} onOpen={onOpen} onOpenNewsletter={() => setSection("newsletter")} />}
     {section === "newsletter" && <>
     {!mailchimp.connected && <section className="op-newsletter-connect"><span><Send size={21} /></span><div><small>OPTIONAL DELIVERY CONNECTION</small><h2>Campaign work stays in Market Agent</h2><p>Create the contacts, newsletter, schedule, and approval here. Connect Mailchimp only when you are ready to import subscribers and deliver; another bulk-email provider can be added later.</p></div><button onClick={onConnect}>Connect Mailchimp <ArrowRight size={14} /></button></section>}
     {mailchimp.connected && !mailchimp.canManage && <section className="op-newsletter-connect"><span><UsersRound size={21} /></span><div><small>DELIVERY CONNECTED</small><h2>Choose this project’s audience</h2><p>{mailchimp.accountLabel} is authorized. Select the audience once; campaign creation and review remain in Market Agent.</p></div><button onClick={onConnect}>Choose audience <ArrowRight size={14} /></button></section>}
@@ -3024,7 +3081,7 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
         <section className="op-newsletter-results"><div className="op-section-title"><div><small>DELIVERY PERFORMANCE</small><h2>Newsletter performance</h2><p>{mailchimp.canManage ? "Delivered, opens, clicks, bounces, and unsubscribes are read from the connected delivery account." : "Verified delivery statistics will appear after a bulk-email service is connected and the first campaign is sent."}</p></div><button className="secondary" onClick={() => void refresh()} disabled={loading}>{loading ? "Refreshing…" : "Refresh"}</button></div>{dashboard.campaigns.length ? <div className="op-newsletter-report-list">{dashboard.campaigns.map((campaign) => <article key={campaign.id}><header><div><strong>{campaign.subject || campaign.title}</strong><small>{campaign.sendTime ? new Date(campaign.sendTime).toLocaleString() : campaign.status}</small></div><em>{campaign.status}</em></header><div><span><small>Sent</small><strong>{campaign.emailsSent.toLocaleString()}</strong></span><span><small>Open rate</small><strong>{formatPercent(campaign.openRate)}</strong></span><span><small>Click rate</small><strong>{formatPercent(campaign.clickRate)}</strong></span><span><small>Bounces</small><strong>{campaign.bounces.toLocaleString()}</strong></span><span><small>Unsubscribed</small><strong>{campaign.unsubscribed.toLocaleString()}</strong></span></div>{campaign.archiveUrl && <a href={campaign.archiveUrl} target="_blank" rel="noreferrer">Open newsletter <ArrowRight size={12} /></a>}</article>)}</div> : <div className="op-empty op-empty--compact"><span><ChartColumn size={22} /></span><h2>No sent newsletters yet</h2><p>Verified performance appears here after the first approved campaign is delivered.</p></div>}</section>
       </>}
     </>}
-    {section !== "overview" && section !== "calendar" && section !== "newsletter" && <ChannelCampaignWorkspace channel={section} runs={runs} jobs={deliveryJobs} connected={campaignChannelConnected(section, connections)} onOpen={onOpen} onStart={onStart} onConnect={onConnect} />}
+    {section !== "overview" && section !== "newsletter" && <ChannelCampaignWorkspace channel={section} runs={runs} jobs={deliveryJobs} connected={campaignChannelConnected(section, connections)} onOpen={onOpen} onStart={onStart} onConnect={onConnect} />}
   </div>;
 }
 
