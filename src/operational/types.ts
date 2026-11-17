@@ -172,6 +172,7 @@ export interface CampaignPlan {
     subject: string;
     text: string;
     mediaUrl: string;
+    sourceAssetId?: string;
     mediaKind: "" | "image" | "video";
     privacyLevel: string;
     aiGenerated: boolean;

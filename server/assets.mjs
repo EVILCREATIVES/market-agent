@@ -25,6 +25,30 @@ export async function listProjectAssets(userId, projectId, env = process.env) {
   return { assets: assets.rows.map(serializeAsset), proposals: proposals.rows.map(serializeProposal) };
 }
 
+export async function listReadyCampaignAssets(userId, projectId, env = process.env) {
+  const safeProjectId = requiredText(projectId, "Choose a project first.", 200);
+  await ensureTables(env);
+  const result = await getPool(env).query(
+    `SELECT id, asset_kind, name, tags, summary, recommendation, rationale, blob_path
+       FROM market_agent_project_assets
+      WHERE user_id = $1 AND project_id = $2 AND status = 'ready'
+        AND asset_kind IN ('image','video') AND blob_path <> ''
+      ORDER BY created_at DESC LIMIT 100`,
+    [userId, safeProjectId],
+  );
+  return result.rows.map((row) => ({
+    id: row.id,
+    sourceAssetId: row.id,
+    kind: row.asset_kind,
+    name: row.name,
+    url: createPublicProjectAssetUrl(row.id, env, 30 * 24 * 60 * 60),
+    role: row.summary || "Content Library campaign asset",
+    tags: Array.isArray(row.tags) ? row.tags : [],
+    recommendation: row.recommendation || "review",
+    rationale: row.rationale || "Available in the project Content Library.",
+  }));
+}
+
 export async function findProjectAssetForInstruction(userId, projectId, instruction, env = process.env) {
   await ensureTables(env);
   const result = await getPool(env).query(

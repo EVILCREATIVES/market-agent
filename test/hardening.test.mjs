@@ -27,6 +27,15 @@ test("campaign coverage recognizes the full promised publication cadence", () =>
   assert.equal(campaignPublicationTarget({ prompt: "Instagram campaign", output }), 12);
 });
 
+test("campaign coverage recognizes creative-first Instagram day headings", () => {
+  const output = [
+    "### Day 1 — Carousel: Meaning first",
+    "### Day 3 — Reel: One idea, many forms",
+    "### Day 6 — Carousel: Working method",
+  ].join("\n\n");
+  assert.equal(campaignPublicationTarget({ prompt: "Instagram campaign", output }), 3);
+});
+
 test("private, loopback, link-local, mapped and multicast addresses are blocked", () => {
   for (const address of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.1.1", "::1", "fc00::1", "::ffff:127.0.0.1", "224.0.0.1"]) {
     assert.equal(isPrivateAddress(address), true, address);

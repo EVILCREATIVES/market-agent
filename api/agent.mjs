@@ -6,6 +6,7 @@ import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 import { getConnectionStatus } from "../server/connections.mjs";
 import { consumeAiUsage } from "../server/billing.mjs";
 import { getAgentPerformanceContext } from "../server/growth.mjs";
+import { listReadyCampaignAssets } from "../server/assets.mjs";
 
 export const config = { maxDuration: 300 };
 
@@ -20,7 +21,13 @@ export default async function handler(req, res) {
     const projectId = req.body?.projectId || "project-default";
     const connections = await getConnectionStatus(userId, projectId);
     const performanceContext = await getAgentPerformanceContext(userId, projectId).catch(() => "");
-    const workspace = { ...(req.body?.workspace || {}), performanceContext };
+    const libraryMedia = await listReadyCampaignAssets(userId, projectId).catch(() => []);
+    const suppliedMedia = Array.isArray(req.body?.workspace?.sourceMedia) ? req.body.workspace.sourceMedia : [];
+    const workspace = {
+      ...(req.body?.workspace || {}),
+      performanceContext,
+      sourceMedia: [...libraryMedia, ...suppliedMedia.filter((item) => !libraryMedia.some((asset) => asset.id === item?.id))],
+    };
     const result = await runMarketingAgent({ ...req.body, workspace, connections }, userApiEnv);
     const run = createRunRecord(result, req.body?.action || "chat", req.body?.prompt || "", projectId);
     await appendRunForUser(userId, run);

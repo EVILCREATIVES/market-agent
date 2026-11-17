@@ -7,7 +7,7 @@ import { publishSocialPost } from "./social-connections.mjs";
 import { getSocialPublishingOptions } from "./social-connections.mjs";
 import { getSocialPostStatus } from "./social-connections.mjs";
 import { createShopifyDraft } from "./shopify.mjs";
-import { createPublicProjectAssetUrl } from "./assets.mjs";
+import { createPublicProjectAssetUrl, listReadyCampaignAssets } from "./assets.mjs";
 import { loadUserApiEnv } from "./user-api-credentials.mjs";
 import { unresolvedEmailPlaceholders } from "./email-content.mjs";
 
@@ -118,12 +118,18 @@ export async function prepareDeliveryJobs(userId, projectId, runId, userApiEnv, 
     catch { channels = channels.filter((channel) => channel !== "reddit"); }
   }
   if (!channels.length) throw deliveryError("The selected community's current rules could not be verified. Nothing was prepared.", 409);
+  const libraryMedia = await listReadyCampaignAssets(userId, projectId, env).catch(() => []);
+  const savedMedia = Array.isArray(workspace.sourceMedia) ? workspace.sourceMedia : [];
+  const deliveryWorkspace = {
+    ...workspace,
+    sourceMedia: [...libraryMedia, ...savedMedia.filter((item) => !libraryMedia.some((asset) => asset.id === item?.id))],
+  };
   const plan = run.campaignPlan?.items?.length
     ? run.campaignPlan
-    : await generateDeliveryPlan({ run, workspace, channels, channelContexts }, userApiEnv);
-  const safeItems = normalizeDeliveryItems(plan?.items, channels, workspace, run);
+    : await generateDeliveryPlan({ run, workspace: deliveryWorkspace, channels, channelContexts }, userApiEnv);
+  const safeItems = normalizeDeliveryItems(plan?.items, channels, deliveryWorkspace, run);
   if (!safeItems.length && channels.includes("instagram")) {
-    const hasMedia = campaignMedia(workspace).some((item) => ["image", "video"].includes(item.kind));
+    const hasMedia = campaignMedia(deliveryWorkspace).some((item) => ["image", "video"].includes(item.kind));
     throw deliveryError(hasMedia
       ? "The approved campaign does not contain final Instagram copy that can be queued. Ask the project assistant to prepare the final Instagram caption, approve it, then prepare actions again."
       : "Instagram is connected, but this project has no reusable public campaign image or video. Generate or approve an asset in Content, then prepare actions again.", 409);
@@ -471,7 +477,7 @@ export function campaignPublicationTarget(run) {
   if (!run || typeof run !== "object") return 0;
   const planCount = Array.isArray(run.campaignPlan?.items) ? run.campaignPlan.items.length : 0;
   const text = `${String(run.prompt || "")}\n${String(run.output || "")}`;
-  const numberedDays = [...text.matchAll(/^###\s+\d+\s*[·.-]\s*Day\s+\d+/gim)].length;
+  const numberedDays = [...text.matchAll(/^###\s+(?:\d+\s*[·.-]\s*)?Day\s+\d+/gim)].length;
   const explicitPosts = [...text.matchAll(/\b(\d{1,2})\s+(?:posts?|publications?|captions?)\b/gi)].map((match) => Number(match[1] || 0));
   const weekly = text.match(/\b(\d{1,2}|one|two|three|four|five|six|seven)\s+posts?\s+(?:per|a|each)\s+week\b/i);
   const weeks = text.match(/\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)[-\s]+week\b/i);
@@ -502,10 +508,15 @@ function normalizeDeliveryItems(values, channels, workspace, run = {}) {
     if (!text) continue;
     let requestedMediaKind = value?.mediaKind === "video" ? "video" : "image";
     const channelAcceptsMedia = channel === "instagram" || channel === "tiktok" || channel === "discord" || channel === "shopify" || (channel === "youtube" && requestedMediaKind === "video") || (["linkedin", "x"].includes(channel) && requestedMediaKind === "image");
-    let mediaUrl = channelAcceptsMedia && allowedMedia.has(String(value?.mediaUrl || "")) ? String(value.mediaUrl) : "";
+    const requestedAssetId = String(value?.sourceAssetId || "");
+    let selectedMedia = channelAcceptsMedia && requestedAssetId
+      ? candidates.find((item) => String(item.sourceAssetId || item.id || "") === requestedAssetId)
+      : allowedMedia.get(String(value?.mediaUrl || ""));
+    let mediaUrl = selectedMedia?.url || "";
+    if (selectedMedia?.kind) requestedMediaKind = selectedMedia.kind;
     if (!mediaUrl && ["instagram", "tiktok", "youtube"].includes(channel)) {
       const fallback = candidates.find((item) => channel === "youtube" ? item.kind === "video" : item.kind === requestedMediaKind) || (channel === "youtube" ? null : candidates[0]);
-      if (fallback) { mediaUrl = fallback.url; requestedMediaKind = fallback.kind; }
+      if (fallback) { selectedMedia = fallback; mediaUrl = fallback.url; requestedMediaKind = fallback.kind; }
     }
     if (["instagram", "tiktok", "youtube"].includes(channel) && !mediaUrl) continue;
     const recipient = channel === "gmail" ? validApprovedRecipient(value?.recipient, run) : "";
@@ -518,6 +529,7 @@ function normalizeDeliveryItems(values, channels, workspace, run = {}) {
       subject,
       text,
       mediaUrl,
+      sourceAssetId: mediaUrl ? String(selectedMedia?.sourceAssetId || selectedMedia?.id || "") : "",
       mediaKind: mediaUrl ? requestedMediaKind : "",
       privacyLevel: channel === "tiktok" ? "" : channel === "youtube" ? "private" : "",
       aiGenerated: Boolean(value?.aiGenerated),
@@ -544,6 +556,7 @@ function normalizeDeliveryItems(values, channels, workspace, run = {}) {
       subject: "",
       text,
       mediaUrl: media.url,
+      sourceAssetId: String(media.sourceAssetId || media.id || ""),
       mediaKind: media.kind,
       privacyLevel: "",
       aiGenerated: false,

@@ -122,7 +122,7 @@ export async function generateDeliveryPlan(payload, env = process.env) {
     ? workspace.sourceMedia
       .filter((item) => item?.url && /^https:\/\//i.test(item.url) && !/\b(logo|favicon|app icon|brand mark|wordmark)\b/i.test(`${item.name || ""} ${item.role || ""} ${Array.isArray(item.tags) ? item.tags.join(" ") : ""}`))
       .slice(0, 30)
-      .map((item) => ({ kind: item.kind, name: item.name, url: item.url, role: item.role, tags: item.tags, recommendation: item.recommendation }))
+      .map((item) => ({ sourceAssetId: item.sourceAssetId || "", kind: item.kind, name: item.name, url: item.url, role: item.role, tags: item.tags, recommendation: item.recommendation }))
     : [];
   const prompt = `Turn this approved marketing run into the complete dated execution queue for the operational channels.
 
@@ -144,7 +144,7 @@ ${JSON.stringify(channelContexts, null, 2).slice(0, 20_000)}
 PUBLIC REUSABLE MEDIA
 ${JSON.stringify(reusableMedia, null, 2)}
 
-Create one item for every publication in the approved campaign calendar, not merely one item per channel. Honor its duration, cadence, order, and channel scope. Put the intended publication time in scheduledAt as an ISO-8601 UTC timestamp. When the approved work does not specify exact times, distribute items sensibly across the stated campaign period, beginning no earlier than tomorrow at 12:00 UTC. Create only executable items. For social and community channels, use final copy supported by the approved run and adapt it to the channel. For Gmail, create an item only when the approved run contains at least one explicit, valid recipient email address; never invent recipients. When Instagram is operational and PUBLIC REUSABLE MEDIA contains a non-logo image or video, create the planned Instagram items using exact supplied media URLs and approved captions. TikTok likewise requires an exact supplied public image or video URL, but leave privacyLevel empty because TikTok requires the user to select it manually during review. YouTube requires an exact supplied public video URL, a precise title in subject, a useful description in text, and should default to private for approval; vertical short videos may be proposed as Shorts, but never invent a video file. Shopify creates a DRAFT product only: put the exact product title in subject and the grounded product description in text; attach an approved public image or video when available, and never invent price, variants, inventory, claims, or SKU data. Discord should be concise and conversational; do not use @everyone, @here, or role mentions. Reddit requires a specific, informative title in subject and must follow every supplied community rule; do not disguise promotion as a personal recommendation. Do not invent media URLs, claims, recipients, communities, or product facts. Return an empty list only when no operational channel can be executed from the approved text and supplied assets.`;
+Create one item for every publication in the approved campaign calendar, not merely one item per channel. Honor its duration, cadence, order, and channel scope. Put the intended publication time in scheduledAt as an ISO-8601 UTC timestamp. When the approved work does not specify exact times, distribute items sensibly across the stated campaign period, beginning no earlier than tomorrow at 12:00 UTC. Create only executable items. For social and community channels, use final copy supported by the approved run and adapt it to the channel. For Gmail, create an item only when the approved run contains at least one explicit, valid recipient email address; never invent recipients. When selecting PUBLIC REUSABLE MEDIA, copy both its exact url and sourceAssetId; use an empty sourceAssetId only when no Content Library record supplied it. When Instagram is operational and PUBLIC REUSABLE MEDIA contains a non-logo image or video, create the planned Instagram items using exact supplied media URLs and approved captions. TikTok likewise requires an exact supplied public image or video URL, but leave privacyLevel empty because TikTok requires the user to select it manually during review. YouTube requires an exact supplied public video URL, a precise title in subject, a useful description in text, and should default to private for approval; vertical short videos may be proposed as Shorts, but never invent a video file. Shopify creates a DRAFT product only: put the exact product title in subject and the grounded product description in text; attach an approved public image or video when available, and never invent price, variants, inventory, claims, or SKU data. Discord should be concise and conversational; do not use @everyone, @here, or role mentions. Reddit requires a specific, informative title in subject and must follow every supplied community rule; do not disguise promotion as a personal recommendation. Do not invent media URLs, claims, recipients, communities, or product facts. Return an empty list only when no operational channel can be executed from the approved text and supplied assets.`;
   return generateStructuredObject({
     env,
     name: "approved_delivery_queue",
@@ -837,13 +837,14 @@ function deliveryPlanSchema() {
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["channel", "recipient", "subject", "text", "mediaUrl", "mediaKind", "privacyLevel", "aiGenerated", "scheduledAt", "rationale"],
+          required: ["channel", "recipient", "subject", "text", "mediaUrl", "sourceAssetId", "mediaKind", "privacyLevel", "aiGenerated", "scheduledAt", "rationale"],
           properties: {
             channel: { type: "string", enum: ["gmail", "linkedin", "instagram", "tiktok", "youtube", "x", "discord", "reddit", "shopify"] },
             recipient: { type: "string" },
             subject: { type: "string" },
             text: { type: "string" },
             mediaUrl: { type: "string" },
+            sourceAssetId: { type: "string" },
             mediaKind: { type: "string", enum: ["", "image", "video"] },
             privacyLevel: { type: "string" },
             aiGenerated: { type: "boolean" },
