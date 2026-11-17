@@ -19,7 +19,7 @@ export default function PublicSite() {
 }
 
 function NewsletterJoinPage() {
-  const token = normalizePath(window.location.pathname).split("/")[2] || "";
+  const token = window.location.pathname.replace(/\/+$/, "").split("/")[2] || "";
   const preview = new URLSearchParams(window.location.search).get("preview") === "1";
   const [state, setState] = useState<{ loading: boolean; error: string; campaign: null | { eyebrow: string; title: string; description: string; ctaLabel: string; privacyNote: string; logoUrl: string; primaryColor: string; backgroundColor: string; textColor: string } }>({ loading: true, error: "", campaign: null });
 
