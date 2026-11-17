@@ -15,6 +15,14 @@
   --orange: #a55a12;
   --orange-soft: #fff0df;
   --shadow: 0 1px 2px rgba(23, 23, 20, .04), 0 8px 28px rgba(23, 23, 20, .025);
+  --op-type-label: 11px;
+  --op-type-meta: 12px;
+  --op-type-body: 14px;
+  --op-type-title: 20px;
+  --op-control-height: 40px;
+  --op-card-padding: clamp(20px, 2vw, 26px);
+  --op-card-radius: 16px;
+  --op-space-section: 24px;
 }
 
 * { box-sizing: border-box; }
@@ -2425,3 +2433,245 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-brain-onboarding .op-form-grid label,
 .op-brain-onboarding .op-brand-fields label,
 .op-brain-onboarding .op-source-guidance label { min-width: 0; }
+
+/* Market Agent product system: one readable hierarchy and spacing rhythm. */
+.op-shell { color: #24231f; font-size: var(--op-type-body); }
+.op-main { background: #f6f5f0; }
+.op-page { max-width: 1320px; padding: 42px clamp(24px, 4vw, 52px) 80px; }
+.op-stack { gap: var(--op-space-section); }
+
+.op-shell small,
+.op-page small { font-size: var(--op-type-label); line-height: 1.45; }
+.op-page p,
+.op-page li,
+.op-page blockquote { font-size: var(--op-type-body); line-height: 1.55; }
+.op-page button { min-height: var(--op-control-height); font-size: var(--op-type-meta); line-height: 1.2; }
+.op-page input,
+.op-page textarea,
+.op-page select { min-height: var(--op-control-height); font-size: var(--op-type-body); line-height: 1.5; }
+.op-page h2 { font-size: var(--op-type-title); line-height: 1.25; letter-spacing: -.025em; }
+.op-page h3 { font-size: 16px; line-height: 1.3; letter-spacing: -.015em; }
+.op-page .op-heading h1,
+.op-page .op-hero h1,
+.op-page .op-run-detail header h1 { font-size: clamp(34px, 4vw, 46px); }
+.op-page .op-heading > p,
+.op-page .op-hero > p,
+.op-page .op-run-detail header p { margin-top: 12px; font-size: var(--op-type-body); }
+.op-page .op-eyebrow,
+.op-page .op-section-head span,
+.op-page .op-section-title small,
+.op-page [class*="__head"] > small,
+.op-page [class*="__head"] small:first-child { font-size: var(--op-type-label); line-height: 1.2; letter-spacing: .1em; }
+
+.op-sidebar { width: 252px; padding: 20px 14px 16px; }
+.op-main { margin-left: 252px; }
+.op-brand { min-height: 42px; font-size: 15px; }
+.op-workspace { min-height: 58px; padding: 10px; margin: 18px 0; }
+.op-workspace small,
+.op-project-menu > button small,
+.op-sidebar__bottom small,
+.op-product-state small { font-size: var(--op-type-label); }
+.op-workspace strong,
+.op-project-menu > button strong,
+.op-sidebar__bottom strong,
+.op-product-state strong { font-size: var(--op-type-meta); }
+.op-sidebar nav { gap: 4px; }
+.op-sidebar nav button { min-height: 40px; padding: 10px 11px; font-size: 13px; }
+.op-sidebar nav em { min-width: 20px; height: 20px; font-size: 10px; }
+.op-topbar { height: 66px; padding: 0 28px; }
+.op-topbar__right button,
+.op-status { min-height: 36px; font-size: var(--op-type-label); }
+
+.op-section-title { min-height: 0; align-items: flex-start; gap: 18px; }
+.op-section-title small { color: #684fc5; font-weight: 800; }
+.op-section-title h2 { margin: 6px 0 4px; }
+.op-section-title p { margin: 0; color: #706d66; }
+
+.op-email-identity,
+.op-newsletter-studio,
+.op-newsletter-drafts,
+.op-newsletter-results,
+.op-contact-imports,
+.op-subscriber-registry,
+.op-subscriber-form,
+.op-campaign-plans,
+.op-calendar-board,
+.op-calendar-agenda,
+.op-guided-connections,
+.op-newsletter-connect { border-color: #dedbd3; border-radius: var(--op-card-radius); background: #fff; box-shadow: var(--shadow); }
+.op-email-identity,
+.op-newsletter-drafts,
+.op-newsletter-results,
+.op-contact-imports,
+.op-subscriber-registry,
+.op-subscriber-form,
+.op-campaign-plans { padding: var(--op-card-padding); }
+
+.op-email-identity > header small,
+.op-newsletter-connect small,
+.op-newsletter-studio small,
+.op-newsletter-drafts .op-section-title small,
+.op-newsletter-results .op-section-title small,
+.op-subscriber-registry > .op-section-title small,
+.op-subscriber-automation article > small,
+.op-subscriber-automation header small { font-size: var(--op-type-label); line-height: 1.2; }
+.op-email-identity > header h2,
+.op-newsletter-connect h2,
+.op-newsletter-studio h2,
+.op-newsletter-drafts h2,
+.op-newsletter-results h2,
+.op-subscriber-registry > .op-section-title h2 { margin: 6px 0; font-size: var(--op-type-title); }
+.op-email-identity > header p,
+.op-email-identity > footer p,
+.op-newsletter-connect p,
+.op-newsletter-studio p,
+.op-newsletter-drafts .op-section-title p,
+.op-newsletter-results .op-section-title p,
+.op-subscriber-registry > .op-section-title p { font-size: var(--op-type-body); line-height: 1.5; }
+.op-email-identity > header em,
+.op-newsletter-studio > header > span,
+.op-contact-imports article > header em,
+.op-subscriber-registry__list em { padding: 6px 9px; font-size: var(--op-type-label); }
+
+.op-email-identity__fields { gap: 16px; margin-top: 20px; }
+.op-email-identity__fields label,
+.op-subscriber-form label,
+.op-subscriber-automation label:not(.op-toggle) { gap: 7px; font-size: var(--op-type-meta); }
+.op-email-identity__fields input,
+.op-email-identity__fields select,
+.op-subscriber-form input,
+.op-subscriber-automation input,
+.op-subscriber-automation textarea { padding: 10px 12px; border-radius: 9px; font-size: var(--op-type-body); }
+.op-email-identity > footer { margin-top: 18px; }
+.op-email-identity > footer button,
+.op-newsletter-connect > button,
+.op-newsletter-command button,
+.op-subscriber-form > button,
+.op-newsletter-review footer > button,
+.op-newsletter-preview-empty button,
+.op-contact-imports article > footer button,
+.op-contact-imports__open,
+.op-subscriber-registry__filters button,
+.op-subscriber-registry__more,
+.op-subscriber-automation footer button { min-height: var(--op-control-height); padding: 10px 14px; font-size: var(--op-type-meta); }
+
+.op-newsletter-studio > header { padding: var(--op-card-padding) var(--op-card-padding) 14px; }
+.op-newsletter-command { gap: 12px; padding: 0 var(--op-card-padding) var(--op-card-padding); }
+.op-newsletter-command textarea { min-height: 96px; padding: 14px; font-size: var(--op-type-body); border-radius: 11px; }
+.op-newsletter-preview-empty { grid-template-columns: 48px minmax(0,1fr) auto; gap: 16px; margin-top: 20px; padding: 20px; border-radius: 12px; }
+.op-newsletter-preview-empty > span { width: 48px; height: 48px; border-radius: 12px; }
+.op-newsletter-preview-empty h3 { margin-bottom: 5px; font-size: 15px; }
+.op-newsletter-preview-empty p { font-size: 13px; }
+
+.op-contact-imports > div:last-child { gap: 14px; margin-top: 20px; }
+.op-contact-imports article { padding: 18px; border-radius: 12px; }
+.op-contact-imports article > header strong { font-size: 14px; }
+.op-contact-imports article > header small { font-size: var(--op-type-label); }
+.op-contact-imports__counts { gap: 10px; margin-top: 16px; }
+.op-contact-imports__counts span { min-height: 72px; padding: 12px; justify-content: center; }
+.op-contact-imports__counts small { font-size: var(--op-type-label); }
+.op-contact-imports__counts strong { font-size: 22px; line-height: 1.15; }
+.op-contact-imports__preview { gap: 0; margin-top: 14px; }
+.op-contact-imports__preview span { min-height: 38px; align-items: center; padding: 9px 0; }
+.op-contact-imports__preview b,
+.op-contact-imports__preview small,
+.op-contact-imports__preview-note { font-size: var(--op-type-meta); }
+.op-contact-imports article > footer { gap: 8px; margin-top: 16px; }
+
+.op-contact-directory > header { padding: 12px; }
+.op-contact-directory form input,
+.op-contact-directory form button,
+.op-contact-directory .close-directory,
+.op-contact-directory .load-more { min-height: 38px; font-size: var(--op-type-meta); }
+.op-contact-directory > div > span { min-height: 42px; padding: 10px 12px; }
+.op-contact-directory > div b,
+.op-contact-directory > div a,
+.op-contact-directory > div small,
+.op-contact-directory > div em { font-size: var(--op-type-meta); }
+
+.op-newsletter-metrics { gap: 12px; }
+.op-newsletter-metrics article { min-height: 94px; padding: 16px; border-radius: 12px; }
+.op-newsletter-metrics article small,
+.op-newsletter-metrics article span { font-size: var(--op-type-label); }
+.op-newsletter-metrics article strong { font-size: 26px; }
+.op-subscriber-form header strong,
+.op-subscriber-automation h3 { font-size: 15px; }
+.op-subscriber-form header p,
+.op-subscriber-automation p,
+.op-subscriber-automation a { font-size: var(--op-type-meta); }
+.op-subscriber-form > div { gap: 14px; margin: 18px 0 12px; }
+.op-subscriber-registry__counts { gap: 10px; margin-top: 18px; }
+.op-subscriber-registry__counts span { min-height: 76px; padding: 14px; justify-content: center; }
+.op-subscriber-registry__counts small { font-size: var(--op-type-label); }
+.op-subscriber-registry__counts strong { font-size: 24px; }
+.op-subscriber-registry__filters { gap: 10px; margin-top: 16px; padding: 12px; }
+.op-subscriber-registry__filters input,
+.op-subscriber-registry__filters select { min-height: 38px; padding: 9px 11px; font-size: var(--op-type-meta); }
+.op-subscriber-registry__list > span { min-height: 44px; padding: 10px 12px; }
+.op-subscriber-registry__list b,
+.op-subscriber-registry__list a,
+.op-subscriber-registry__list small { font-size: var(--op-type-meta); }
+.op-subscriber-automation { gap: 14px; margin-top: 18px; }
+.op-subscriber-automation article { padding: 18px; border-radius: 12px; }
+
+.op-campaign-goal { grid-template-columns: 42px minmax(0,1fr) auto; gap: 14px; padding: 16px 18px; border-color: #ded7ef; border-radius: 13px; }
+.op-campaign-goal > span { width: 42px; height: 42px; }
+.op-campaign-goal small { font-size: var(--op-type-label); }
+.op-campaign-goal strong { font-size: 15px; }
+.op-campaign-goal p { font-size: 13px; }
+.op-campaign-goal button { min-height: 38px; padding: 9px 12px; font-size: var(--op-type-meta); }
+.op-campaign-tabs { top: 66px; gap: 6px; padding: 8px; border-color: #dedbd3; }
+.op-campaign-tabs button { min-height: 38px; padding: 9px 13px; font-size: var(--op-type-meta); }
+.op-campaign-tabs button em { min-width: 20px; height: 20px; font-size: 10px; }
+
+.op-calendar-board > header { padding: 20px 22px; }
+.op-calendar-board > header small,
+.op-calendar-agenda > header small { font-size: var(--op-type-label); }
+.op-calendar-board > header h2 { margin: 6px 0; font-size: var(--op-type-title); }
+.op-calendar-board > header p { font-size: var(--op-type-meta); }
+.op-calendar-weekdays span { padding: 10px; font-size: var(--op-type-label); }
+.op-calendar-grid > article { min-height: 118px; padding: 9px; }
+.op-calendar-grid time { font-size: var(--op-type-label); }
+.op-calendar-grid button { min-height: 30px; padding: 7px 8px; font-size: var(--op-type-label); }
+.op-calendar-grid article > div > small { font-size: var(--op-type-label); }
+.op-calendar-agenda > header { padding: 18px; }
+.op-calendar-agenda > header h3 { font-size: 16px; }
+.op-calendar-agenda > button { min-height: 64px; padding: 13px 14px; grid-template-columns: 52px minmax(0,1fr) auto; }
+.op-calendar-agenda > button time,
+.op-calendar-agenda > button strong { font-size: var(--op-type-meta); }
+.op-calendar-agenda > button time small,
+.op-calendar-agenda > button span small { font-size: var(--op-type-label); }
+
+.op-run-row { min-height: 64px; padding: 14px 16px; }
+.op-run-row strong,
+.op-action-grid strong,
+.op-alert strong,
+.op-delivery-alert strong { font-size: 14px; }
+.op-run-row p,
+.op-action-grid p,
+.op-alert p,
+.op-delivery-alert p { font-size: var(--op-type-meta); }
+.op-run-row small,
+.op-run-row em,
+.op-review-state { font-size: var(--op-type-label); }
+
+@media (max-width: 900px) {
+  .op-sidebar { width: 252px; }
+  .op-main { margin-left: 0; }
+  .op-page { padding: 28px 18px 64px; }
+  .op-newsletter-metrics { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 620px) {
+  .op-page { --op-card-padding: 18px; }
+  .op-heading h1 { font-size: 32px; }
+  .op-email-identity__fields,
+  .op-subscriber-form > div,
+  .op-subscriber-automation,
+  .op-contact-imports__counts,
+  .op-subscriber-registry__counts { grid-template-columns: 1fr; }
+  .op-newsletter-command,
+  .op-newsletter-preview-empty { grid-template-columns: 1fr; }
+  .op-newsletter-command button,
+  .op-newsletter-preview-empty button { width: 100%; }
+}
