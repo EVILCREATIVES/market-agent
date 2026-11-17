@@ -338,7 +338,7 @@ function normalizeProject(value, index) {
     sources: Array.isArray(project.sources) ? project.sources : [],
     materials: Array.isArray(project.materials) ? project.materials : [],
     sourceMedia: Array.isArray(project.sourceMedia) ? project.sourceMedia.slice(0, 40) : [],
-    brand: { ...defaultBrand(), ...(project.brand || {}), typographySystems: Array.isArray(project.brand?.typographySystems) ? project.brand.typographySystems.slice(0, 12) : [], sourceTypographySystems: Array.isArray(project.brand?.sourceTypographySystems) ? project.brand.sourceTypographySystems.slice(0, 12) : [] },
+    brand: normalizeBrand(project.brand),
     reviewSummary: typeof project.reviewSummary === "string" ? project.reviewSummary : "",
     openQuestions: Array.isArray(project.openQuestions) ? project.openQuestions : [],
     questionAnswers: project.questionAnswers && typeof project.questionAnswers === "object" ? project.questionAnswers : {},
@@ -404,6 +404,7 @@ function defaultBrand() {
   return {
     logoDataUrl: "",
     logoName: "",
+    logoVariants: [],
     primaryColor: "",
     secondaryColor: "",
     accentColor: "",
@@ -418,5 +419,35 @@ function defaultBrand() {
     photographyStyle: "",
     imageryStyle: "",
     notes: "",
+  };
+}
+
+function normalizeBrand(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const supplied = Array.isArray(source.logoVariants) ? source.logoVariants : [];
+  const variants = supplied.map((variant, index) => ({
+    id: String(variant?.id || `logo-${index + 1}`).slice(0, 120),
+    name: String(variant?.name || `Logo ${index + 1}`).trim().slice(0, 220),
+    url: String(variant?.url || "").trim().slice(0, 2_000_000),
+    usage: ["primary", "email", "light", "dark", "icon", "other"].includes(variant?.usage) ? variant.usage : "other",
+    createdAt: String(variant?.createdAt || ""),
+  })).filter((variant) => /^(?:https:\/\/|data:image\/)/i.test(variant.url)).slice(0, 10);
+  if (!variants.length && /^(?:https:\/\/|data:image\/)/i.test(String(source.logoDataUrl || ""))) variants.push({ id: "legacy-primary-logo", name: String(source.logoName || "Primary logo"), url: source.logoDataUrl, usage: "primary", createdAt: "" });
+  if (variants.length && !variants.some((variant) => variant.usage === "primary")) variants[0].usage = "primary";
+  let primarySeen = false;
+  const normalizedVariants = variants.map((variant) => {
+    if (variant.usage !== "primary") return variant;
+    if (!primarySeen) { primarySeen = true; return variant; }
+    return { ...variant, usage: "other" };
+  });
+  const primary = normalizedVariants.find((variant) => variant.usage === "primary") || normalizedVariants[0];
+  return {
+    ...defaultBrand(),
+    ...source,
+    logoDataUrl: primary?.url || "",
+    logoName: primary?.name || "",
+    logoVariants: normalizedVariants,
+    typographySystems: Array.isArray(source.typographySystems) ? source.typographySystems.slice(0, 12) : [],
+    sourceTypographySystems: Array.isArray(source.sourceTypographySystems) ? source.sourceTypographySystems.slice(0, 12) : [],
   };
 }

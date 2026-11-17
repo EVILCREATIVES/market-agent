@@ -76,7 +76,11 @@ export function mergeCloudState(local: AppState, remote: AppState): AppState {
   const projects = new Map(remote.projects.map((project) => [project.id, project]));
   for (const project of local.projects) {
     const current = projects.get(project.id);
-    if (!current || new Date(project.updatedAt || 0).getTime() >= new Date(current.updatedAt || 0).getTime()) projects.set(project.id, project);
+    if (!current) projects.set(project.id, project);
+    else {
+      const localIsNewer = new Date(project.updatedAt || 0).getTime() >= new Date(current.updatedAt || 0).getTime();
+      projects.set(project.id, preserveSavedLogo(localIsNewer ? project : current, localIsNewer ? current : project));
+    }
   }
   const runs = new Map(remote.runs.map((run) => [run.id, run]));
   for (const run of local.runs) runs.set(run.id, run);
@@ -92,6 +96,21 @@ export function mergeCloudState(local: AppState, remote: AppState): AppState {
     runs: Array.from(runs.values()).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 250),
     schedules,
   });
+}
+
+function preserveSavedLogo(preferred: ProductWorkspace, fallback: ProductWorkspace): ProductWorkspace {
+  const preferredHasLogo = Boolean(preferred.brand?.logoDataUrl) || Boolean(preferred.brand?.logoVariants?.length);
+  const fallbackHasLogo = Boolean(fallback.brand?.logoDataUrl) || Boolean(fallback.brand?.logoVariants?.length);
+  if (preferredHasLogo || !fallbackHasLogo) return preferred;
+  return {
+    ...preferred,
+    brand: {
+      ...preferred.brand,
+      logoDataUrl: fallback.brand.logoDataUrl || fallback.brand.logoVariants?.[0]?.url || "",
+      logoName: fallback.brand.logoName || fallback.brand.logoVariants?.[0]?.name || "Primary logo",
+      logoVariants: fallback.brand.logoVariants || [],
+    },
+  };
 }
 
 function storageKey(userId: string) {
