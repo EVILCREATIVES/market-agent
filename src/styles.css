@@ -1183,12 +1183,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-creative-selected-media > span { position: absolute; left: 10px; bottom: 10px; border-radius: 999px; background: rgba(20,20,20,.78); color: white; padding: 6px 9px; font-size: 10px; font-weight: 750; }
 .op-creative-frames { padding: 16px; display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x proximity; }
 .op-creative-frame { position: relative; flex: 0 0 230px; aspect-ratio: 4 / 5; overflow: hidden; scroll-snap-align: start; border-radius: 11px; border: 1px solid color-mix(in srgb,var(--creative-primary) 24%,#ddd); background: var(--creative-light); color: var(--creative-dark); padding: 18px; display: flex; flex-direction: column; justify-content: space-between; }
-.op-creative-item.reel .op-creative-frame { flex-basis: 175px; aspect-ratio: 9 / 16; }
+.op-creative-item.reel .op-creative-frame, .op-creative-item.story .op-creative-frame { flex-basis: 175px; aspect-ratio: 9 / 16; }
 .op-creative-frame:nth-child(even) { background: var(--creative-dark); color: var(--creative-light); }
 .op-creative-frame::before { content: ""; position: absolute; width: 86px; height: 86px; right: -32px; top: -31px; border-radius: 50%; background: var(--creative-primary); opacity: .85; }
 .op-creative-frame > small { position: relative; z-index: 1; color: inherit; opacity: .68; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
 .op-creative-frame > strong { position: relative; z-index: 1; font-size: 23px; line-height: 1.05; letter-spacing: -.035em; overflow-wrap: anywhere; }
-.op-creative-item.reel .op-creative-frame > strong { font-size: 19px; }
+.op-creative-item.reel .op-creative-frame > strong, .op-creative-item.story .op-creative-frame > strong { font-size: 19px; }
 .op-creative-frame > footer { position: relative; z-index: 1; display: flex; justify-content: space-between; gap: 8px; font-size: 10px; font-weight: 750; }
 .op-creative-frame > footer b { font: inherit; opacity: .65; }
 .op-creative-production-state { margin: 0 16px 14px; padding: 11px 12px; border-radius: 9px; display: grid; grid-template-columns: 18px minmax(0,1fr); gap: 8px; align-items: start; }

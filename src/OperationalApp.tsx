@@ -3369,7 +3369,7 @@ function extractCampaignCreatives(run: AgentRun): CampaignCreative[] {
   const heading = /^###\s+(Day\s+\d+)\s+[—–-]\s+(Carousel|Reel|Post|Static|Story)\s*(?::\s*(.*))?$/gim;
   const matches = [...output.matchAll(heading)];
   const instagramItems = (run.campaignPlan?.items || []).filter((item) => item.channel === "instagram");
-  return matches.map((match, index) => {
+  const creatives = matches.map((match, index) => {
     const start = Number(match.index || 0) + match[0].length;
     const end = Number(matches[index + 1]?.index ?? output.length);
     const block = output.slice(start, end).trim();
@@ -3393,6 +3393,22 @@ function extractCampaignCreatives(run: AgentRun): CampaignCreative[] {
       mediaKind,
     };
   }).filter((creative) => creative.frames.length > 0);
+  const storiesSection = output.match(/^###\s+Stories\s*$([\s\S]*?)(?=^###\s+|^\*\*Inbound|(?![\s\S]))/im)?.[1] || "";
+  const storyItems = [...storiesSection.matchAll(/^\s*-\s+\*\*(Day\s+\d+):\*\*\s+(.+)$/gim)];
+  storyItems.forEach((item, storyIndex) => {
+    const planItem = instagramItems[creatives.length + storyIndex];
+    const mediaKind: CampaignCreative["mediaKind"] = planItem?.mediaKind === "video" ? "video" : planItem?.mediaKind === "image" ? "image" : "";
+    creatives.push({
+      day: cleanCreativeText(item[1]),
+      format: "story",
+      title: "Instagram Story",
+      frames: [{ label: "Story", text: cleanCreativeText(item[2]) }],
+      caption: "",
+      mediaUrl: String(planItem?.mediaUrl || ""),
+      mediaKind,
+    });
+  });
+  return creatives;
 }
 
 function safeBrandColor(value: string, fallback: string) {
