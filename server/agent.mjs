@@ -2508,7 +2508,8 @@ Selection: ${growth.selectedBy === "user" ? "Confirmed by the user" : "Assistant
 Reason: ${growth.rationale}
 
 BRAND SYSTEM
-Logo: ${workspace.brand?.logoName || "Not supplied"}
+Logo variants: ${Array.isArray(workspace.brand?.logoVariants) && workspace.brand.logoVariants.length ? workspace.brand.logoVariants.map((logo) => `${logo.name || "Unnamed logo"} [${logo.usage || "other"}]`).join(", ") : workspace.brand?.logoName || "Not supplied"}
+Newsletter logo rule: use the saved Email variant first, then Primary. When the user names or requests a saved variant, update the draft directly; never ask them to upload it again.
 Primary: ${workspace.brand?.primaryColor || "Not established"}
 Secondary: ${workspace.brand?.secondaryColor || "Not established"}
 Accent: ${workspace.brand?.accentColor || "Not established"}

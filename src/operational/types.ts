@@ -31,6 +31,7 @@ export interface SourceMediaAsset {
 export interface BrandIdentity {
   logoDataUrl: string;
   logoName: string;
+  logoVariants: BrandLogoVariant[];
   primaryColor: string;
   secondaryColor: string;
   accentColor: string;
@@ -45,6 +46,14 @@ export interface BrandIdentity {
   photographyStyle: string;
   imageryStyle: string;
   notes: string;
+}
+
+export interface BrandLogoVariant {
+  id: string;
+  name: string;
+  url: string;
+  usage: "primary" | "email" | "light" | "dark" | "icon" | "other";
+  createdAt: string;
 }
 
 export interface BrandTypographySystem {
@@ -369,6 +378,8 @@ export interface NewsletterDraft {
     ctaUrl: string;
     closing: string;
     logoUrl: string;
+    logoVariantId: string;
+    logoHidden: boolean;
     heroImageUrl: string;
     heroImageAlt: string;
     senderName: string;

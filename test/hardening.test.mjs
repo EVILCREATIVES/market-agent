@@ -5,6 +5,7 @@ import { isPrivateAddress } from "../server/agent.mjs";
 import { campaignPublicationTarget, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
 import { scoreMarketingOutput } from "../server/evaluation.mjs";
 import { handleSchedule } from "../server/schedule-handler.mjs";
+import { projectLogoVariants, selectNewsletterLogoVariant } from "../server/newsletters.mjs";
 
 test("balanced review runs count against the panel budget", () => {
   assert.equal(isPanelRun({ executionMode: "panel", model: "Standard analysis" }), true);
@@ -67,4 +68,21 @@ test("private schedule handler rejects ordinary web requests and accepts Vercel 
   const accepted = await handler(new Request("https://example.com", { method: "POST", headers }));
   assert.equal(accepted.status, 200);
   assert.equal(invoked, true);
+});
+
+test("newsletter logos prefer explicit names, the newest request, then email and primary roles", () => {
+  const variants = [
+    { id: "primary", name: "LUMEN Primary", url: "https://assets.example.com/primary.png", usage: "primary", createdAt: "2026-11-01T00:00:00.000Z" },
+    { id: "email", name: "LUMEN Email Black", url: "https://assets.example.com/email.png", usage: "email", createdAt: "2026-11-02T00:00:00.000Z" },
+    { id: "new", name: "Logo LUMEN Black", url: "https://assets.example.com/new.png", usage: "other", createdAt: "2026-11-17T00:00:00.000Z" },
+  ];
+  assert.equal(selectNewsletterLogoVariant(variants, "replace the email logo with LUMEN Email Black").id, "email");
+  assert.equal(selectNewsletterLogoVariant(variants, "replace the logo in the email with the new one", "email").id, "new");
+  assert.equal(selectNewsletterLogoVariant(variants, "use the saved logo in the newsletter").id, "email");
+});
+
+test("legacy project logos remain available as a primary email-safe variant", () => {
+  assert.deepEqual(projectLogoVariants({ brand: { logoDataUrl: "https://assets.example.com/legacy.png", logoName: "Legacy mark" } }), [
+    { id: "legacy-primary-logo", name: "Legacy mark", url: "https://assets.example.com/legacy.png", usage: "primary", createdAt: "" },
+  ]);
 });

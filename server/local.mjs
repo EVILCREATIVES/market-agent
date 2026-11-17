@@ -12,7 +12,7 @@ import {
   loadUserApiEnv,
   saveUserApiCredential,
 } from "./user-api-credentials.mjs";
-import { createNewsletterDraft, deliverNewsletter, getContactImportDetails, getNewsletterDashboard, getSubscriberDetails, importContactList, registerSubscriber, stageContactImport, updateNewsletterDraft, updateNewsletterSettings } from "./newsletters.mjs";
+import { createNewsletterDraft, deliverNewsletter, getContactImportDetails, getNewsletterDashboard, getSubscriberDetails, importContactList, registerSubscriber, stageContactImport, updateLatestNewsletterLogo, updateNewsletterDraft, updateNewsletterSettings } from "./newsletters.mjs";
 import { getAgentPerformanceContext } from "./growth.mjs";
 import { getConnectionStatus } from "./connections.mjs";
 
@@ -129,9 +129,15 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && req.url === "/api/chat") {
     try {
       const { userId } = await requireUser(req);
+      const payload = await readJson(req);
+      const message = String(payload?.message || "");
+      if (/\b(update|change|replace|set|use|swap|correct|fix)\b/i.test(message) && /\b(newsletter|email|campaign)\b/i.test(message) && /\b(logo|wordmark|brand mark)\b/i.test(message)) {
+        const newsletterLogoAction = await updateLatestNewsletterLogo(userId, String(payload?.projectId || payload?.workspace?.id || "project-default"), message);
+        return json(res, 200, { reply: `Updated the newsletter logo to “${newsletterLogoAction.logo.name}”. Nothing was sent or scheduled.`, createdAt: new Date().toISOString(), newsletterLogoAction });
+      }
       const userApiEnv = await loadUserApiEnv(userId);
       await consumeAiUsage(userId, "chat", userApiEnv);
-      return json(res, 200, await runProjectConversation(await readJson(req), userApiEnv));
+      return json(res, 200, await runProjectConversation(payload, userApiEnv));
     } catch (error) {
       return json(res, error.statusCode || 500, { error: error.message || "The project assistant could not reply." });
     }

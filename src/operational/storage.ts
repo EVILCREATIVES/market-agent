@@ -142,7 +142,7 @@ function normalizeProject(project: Partial<ProductWorkspace>, index: number): Pr
     sources: Array.isArray(project.sources) ? project.sources : [],
     materials: Array.isArray(project.materials) ? project.materials : [],
     sourceMedia: Array.isArray(project.sourceMedia) ? project.sourceMedia.slice(0, 40) : [],
-    brand: { ...createDefaultBrand(), ...(project.brand || {}), typographySystems: Array.isArray(project.brand?.typographySystems) ? project.brand.typographySystems.slice(0, 12) : [], sourceTypographySystems: Array.isArray(project.brand?.sourceTypographySystems) ? project.brand.sourceTypographySystems.slice(0, 12) : [] },
+    brand: normalizeBrandIdentity(project.brand),
     reviewSummary: typeof project.reviewSummary === "string" ? project.reviewSummary : "",
     openQuestions: Array.isArray(project.openQuestions) ? project.openQuestions : [],
     questionAnswers: project.questionAnswers && typeof project.questionAnswers === "object" ? project.questionAnswers : {},
@@ -214,6 +214,7 @@ function createDefaultBrand() {
   return {
     logoDataUrl: "",
     logoName: "",
+    logoVariants: [],
     primaryColor: "",
     secondaryColor: "",
     accentColor: "",
@@ -228,6 +229,38 @@ function createDefaultBrand() {
     photographyStyle: "",
     imageryStyle: "",
     notes: "",
+  };
+}
+
+function normalizeBrandIdentity(brand: Partial<ProductWorkspace["brand"]> | undefined): ProductWorkspace["brand"] {
+  const merged = { ...createDefaultBrand(), ...(brand || {}) };
+  const supplied = Array.isArray(brand?.logoVariants) ? brand.logoVariants : [];
+  const variants = supplied.map((variant, index) => ({
+    id: String(variant?.id || `logo-${index + 1}`).slice(0, 120),
+    name: String(variant?.name || `Logo ${index + 1}`).trim().slice(0, 220),
+    url: String(variant?.url || "").trim().slice(0, 2_000_000),
+    usage: (["primary", "email", "light", "dark", "icon", "other"] as const).includes(variant?.usage as never) ? variant.usage! : "other" as const,
+    createdAt: String(variant?.createdAt || ""),
+  })).filter((variant) => /^(?:https:\/\/|data:image\/)/i.test(variant.url)).slice(0, 10);
+  if (!variants.length && typeof brand?.logoDataUrl === "string" && /^(?:https:\/\/|data:image\/)/i.test(brand.logoDataUrl)) {
+    variants.push({ id: "legacy-primary-logo", name: String(brand.logoName || "Primary logo"), url: brand.logoDataUrl, usage: "primary", createdAt: "" });
+  }
+  const primaryIndex = variants.findIndex((variant) => variant.usage === "primary");
+  if (variants.length && primaryIndex < 0) variants[0] = { ...variants[0], usage: "primary" };
+  let primarySeen = false;
+  const normalizedVariants = variants.map((variant) => {
+    if (variant.usage !== "primary") return variant;
+    if (!primarySeen) { primarySeen = true; return variant; }
+    return { ...variant, usage: "other" as const };
+  });
+  const primary = normalizedVariants.find((variant) => variant.usage === "primary") || normalizedVariants[0];
+  return {
+    ...merged,
+    logoDataUrl: primary?.url || "",
+    logoName: primary?.name || "",
+    logoVariants: normalizedVariants,
+    typographySystems: Array.isArray(brand?.typographySystems) ? brand.typographySystems.slice(0, 12) : [],
+    sourceTypographySystems: Array.isArray(brand?.sourceTypographySystems) ? brand.sourceTypographySystems.slice(0, 12) : [],
   };
 }
 

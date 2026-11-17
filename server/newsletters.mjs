@@ -522,6 +522,47 @@ export async function updateLatestNewsletterLink(userId, projectId, targetUrl, e
   return { ...updated, requestedUrl: normalizedUrl };
 }
 
+export async function updateLatestNewsletterLogo(userId, projectId, instruction = "", env = process.env) {
+  await ensureTables(env);
+  const current = await getPool(env).query(
+    `SELECT id,draft FROM market_agent_newsletters
+      WHERE user_id = $1 AND project_id = $2 AND status IN ('draft','failed')
+      ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+    [userId, projectId],
+  );
+  const row = current.rows[0];
+  if (!row?.id) throw newsletterError("There is no editable newsletter draft in this project.", 404);
+  const { state } = await loadStateForUser(userId, env);
+  const workspace = state.projects.find((item) => item.id === projectId);
+  if (!workspace) throw newsletterError("The project could not be found.", 404);
+  const variants = projectLogoVariants(workspace);
+  if (!variants.length) throw newsletterError("Add a logo variant to Brand first.", 409);
+  const selected = selectNewsletterLogoVariant(variants, instruction, row.draft?.logoVariantId || "");
+  const updated = await updateNewsletterDraft(userId, projectId, row.id, { logoUrl: selected.url, logoVariantId: selected.id, logoHidden: false }, env);
+  return { ...updated, logo: selected };
+}
+
+export function selectNewsletterLogoVariant(variants, instruction = "", currentId = "") {
+  const available = Array.isArray(variants) ? variants.filter((variant) => safeEmailImage(variant?.url)) : [];
+  if (!available.length) throw newsletterError("Add a logo variant to Brand first.", 409);
+  const message = String(instruction || "").toLowerCase();
+  const normalizedMessage = message.normalize("NFKD").replace(/[^a-z0-9]+/g, " ").trim();
+  const named = [...available].sort((a, b) => String(b.name || "").length - String(a.name || "").length).find((variant) => {
+    const name = String(variant.name || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, " ").trim();
+    return name.length >= 3 && normalizedMessage.includes(name);
+  });
+  if (named) return named;
+  if (/\b(new|newest|latest|recent|last uploaded)\b/.test(message)) {
+    return [...available].sort((a, b) => Date.parse(b.createdAt || "") - Date.parse(a.createdAt || "")).find((variant) => variant.id !== currentId) || available[0];
+  }
+  const requestedUsage = ["email", "dark", "light", "icon", "primary"].find((usage) => new RegExp(`\\b${usage}\\b`).test(message));
+  if (requestedUsage) {
+    const matchingUsage = available.find((variant) => variant.usage === requestedUsage);
+    if (matchingUsage) return matchingUsage;
+  }
+  return available.find((variant) => variant.usage === "email") || available.find((variant) => variant.usage === "primary") || available[0];
+}
+
 function trackedNewsletterUrl(value, campaignId, campaignName) {
   try {
     if (!value) return "";
@@ -902,7 +943,10 @@ function normalizeDraft(value, workspace) {
   const businessDetails = cleanText(value?.businessDetails || identity.businessDetails, 600);
   const addressPreference = ["include", "omit"].includes(value?.addressPreference || identity.addressPreference) ? (value?.addressPreference || identity.addressPreference) : "ask";
   const physicalAddress = cleanText(value?.physicalAddress || identity.physicalAddress, 600);
-  const logoUrl = safeEmailImage(value?.logoUrl) || projectLogoUrl(workspace);
+  const logoVariantId = cleanHeader(value?.logoVariantId, 160);
+  const selectedLogo = projectLogoVariants(workspace).find((variant) => variant.id === logoVariantId);
+  const logoHidden = value?.logoHidden === true;
+  const logoUrl = logoHidden ? "" : safeEmailImage(selectedLogo?.url) || safeEmailImage(value?.logoUrl) || projectLogoUrl(workspace);
   const hero = projectHeroImage(workspace);
   return {
     subject: cleanHeader(value?.subject, 100) || `An update from ${cleanHeader(workspace?.name, 70) || "our team"}`,
@@ -914,6 +958,8 @@ function normalizeDraft(value, workspace) {
     ctaUrl: safeUrl,
     closing: cleanText(value?.closing, 1_000),
     logoUrl,
+    logoVariantId: selectedLogo?.id || logoVariantId || "",
+    logoHidden,
     heroImageUrl: safeEmailImage(value?.heroImageUrl) || hero.url,
     heroImageAlt: cleanHeader(value?.heroImageAlt, 180) || hero.alt,
     senderName,
@@ -937,10 +983,25 @@ function newsletterDraftIssues(draft, workspace) {
 }
 
 function projectLogoUrl(workspace) {
-  const direct = safeEmailImage(workspace?.brand?.logoDataUrl);
-  if (direct) return direct;
+  const variants = projectLogoVariants(workspace);
+  const selected = variants.find((variant) => variant.usage === "email") || variants.find((variant) => variant.usage === "primary") || variants[0];
+  if (selected) return selected.url;
   const media = Array.isArray(workspace?.sourceMedia) ? workspace.sourceMedia : [];
   return safeEmailImage(media.find((item) => /\b(logo|wordmark|brand mark)\b/i.test(`${item?.name || ""} ${item?.role || ""} ${(item?.tags || []).join(" ")}`))?.url);
+}
+
+export function projectLogoVariants(workspace) {
+  const variants = Array.isArray(workspace?.brand?.logoVariants) ? workspace.brand.logoVariants : [];
+  const normalized = variants.map((variant, index) => ({
+    id: cleanHeader(variant?.id, 160) || `logo-${index + 1}`,
+    name: cleanHeader(variant?.name, 220) || `Logo ${index + 1}`,
+    url: safeEmailImage(variant?.url),
+    usage: ["primary", "email", "light", "dark", "icon", "other"].includes(variant?.usage) ? variant.usage : "other",
+    createdAt: String(variant?.createdAt || ""),
+  })).filter((variant) => variant.url).slice(0, 10);
+  const legacy = safeEmailImage(workspace?.brand?.logoDataUrl);
+  if (!normalized.length && legacy) normalized.push({ id: "legacy-primary-logo", name: cleanHeader(workspace?.brand?.logoName, 220) || "Primary logo", url: legacy, usage: "primary", createdAt: "" });
+  return normalized;
 }
 
 function projectHeroImage(workspace) {

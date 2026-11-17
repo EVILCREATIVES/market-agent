@@ -67,7 +67,7 @@ import { prepareLogo, prepareMaterial, type PreparedMaterial } from "./operation
 import { upload } from "@vercel/blob/client";
 import { apiFetch, getAccessToken } from "./auth";
 import BrandLogo from "./BrandLogo";
-import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, BillingStatus, ConnectionStatus, ContactImport, DeliveryJob, GrowthObjective, GrowthReport, HealthState, MediaBudgetSummary, MediaJob, NewsletterDashboard, NewsletterDraft, NewsletterSubscriber, PrimaryConversion, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, RunAssetReference, RunStatus, SocialAnalyticsReport, SourceMediaAsset, TikTokPublishingOptions, YouTubePublishingOptions } from "./operational/types";
+import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, BillingStatus, BrandLogoVariant, ConnectionStatus, ContactImport, DeliveryJob, GrowthObjective, GrowthReport, HealthState, MediaBudgetSummary, MediaJob, NewsletterDashboard, NewsletterDraft, NewsletterSubscriber, PrimaryConversion, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, RunAssetReference, RunStatus, SocialAnalyticsReport, SourceMediaAsset, TikTokPublishingOptions, YouTubePublishingOptions } from "./operational/types";
 
 type Page = "agent" | "brain" | "issues" | "research" | "campaigns" | "calendar" | "content" | "analytics" | "integrations";
 type CampaignIntensity = "careful" | "assertive" | "aggressive";
@@ -509,7 +509,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
         <div className="op-page">
           {selectedRunId ? <RunDetail run={state.runs.find((run) => run.id === selectedRunId)!} connections={connections} onBack={() => setSelectedRunId(null)} onConnect={() => navigate("integrations")} onStatus={updateRunStatus} onOutput={updateRunOutput} onDelete={deleteRun} notify={notify} /> : <>
             {page === "agent" && <AgentHome workspace={activeProject} runs={projectRuns} health={{ ...health, agentConfigured: runtimeReady }} connections={connections} schedule={activeSchedule} automationReady={automationReady} onSchedule={updateSchedule} onRun={addRun} onIssuesFound={addProactiveIssues} onOpen={setSelectedRunId} onNavigate={navigate} notify={notify} />}
-            {page === "brain" && <ProductBrain key={activeProject.id} workspace={activeProject} onSave={updateWorkspace} onOpenContentLibrary={() => navigate("content")} notify={notify} />}
+            {page === "brain" && <ProductBrain key={activeProject.id} userId={userId} workspace={activeProject} onSave={updateWorkspace} onOpenContentLibrary={() => navigate("content")} notify={notify} />}
             {page === "issues" && <IssuesCenter workspace={activeProject} onSave={updateWorkspace} onOpenBrand={() => navigate("brain")} notify={notify} />}
             {page === "research" && <RunLibrary title="Research" description={`Live market and audience work grounded in ${activeProject.name || "this project"}'s Brand.`} empty="No research has been run for this project yet." runs={projectRuns.filter((run) => ["research", "audience"].includes(run.action))} onOpen={setSelectedRunId} onStart={() => navigate("agent")} />}
             {page === "campaigns" && <CampaignWorkspace workspace={activeProject} runs={campaignRuns} connections={connections} onSaveWorkspace={updateWorkspace} onOpen={setSelectedRunId} onStart={() => navigate("agent")} onConnect={() => navigate("integrations")} onGrowth={() => navigate("analytics")} notify={notify} />}
@@ -654,6 +654,7 @@ function ProjectChat({ userId, workspace, activeCampaignRunId, open, onOpen, onC
       if (!response.ok) throw new Error(data.error || "The project assistant could not reply.");
       if (data.assetAction?.jobs && activeCampaignRunId) window.dispatchEvent(new CustomEvent("market-agent-delivery-updated", { detail: { runId: activeCampaignRunId, jobs: data.assetAction.jobs } }));
       if (data.newsletterAction?.draft) window.dispatchEvent(new CustomEvent("market-agent-newsletter-updated", { detail: { projectId: workspace.id, draft: data.newsletterAction.draft } }));
+      if (data.newsletterLogoAction?.draft) window.dispatchEvent(new CustomEvent("market-agent-newsletter-updated", { detail: { projectId: workspace.id, draft: data.newsletterLogoAction.draft } }));
       if (data.campaignAction?.run) onCampaignUpdated(data.campaignAction.run as AgentRun, Number(data.campaignAction.revision || 0));
       if (data.assetAction?.asset && activeCampaignRunId) onAttachToCampaign(activeCampaignRunId, {
         id: String(data.assetAction.asset.id),
@@ -673,7 +674,10 @@ function ProjectChat({ userId, workspace, activeCampaignRunId, open, onOpen, onC
       const newsletterCompletion = data.newsletterAction?.draft
         ? `**Updated in Campaigns.** I changed the primary link in “${data.newsletterAction.draft.content.subject}” to ${data.newsletterAction.requestedUrl || data.newsletterAction.draft.content.ctaUrl} and regenerated the newsletter preview. Campaign tracking was added automatically.\n\n**Nothing has been sent or scheduled.**`
         : "";
-      const assistantMessage: ProjectChatMessage = { id: crypto.randomUUID(), role: "assistant", content: contactCompletion || newsletterCompletion || String(data.reply || "I saved that."), createdAt: data.createdAt || new Date().toISOString() };
+      const newsletterLogoCompletion = data.newsletterLogoAction?.draft
+        ? `**Updated in Campaigns.** I changed the logo in “${data.newsletterLogoAction.draft.content.subject}” to **${data.newsletterLogoAction.logo?.name || "the selected Brand logo"}** and regenerated the email preview.\n\n**Nothing has been sent or scheduled.**`
+        : "";
+      const assistantMessage: ProjectChatMessage = { id: crypto.randomUUID(), role: "assistant", content: contactCompletion || newsletterLogoCompletion || newsletterCompletion || String(data.reply || "I saved that."), createdAt: data.createdAt || new Date().toISOString() };
       const workspaceUpdate = data.workspaceUpdate && typeof data.workspaceUpdate === "object" ? data.workspaceUpdate : null;
       const updatedTypographySystems = Array.isArray(workspaceUpdate?.brand?.typographySystems) ? workspaceUpdate.brand.typographySystems : null;
       const refreshedIssueNotes = typeof workspaceUpdate?.notes === "string" && workspaceUpdate.notes !== routedWorkspace.notes ? mergeAnalyzedIssueNotes(routedWorkspace.issueNotes, classifyWorkspaceNotes(workspaceUpdate.notes)) : routedWorkspace.issueNotes;
@@ -701,6 +705,7 @@ function ProjectChat({ userId, workspace, activeCampaignRunId, open, onOpen, onC
         updatedAt: new Date().toISOString(),
       });
       if (stagedContactImports.length) notify(`${stagedContactImports.length === 1 ? "Contact list" : "Contact lists"} staged in Campaigns. Nothing was sent.`);
+      else if (data.newsletterLogoAction?.draft) notify("Newsletter logo updated in Campaigns. Nothing was sent.");
       else if (data.newsletterAction?.draft) notify("Newsletter link updated in Campaigns. Nothing was sent.");
       else if (attachmentRecords.length) notify(`${attachmentRecords.length} ${attachmentRecords.length === 1 ? "asset was" : "assets were"} analyzed and placed by the agent.`);
       else if (workspaceUpdate) notify("Brand updated from the latest source evidence.");
@@ -824,7 +829,7 @@ function isCampaignRun(run: AgentRun) {
   return isCampaignRequest(run.action, run.prompt || "");
 }
 
-function ProductBrain({ workspace, onSave, onOpenContentLibrary, notify }: { workspace: ProductWorkspace; onSave: (workspace: ProductWorkspace) => void; onOpenContentLibrary: () => void; notify: (message: string) => void }) {
+function ProductBrain({ userId, workspace, onSave, onOpenContentLibrary, notify }: { userId: string; workspace: ProductWorkspace; onSave: (workspace: ProductWorkspace) => void; onOpenContentLibrary: () => void; notify: (message: string) => void }) {
   const [form, setForm] = useState<ProductWorkspace>(workspace);
   const [materials, setMaterials] = useState<PreparedMaterial[]>([]);
   const [links, setLinks] = useState<string[]>(() => workspace.sources.map((source) => source.url));
@@ -845,6 +850,7 @@ function ProductBrain({ workspace, onSave, onOpenContentLibrary, notify }: { wor
     return firstUnhandledQuestionIndex(questions, savedAnswers);
   });
   const [chatDraft, setChatDraft] = useState("");
+  const [logoUploading, setLogoUploading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const logoInput = useRef<HTMLInputElement>(null);
   const metadataRefreshKey = useRef("");
@@ -884,14 +890,49 @@ function ProductBrain({ workspace, onSave, onOpenContentLibrary, notify }: { wor
 
   const uploadLogo = async (file?: File) => {
     if (!file) return;
+    setLogoUploading(true);
     try {
-      const logoDataUrl = await prepareLogo(file);
-      setForm((current) => ({ ...current, brand: { ...current.brand, logoDataUrl, logoName: file.name } }));
+      const preparedDataUrl = await prepareLogo(file);
+      const imageBlob = await (await fetch(preparedDataUrl)).blob();
+      const token = await getAccessToken();
+      const safeBase = file.name.replace(/\.[^.]+$/, "").replace(/[^a-z0-9._-]+/gi, "-").slice(0, 120) || "logo";
+      const pathname = `market-agent-assets/${encodeURIComponent(userId)}/${encodeURIComponent(workspace.id)}/brand-logos/${Date.now()}-${safeBase}.png`;
+      const uploaded = await upload(pathname, imageBlob, {
+        access: "public",
+        handleUploadUrl: "/api/asset-upload",
+        clientPayload: JSON.stringify({ projectId: workspace.id }),
+        headers: { Authorization: `Bearer ${token}` },
+        contentType: "image/png",
+      });
+      setForm((current) => {
+        const first = !(current.brand.logoVariants || []).length;
+        const variant: BrandLogoVariant = { id: crypto.randomUUID(), name: file.name.replace(/\.[^.]+$/, ""), url: uploaded.url, usage: first ? "primary" : "other", createdAt: new Date().toISOString() };
+        const logoVariants = [...(current.brand.logoVariants || []), variant].slice(0, 10);
+        return { ...current, brand: { ...current.brand, logoVariants, logoDataUrl: first ? variant.url : current.brand.logoDataUrl, logoName: first ? variant.name : current.brand.logoName } };
+      });
       setIntakeError("");
+      notify("Logo variant added. Save corrections when the set is ready.");
     } catch (error) {
       setIntakeError(error instanceof Error ? error.message : "The logo could not be read.");
+    } finally {
+      setLogoUploading(false);
+      if (logoInput.current) logoInput.current.value = "";
     }
   };
+
+  const updateLogoVariant = (id: string, changes: Partial<BrandLogoVariant>) => setForm((current) => {
+    let logoVariants = (current.brand.logoVariants || []).map((variant) => variant.id === id ? { ...variant, ...changes } : variant);
+    if (changes.usage === "primary") logoVariants = logoVariants.map((variant) => variant.id === id ? { ...variant, usage: "primary" as const } : variant.usage === "primary" ? { ...variant, usage: "other" as const } : variant);
+    const primary = logoVariants.find((variant) => variant.usage === "primary") || logoVariants[0];
+    return { ...current, brand: { ...current.brand, logoVariants, logoDataUrl: primary?.url || "", logoName: primary?.name || "" } };
+  });
+
+  const removeLogoVariant = (id: string) => setForm((current) => {
+    let logoVariants = (current.brand.logoVariants || []).filter((variant) => variant.id !== id);
+    if (logoVariants.length && !logoVariants.some((variant) => variant.usage === "primary")) logoVariants = logoVariants.map((variant, index) => index === 0 ? { ...variant, usage: "primary" as const } : variant);
+    const primary = logoVariants.find((variant) => variant.usage === "primary") || logoVariants[0];
+    return { ...current, brand: { ...current.brand, logoVariants, logoDataUrl: primary?.url || "", logoName: primary?.name || "" } };
+  });
 
   const processFiles = async (files: FileList | File[]) => {
     const incoming = Array.from(files).slice(0, Math.max(0, 12 - materials.length));
@@ -1207,10 +1248,9 @@ function ProductBrain({ workspace, onSave, onOpenContentLibrary, notify }: { wor
           <div className="op-card-head"><div><strong>Brand identity</strong><small>Name, logo, color, look and feel, typography, and photography</small></div><ImageIcon size={19} /></div>
           <div className="op-form-grid"><Field label="Brand name" value={form.name} onChange={(value) => change("name", value)} placeholder="Brand name" /><Field label="Website" value={form.website} onChange={(value) => change("website", value)} placeholder="https://…" /></div>
           <div className="op-brand-grid">
-            <div className="op-logo-editor">
-              <input ref={logoInput} hidden type="file" accept="image/*" onChange={(event) => void uploadLogo(event.target.files?.[0])} />
-              <button onClick={() => logoInput.current?.click()}>{form.brand.logoDataUrl ? <img src={form.brand.logoDataUrl} alt="Project logo" /> : <><UploadCloud size={24} /><strong>Upload logo</strong><span>PNG, JPG, or WebP</span></>}</button>
-              {form.brand.logoDataUrl && <div><span>{form.brand.logoName || "Project logo"}</span><button onClick={() => setForm((current) => ({ ...current, brand: { ...current.brand, logoDataUrl: "", logoName: "" } }))}>Remove</button></div>}
+            <div className="op-logo-library">
+              <div className="op-logo-library__head"><div><strong>Logo variants</strong><small>Keep the primary mark, email version, light and dark versions, and the small icon together. Email uses the version marked Email, then Primary as fallback.</small></div><input ref={logoInput} hidden type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" onChange={(event) => void uploadLogo(event.target.files?.[0])} /><button disabled={logoUploading || (form.brand.logoVariants || []).length >= 10} onClick={() => logoInput.current?.click()}>{logoUploading ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />}{logoUploading ? "Adding…" : "Add logo"}</button></div>
+              {(form.brand.logoVariants || []).length ? <div className="op-logo-library__grid">{form.brand.logoVariants.map((variant) => <article key={variant.id}><div className={`op-logo-variant__preview ${variant.usage === "dark" ? "dark" : ""}`}><img src={variant.url} alt={variant.name} /></div><label><span>Name</span><input value={variant.name} onChange={(event) => updateLogoVariant(variant.id, { name: event.target.value })} /></label><label><span>Use for</span><select value={variant.usage} onChange={(event) => updateLogoVariant(variant.id, { usage: event.target.value as BrandLogoVariant["usage"] })}><option value="primary">Primary</option><option value="email">Email</option><option value="light">Light backgrounds</option><option value="dark">Dark backgrounds</option><option value="icon">Icon / small spaces</option><option value="other">Other</option></select></label><button className="remove" onClick={() => removeLogoVariant(variant.id)}><Trash2 size={13} /> Remove</button></article>)}</div> : <button className="op-logo-library__empty" onClick={() => logoInput.current?.click()}><UploadCloud size={22} /><span><strong>Add the first logo</strong><small>Transparent PNG, JPG, WebP, or SVG. A public email-safe copy is created automatically.</small></span></button>}
             </div>
             <div className="op-color-editor">
               <strong>Core palette</strong>
@@ -1864,7 +1904,7 @@ function filterSourceBackedBrandQuestions(questions: string[], workspace: Produc
 
 const PROTECTABLE_BRAIN_FIELDS = [
   "name", "website", "description", "segmentation", "positioning", "manifesto", "audience", "valueProposition", "voice", "guardrails",
-  "brand.primaryColor", "brand.secondaryColor", "brand.accentColor", "brand.neutralLightColor", "brand.neutralDarkColor", "brand.typography", "brand.fontFamilies", "brand.fontSources", "brand.typographySystems", "brand.lookAndFeel", "brand.photographyStyle", "brand.imageryStyle", "brand.notes",
+  "brand.logoVariants", "brand.primaryColor", "brand.secondaryColor", "brand.accentColor", "brand.neutralLightColor", "brand.neutralDarkColor", "brand.typography", "brand.fontFamilies", "brand.fontSources", "brand.typographySystems", "brand.lookAndFeel", "brand.photographyStyle", "brand.imageryStyle", "brand.notes",
 ] as const;
 
 function changedBrainFields(before: ProductWorkspace, after: ProductWorkspace) {
@@ -3064,7 +3104,7 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
       </section>
 
       {loading && !dashboard ? <div className="op-analytics-loading"><LoaderCircle className="spin" size={22} /> Reading campaign contacts and newsletters…</div> : dashboard && <>
-        <section className="op-newsletter-drafts op-newsletter-preview-section"><div className="op-section-title"><div><small>EMAIL PREVIEW</small><h2>Newsletter preview</h2><p>See the selected newsletter exactly as recipients will receive it. Switch between drafts, edit the subject, then approve delivery only when it is ready.</p></div></div>{dashboard.drafts.length ? <div className="op-newsletter-draft-layout"><aside>{dashboard.drafts.map((draft) => <button key={draft.id} className={selected?.id === draft.id ? "active" : ""} onClick={() => setSelectedId(draft.id)}><span><strong>{draft.content.subject}</strong><small>{new Date(draft.createdAt).toLocaleString()}</small></span><em className={`status-${draft.status}`}>{newsletterStatus(draft)}</em></button>)}</aside>{selected && <NewsletterReview draft={selected} scheduleTime={scheduleTime} onScheduleTime={setScheduleTime} working={working} onSave={updateDraft} onDeliver={deliver} />}</div> : <div className="op-newsletter-preview-empty"><span><FileText size={24} /></span><div><h3>No newsletter preview yet</h3><p>Describe the campaign above, or let the agent choose the strongest supported topic, then generate the first complete email preview.</p></div><button onClick={() => void createDraft()} disabled={working === "create"}><Sparkles size={14} />{working === "create" ? "Creating preview…" : "Generate preview"}</button></div>}</section>
+        <section className="op-newsletter-drafts op-newsletter-preview-section"><div className="op-section-title"><div><small>EMAIL PREVIEW</small><h2>Newsletter preview and editor</h2><p>See the selected newsletter exactly as recipients will receive it. Edit the complete email, choose any saved Brand logo, then approve delivery only when it is ready.</p></div></div>{dashboard.drafts.length ? <div className="op-newsletter-draft-layout"><aside>{dashboard.drafts.map((draft) => <button key={draft.id} className={selected?.id === draft.id ? "active" : ""} onClick={() => setSelectedId(draft.id)}><span><strong>{draft.content.subject}</strong><small>{new Date(draft.createdAt).toLocaleString()}</small></span><em className={`status-${draft.status}`}>{newsletterStatus(draft)}</em></button>)}</aside>{selected && <NewsletterReview draft={selected} logoVariants={workspace.brand.logoVariants || []} scheduleTime={scheduleTime} onScheduleTime={setScheduleTime} working={working} onSave={updateDraft} onDeliver={deliver} />}</div> : <div className="op-newsletter-preview-empty"><span><FileText size={24} /></span><div><h3>No newsletter preview yet</h3><p>Describe the campaign above, or let the agent choose the strongest supported topic, then generate the first complete email preview.</p></div><button onClick={() => void createDraft()} disabled={working === "create"}><Sparkles size={14} />{working === "create" ? "Creating preview…" : "Generate preview"}</button></div>}</section>
         {dashboard.contactImports.length > 0 && <section className="op-contact-imports"><div className="op-section-title"><div><small>CAMPAIGN CONTACTS</small><h2>Contact lists</h2><p>Uploaded contact CSVs live here—not in the Content Library. Open a list to search and review every contact; permission remains explicit.</p></div></div><div>{dashboard.contactImports.map((contactImport) => <ContactImportCard key={contactImport.id} contactImport={contactImport} details={contactDetails[contactImport.id]} working={working} deliveryReady={mailchimp.canManage} onLoad={loadContactDetails} onImport={importContacts} onConnect={onConnect} />)}</div></section>}
         <section className="op-newsletter-metrics">
           <article><small>Audience</small><strong>{dashboard.audience.memberCount.toLocaleString()}</strong><span>subscribers</span></article>
@@ -3093,15 +3133,80 @@ function EmailIdentityCard({ workspace, onSave }: { workspace: ProductWorkspace;
   return <section className={`op-email-identity ${missing.length ? "attention" : "ready"}`}><header><div><small>PROJECT EMAIL IDENTITY</small><h2>Sender and signature</h2><p>The agent uses these details instead of fake placeholders. This identity belongs to {workspace.name || "this project"} only.</p></div><em>{missing.length ? `${missing.length} detail${missing.length === 1 ? "" : "s"} needed` : "Ready"}</em></header><div className="op-email-identity__fields"><label><span>Sender name</span><input value={identity.senderName} onChange={(event) => setIdentity((current) => ({ ...current, senderName: event.target.value }))} placeholder="Example: Riccardo Valsecchi" /></label><label><span>Business/contact details</span><input value={identity.businessDetails} onChange={(event) => setIdentity((current) => ({ ...current, businessDetails: event.target.value }))} placeholder="Example: LUMEN · riccardo@visit-lumen.com" /></label><label><span>Address in editorial signature</span><select value={identity.addressPreference} onChange={(event) => setIdentity((current) => ({ ...current, addressPreference: event.target.value as ProductWorkspace["emailIdentity"]["addressPreference"] }))}><option value="ask">Ask me before use</option><option value="omit">Do not show it</option><option value="include">Show it</option></select></label>{identity.addressPreference === "include" && <label><span>Physical address</span><input value={identity.physicalAddress} onChange={(event) => setIdentity((current) => ({ ...current, physicalAddress: event.target.value }))} placeholder="Business mailing address" /></label>}</div><footer><p>{identity.addressPreference === "omit" ? "The editorial signature will omit the address. Mailchimp still adds the legally required audience address in its compliance footer." : "Bulk-email providers may still require a compliance address in their own footer."}</p><button disabled={!changed} onClick={() => onSave(identity)}><Save size={14} /> Save identity</button></footer></section>;
 }
 
-function NewsletterReview({ draft, scheduleTime, onScheduleTime, working, onSave, onDeliver }: { draft: NewsletterDraft; scheduleTime: string; onScheduleTime: (value: string) => void; working: string; onSave: (draft: NewsletterDraft, changes: Partial<NewsletterDraft["content"]>) => Promise<void>; onDeliver: (draft: NewsletterDraft, action: "send" | "schedule") => Promise<void> }) {
+function NewsletterReview({ draft, logoVariants, scheduleTime, onScheduleTime, working, onSave, onDeliver }: { draft: NewsletterDraft; logoVariants: BrandLogoVariant[]; scheduleTime: string; onScheduleTime: (value: string) => void; working: string; onSave: (draft: NewsletterDraft, changes: Partial<NewsletterDraft["content"]>) => Promise<void>; onDeliver: (draft: NewsletterDraft, action: "send" | "schedule") => Promise<void> }) {
+  const [editorOpen, setEditorOpen] = useState(false);
   const [subject, setSubject] = useState(draft.content.subject);
   const [previewText, setPreviewText] = useState(draft.content.previewText);
+  const [headline, setHeadline] = useState(draft.content.headline);
+  const [introduction, setIntroduction] = useState(draft.content.introduction);
+  const [sections, setSections] = useState(draft.content.sections);
+  const [ctaLabel, setCtaLabel] = useState(draft.content.ctaLabel);
   const [ctaUrl, setCtaUrl] = useState(draft.content.ctaUrl);
-  useEffect(() => { setSubject(draft.content.subject); setPreviewText(draft.content.previewText); setCtaUrl(draft.content.ctaUrl); }, [draft.id, draft.content.subject, draft.content.previewText, draft.content.ctaUrl]);
+  const [closing, setClosing] = useState(draft.content.closing);
+  const [heroImageUrl, setHeroImageUrl] = useState(draft.content.heroImageUrl);
+  const [heroImageAlt, setHeroImageAlt] = useState(draft.content.heroImageAlt);
+  const initialLogoChoice = () => draft.content.logoHidden ? "__none__" : draft.content.logoVariantId || logoVariants.find((variant) => variant.url === draft.content.logoUrl)?.id || "__automatic__";
+  const [logoChoice, setLogoChoice] = useState(initialLogoChoice);
+  useEffect(() => {
+    setSubject(draft.content.subject);
+    setPreviewText(draft.content.previewText);
+    setHeadline(draft.content.headline);
+    setIntroduction(draft.content.introduction);
+    setSections(draft.content.sections.map((section) => ({ ...section })));
+    setCtaLabel(draft.content.ctaLabel);
+    setCtaUrl(draft.content.ctaUrl);
+    setClosing(draft.content.closing);
+    setHeroImageUrl(draft.content.heroImageUrl);
+    setHeroImageAlt(draft.content.heroImageAlt);
+    setLogoChoice(initialLogoChoice());
+  }, [draft.id, draft.updatedAt]);
   const editable = draft.status === "draft" || draft.status === "failed";
-  const changed = subject !== draft.content.subject || previewText !== draft.content.previewText || ctaUrl !== draft.content.ctaUrl;
+  const selectedLogo = logoVariants.find((variant) => variant.id === logoChoice);
+  const changes: Partial<NewsletterDraft["content"]> = {
+    subject,
+    previewText,
+    headline,
+    introduction,
+    sections,
+    ctaLabel,
+    ctaUrl,
+    closing,
+    heroImageUrl,
+    heroImageAlt,
+    logoHidden: logoChoice === "__none__",
+    logoVariantId: selectedLogo?.id || "",
+    logoUrl: selectedLogo?.url || "",
+  };
+  const comparable = (content: Partial<NewsletterDraft["content"]>) => JSON.stringify({ subject: content.subject || "", previewText: content.previewText || "", headline: content.headline || "", introduction: content.introduction || "", sections: content.sections || [], ctaLabel: content.ctaLabel || "", ctaUrl: content.ctaUrl || "", closing: content.closing || "", heroImageUrl: content.heroImageUrl || "", heroImageAlt: content.heroImageAlt || "", logoHidden: Boolean(content.logoHidden), logoVariantId: content.logoVariantId || "", logoUrl: content.logoUrl || "" });
+  const changed = comparable(changes) !== comparable(draft.content);
   const blocked = Boolean(draft.content.issues?.length);
-  return <article className="op-newsletter-review"><header><div><small>{newsletterStatus(draft)}</small><h3>{draft.content.subject}</h3></div>{draft.error && <span className="error">{draft.error}</span>}</header>{blocked && <div className="op-newsletter-issues"><CircleAlert size={16} /><div><strong>Needs information before delivery</strong>{draft.content.issues.map((issue) => <p key={issue}>{issue}</p>)}</div></div>}<div className="op-newsletter-fields"><label><span>Subject</span><input value={subject} disabled={!editable} onChange={(event) => setSubject(event.target.value)} /></label><label><span>Preview text</span><input value={previewText} disabled={!editable} onChange={(event) => setPreviewText(event.target.value)} /></label><label><span>Primary link</span><input value={ctaUrl} disabled={!editable} onChange={(event) => setCtaUrl(event.target.value)} /></label>{editable && changed && <button onClick={() => void onSave(draft, { subject, previewText, ctaUrl })} disabled={working === `save-${draft.id}`}><Save size={13} />{working === `save-${draft.id}` ? "Saving…" : "Save changes"}</button>}</div><div className="op-newsletter-preview"><iframe title={`Preview of ${draft.content.subject}`} sandbox="" srcDoc={draft.html} /></div>{editable && <footer><button onClick={() => void onDeliver(draft, "send")} disabled={Boolean(working) || blocked}>{working === `send-${draft.id}` ? <LoaderCircle className="spin" size={14} /> : <Send size={14} />}{blocked ? "Complete sender details" : "Approve & send now"}</button><div><input type="datetime-local" value={scheduleTime} onChange={(event) => onScheduleTime(event.target.value)} step="900" /><button className="secondary" onClick={() => void onDeliver(draft, "schedule")} disabled={Boolean(working) || blocked}>{working === `schedule-${draft.id}` ? "Scheduling…" : "Approve & schedule"}</button></div></footer>}</article>;
+  const updateSection = (index: number, field: "heading" | "body", value: string) => setSections((current) => current.map((section, sectionIndex) => sectionIndex === index ? { ...section, [field]: value } : section));
+  return <article className="op-newsletter-review">
+    <header><div><small>{newsletterStatus(draft)}</small><h3>{draft.content.subject}</h3></div><div className="op-newsletter-review__actions">{draft.error && <span className="error">{draft.error}</span>}{editable && <button onClick={() => setEditorOpen((open) => !open)}>{editorOpen ? <X size={13} /> : <Settings2 size={13} />}{editorOpen ? "Close editor" : "Edit complete email"}</button>}</div></header>
+    {blocked && <div className="op-newsletter-issues"><CircleAlert size={16} /><div><strong>Needs information before delivery</strong>{draft.content.issues.map((issue) => <p key={issue}>{issue}</p>)}</div></div>}
+    <div className={editorOpen ? "op-newsletter-edit-layout" : ""}>
+      {editorOpen && <section className="op-newsletter-manual-editor">
+        <header><div><strong>Edit the actual email</strong><small>Every saved change regenerates the recipient preview beside it.</small></div>{changed && <em>Unsaved changes</em>}</header>
+        <label><span>Subject</span><input value={subject} onChange={(event) => setSubject(event.target.value)} /></label>
+        <label><span>Inbox preview text</span><input value={previewText} onChange={(event) => setPreviewText(event.target.value)} /></label>
+        <label><span>Logo</span><select value={logoChoice} onChange={(event) => setLogoChoice(event.target.value)}><option value="__automatic__">Automatic — Email, then Primary</option>{logoVariants.map((variant) => <option key={variant.id} value={variant.id}>{variant.name} · {logoUsageLabel(variant.usage)}</option>)}<option value="__none__">No logo in this email</option></select></label>
+        <label><span>Headline</span><input value={headline} onChange={(event) => setHeadline(event.target.value)} /></label>
+        <label><span>Introduction</span><textarea value={introduction} onChange={(event) => setIntroduction(event.target.value)} /></label>
+        <div className="op-newsletter-section-editor"><div className="op-newsletter-section-editor__head"><strong>Content sections</strong>{sections.length < 4 && <button onClick={() => setSections((current) => [...current, { heading: "", body: "" }])}><Plus size={12} /> Add section</button>}</div>{sections.map((section, index) => <article key={`section-${index}`}><div><span>Section {index + 1}</span><button aria-label={`Remove section ${index + 1}`} onClick={() => setSections((current) => current.filter((_, sectionIndex) => sectionIndex !== index))}><Trash2 size={12} /></button></div><input value={section.heading} onChange={(event) => updateSection(index, "heading", event.target.value)} placeholder="Section heading" /><textarea value={section.body} onChange={(event) => updateSection(index, "body", event.target.value)} placeholder="Section text" /></article>)}</div>
+        <div className="op-newsletter-editor-pair"><label><span>Button label</span><input value={ctaLabel} onChange={(event) => setCtaLabel(event.target.value)} /></label><label><span>Button link</span><input value={ctaUrl} onChange={(event) => setCtaUrl(event.target.value)} /></label></div>
+        <label><span>Closing</span><textarea value={closing} onChange={(event) => setClosing(event.target.value)} /></label>
+        <details><summary>Hero image</summary><label><span>Image URL</span><input value={heroImageUrl} onChange={(event) => setHeroImageUrl(event.target.value)} /></label><label><span>Image description</span><input value={heroImageAlt} onChange={(event) => setHeroImageAlt(event.target.value)} /></label></details>
+        <button className="op-newsletter-save-email" disabled={!changed || working === `save-${draft.id}`} onClick={() => void onSave(draft, changes)}>{working === `save-${draft.id}` ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}{working === `save-${draft.id}` ? "Saving…" : "Save & refresh preview"}</button>
+      </section>}
+      {!editorOpen && <div className="op-newsletter-fields"><label><span>Subject</span><input value={subject} disabled={!editable} onChange={(event) => setSubject(event.target.value)} /></label><label><span>Preview text</span><input value={previewText} disabled={!editable} onChange={(event) => setPreviewText(event.target.value)} /></label><label><span>Primary link</span><input value={ctaUrl} disabled={!editable} onChange={(event) => setCtaUrl(event.target.value)} /></label>{editable && changed && <button onClick={() => void onSave(draft, changes)} disabled={working === `save-${draft.id}`}><Save size={13} />{working === `save-${draft.id}` ? "Saving…" : "Save changes"}</button>}</div>}
+      <div className="op-newsletter-preview"><iframe title={`Preview of ${draft.content.subject}`} sandbox="" srcDoc={draft.html} /></div>
+    </div>
+    {editable && <footer><button onClick={() => void onDeliver(draft, "send")} disabled={Boolean(working) || blocked}>{working === `send-${draft.id}` ? <LoaderCircle className="spin" size={14} /> : <Send size={14} />}{blocked ? "Complete sender details" : "Approve & send now"}</button><div><input type="datetime-local" value={scheduleTime} onChange={(event) => onScheduleTime(event.target.value)} step="900" /><button className="secondary" onClick={() => void onDeliver(draft, "schedule")} disabled={Boolean(working) || blocked}>{working === `schedule-${draft.id}` ? "Scheduling…" : "Approve & schedule"}</button></div></footer>}
+  </article>;
+}
+
+function logoUsageLabel(usage: BrandLogoVariant["usage"]) {
+  return ({ primary: "Primary", email: "Email", light: "Light backgrounds", dark: "Dark backgrounds", icon: "Icon", other: "Other" } as const)[usage];
 }
 
 function replaceNewsletterDraft(setDashboard: React.Dispatch<React.SetStateAction<NewsletterDashboard | null>>, draft: NewsletterDraft) {

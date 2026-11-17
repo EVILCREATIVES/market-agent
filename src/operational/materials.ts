@@ -44,7 +44,7 @@ export async function prepareMaterial(file: File): Promise<PreparedMaterial> {
 export async function prepareLogo(file: File) {
   if (!file.type.startsWith("image/")) throw new Error("Choose an image file for the logo.");
   if (file.size > 20 * 1024 * 1024) throw new Error("The logo file is larger than 20 MB.");
-  return resizeImage(file, 900, 0.86);
+  return resizeLogo(file, 1200);
 }
 
 async function preparePdf(file: File): Promise<PreparedMaterial> {
@@ -181,6 +181,20 @@ async function resizeImage(blob: Blob, maxDimension: number, quality: number) {
     canvas.height = Math.max(1, Math.round(bitmap.height * scale));
     canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL("image/jpeg", quality);
+  } finally {
+    bitmap.close();
+  }
+}
+
+async function resizeLogo(blob: Blob, maxDimension: number) {
+  const bitmap = await createImageBitmap(blob);
+  try {
+    const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/png");
   } finally {
     bitmap.close();
   }
