@@ -522,7 +522,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
         </div>
       </main>
       {mobileOpen && <button className="op-scrim" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
-      <ProjectChat userId={userId} workspace={activeProject} activeCampaignRunId={selectedRunId && campaignRuns.some((run) => run.id === selectedRunId) ? selectedRunId : campaignRuns[0]?.id || ""} open={projectChatOpen} onOpen={() => setProjectChatOpen(true)} onClose={() => page === "integrations" ? deferConnectionGuide() : setProjectChatOpen(false)} onSave={updateWorkspace} onCampaignUpdated={(run, revision) => { if (revision) cloudRevisionRef.current = Math.max(cloudRevisionRef.current, revision); setState((current) => ({ ...current, runs: current.runs.map((item) => item.id === run.id ? run : item) })); }} onAttachToCampaign={attachAssetToCampaign} onIssuesFound={addProactiveIssues} guide={page === "integrations" ? connectionGuide : null} onGuideHelp={guideConnections} onGuideLater={deferConnectionGuide} notify={notify} />
+      <ProjectChat userId={userId} workspace={activeProject} currentPage={page} activeCampaignRunId={selectedRunId && campaignRuns.some((run) => run.id === selectedRunId) ? selectedRunId : page === "campaigns" ? campaignRuns[0]?.id || "" : ""} open={projectChatOpen} onOpen={() => setProjectChatOpen(true)} onClose={() => page === "integrations" ? deferConnectionGuide() : setProjectChatOpen(false)} onSave={updateWorkspace} onCampaignUpdated={(run, revision) => { if (revision) cloudRevisionRef.current = Math.max(cloudRevisionRef.current, revision); setState((current) => ({ ...current, runs: current.runs.map((item) => item.id === run.id ? run : item) })); }} onAttachToCampaign={attachAssetToCampaign} onIssuesFound={addProactiveIssues} guide={page === "integrations" ? connectionGuide : null} onGuideHelp={guideConnections} onGuideLater={deferConnectionGuide} notify={notify} />
       {accessChoiceOpen && <AccessChoice billing={billing} busy={billingBusy} onDemo={() => rememberAccessChoice("trial")} onApis={() => { rememberAccessChoice("byok"); navigate("integrations"); }} onSubscribe={() => { rememberAccessChoice("managed"); void startManagedSubscription(); }} onClose={() => setAccessChoiceOpen(false)} />}
       {toast && <div className="op-toast"><Sparkles size={15} />{toast}<button onClick={() => setToast(null)}><X size={14} /></button></div>}
     </div>
@@ -542,7 +542,7 @@ function AccessChoice({ billing, busy, onDemo, onApis, onSubscribe, onClose }: {
   </aside></>;
 }
 
-function ProjectChat({ userId, workspace, activeCampaignRunId, open, onOpen, onClose, onSave, onCampaignUpdated, onAttachToCampaign, onIssuesFound, guide, onGuideHelp, onGuideLater, notify }: { userId: string; workspace: ProductWorkspace; activeCampaignRunId: string; open: boolean; onOpen: () => void; onClose: () => void; onSave: (workspace: ProductWorkspace) => void; onCampaignUpdated: (run: AgentRun, revision: number) => void; onAttachToCampaign: (runId: string, asset: RunAssetReference, findings?: IssueFindings) => void; onIssuesFound: (projectId: string, findings: IssueFindings | undefined) => void; guide: ConnectionGuide | null; onGuideHelp: () => void; onGuideLater: () => void; notify: (message: string) => void }) {
+function ProjectChat({ userId, workspace, currentPage, activeCampaignRunId, open, onOpen, onClose, onSave, onCampaignUpdated, onAttachToCampaign, onIssuesFound, guide, onGuideHelp, onGuideLater, notify }: { userId: string; workspace: ProductWorkspace; currentPage: Page; activeCampaignRunId: string; open: boolean; onOpen: () => void; onClose: () => void; onSave: (workspace: ProductWorkspace) => void; onCampaignUpdated: (run: AgentRun, revision: number) => void; onAttachToCampaign: (runId: string, asset: RunAssetReference, findings?: IssueFindings) => void; onIssuesFound: (projectId: string, findings: IssueFindings | undefined) => void; guide: ConnectionGuide | null; onGuideHelp: () => void; onGuideLater: () => void; notify: (message: string) => void }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -650,12 +650,15 @@ function ProjectChat({ userId, workspace, activeCampaignRunId, open, onOpen, onC
       routedWorkspace = { ...routedWorkspace, chatMessages: nextHistory, updatedAt: new Date().toISOString() };
       onSave(routedWorkspace);
       const routedContext = routingNotes.length ? `${content}\n\nATTACHMENT ROUTING ALREADY COMPLETED\n${routingNotes.map((note) => `- ${note}`).join("\n")}\nAcknowledge these completed placements clearly. Do not ask the user to upload or move the files again. A contact list belongs to Campaigns, never Brand or Content Library. Do not claim that no contacts were processed when a staged count is supplied.` : content;
-      const response = await apiFetch("/api/chat", { method: "POST", body: JSON.stringify({ projectId: workspace.id, activeCampaignRunId, workspace: routedWorkspace, history: nextHistory, message: routedContext, intent: isTypographyInspectionInstruction(content) ? "inspect-typography" : isBrandSourceRefreshInstruction(content) ? "refresh-brand" : undefined, useWeb: true }) });
+      const campaignSection = currentPage === "campaigns" ? window.sessionStorage.getItem(`market-agent:campaign-current-section:${workspace.id}`) || "overview" : "";
+      const selectedNewsletterId = campaignSection === "newsletter" ? window.sessionStorage.getItem(`market-agent:campaign-selected-newsletter:${workspace.id}`) || "" : "";
+      const response = await apiFetch("/api/chat", { method: "POST", body: JSON.stringify({ projectId: workspace.id, activeCampaignRunId, workspace: routedWorkspace, history: nextHistory, message: routedContext, uiContext: { page: currentPage, campaignSection, selectedRunId: activeCampaignRunId, selectedNewsletterId }, intent: isTypographyInspectionInstruction(content) ? "inspect-typography" : isBrandSourceRefreshInstruction(content) ? "refresh-brand" : undefined, useWeb: true }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The project assistant could not reply.");
       if (data.assetAction?.jobs && activeCampaignRunId) window.dispatchEvent(new CustomEvent("market-agent-delivery-updated", { detail: { runId: activeCampaignRunId, jobs: data.assetAction.jobs } }));
       if (data.newsletterAction?.draft) window.dispatchEvent(new CustomEvent("market-agent-newsletter-updated", { detail: { projectId: workspace.id, draft: data.newsletterAction.draft } }));
       if (data.newsletterLogoAction?.draft) window.dispatchEvent(new CustomEvent("market-agent-newsletter-updated", { detail: { projectId: workspace.id, draft: data.newsletterLogoAction.draft } }));
+      if (data.invitationAction?.campaign) window.dispatchEvent(new CustomEvent("market-agent-newsletter-updated", { detail: { projectId: workspace.id, campaign: data.invitationAction.campaign } }));
       if (data.campaignAction?.run) onCampaignUpdated(data.campaignAction.run as AgentRun, Number(data.campaignAction.revision || 0));
       if (data.assetAction?.asset && activeCampaignRunId) onAttachToCampaign(activeCampaignRunId, {
         id: String(data.assetAction.asset.id),
@@ -672,7 +675,8 @@ function ProjectChat({ userId, workspace, activeCampaignRunId, open, onOpen, onC
         const next = draft ? "I also created the newsletter draft in Campaigns. Review the contacts once, connect a delivery service when ready, then approve the send or schedule." : draftError ? `The contacts are safe; the draft still needs attention: ${draftError}` : "The list is ready in Campaigns for the newsletter draft.";
         return `**${contactImport.sourceName} is now campaign data — not Content Library material.** I parsed ${contactImport.validCount} valid contact${contactImport.validCount === 1 ? "" : "s"}; ${contactImport.duplicateCount} duplicate${contactImport.duplicateCount === 1 ? " was" : "s were"} and ${contactImport.invalidCount} invalid row${contactImport.invalidCount === 1 ? " was" : "s were"} excluded. ${permission} ${next}\n\n**Nothing has been sent.**`;
       }).join("\n\n") : "";
-      const newsletterCompletion = data.newsletterAction?.draft
+      const interfaceActionTypes = Array.isArray(data.interfaceActions) ? data.interfaceActions.map((item: { type?: string }) => item.type) : [];
+      const newsletterCompletion = data.newsletterAction?.draft && !interfaceActionTypes.some((type: string) => type === "update_newsletter" || type === "create_newsletter")
         ? `**Updated in Campaigns.** I changed the primary link in “${data.newsletterAction.draft.content.subject}” to ${data.newsletterAction.requestedUrl || data.newsletterAction.draft.content.ctaUrl} and regenerated the newsletter preview. Campaign tracking was added automatically.\n\n**Nothing has been sent or scheduled.**`
         : "";
       const newsletterLogoCompletion = data.newsletterLogoAction?.draft
@@ -707,9 +711,10 @@ function ProjectChat({ userId, workspace, activeCampaignRunId, open, onOpen, onC
       });
       if (stagedContactImports.length) notify(`${stagedContactImports.length === 1 ? "Contact list" : "Contact lists"} staged in Campaigns. Nothing was sent.`);
       else if (data.newsletterLogoAction?.draft) notify("Newsletter logo updated in Campaigns. Nothing was sent.");
-      else if (data.newsletterAction?.draft) notify("Newsletter link updated in Campaigns. Nothing was sent.");
+      else if (data.newsletterAction?.draft) notify(interfaceActionTypes.length ? "Newsletter saved in Campaigns. Nothing was sent." : "Newsletter link updated in Campaigns. Nothing was sent.");
+      else if (data.invitationAction?.campaign) notify("Prospect invitation updated in Campaigns. Nothing was sent.");
       else if (attachmentRecords.length) notify(`${attachmentRecords.length} ${attachmentRecords.length === 1 ? "asset was" : "assets were"} analyzed and placed by the agent.`);
-      else if (workspaceUpdate) notify("Brand updated from the latest source evidence.");
+      else if (workspaceUpdate) notify("The requested project changes were saved.");
     } catch (error) {
       notify(error instanceof Error ? error.message : "The project assistant could not reply.");
     } finally {
@@ -740,9 +745,8 @@ function assetDestinationLabel(value: string) {
 
 function isBrandSourceRefreshInstruction(value: string) {
   const message = value.toLowerCase();
-  const changeLanguage = /\b(upd\w*|refresh\w*|rebuild\w*|reread\w*|rerun\w*|re-run|sync\w*|chang\w*|new|latest|reflect\w*|revis\w*|based)\b/i.test(message);
-  return (changeLanguage && /\b(brand|brain|profile|identity)\b/i.test(message))
-    || (/\b(website|web\s*site|site|source|deck|figma|slides?|presentation|pptx|powerpoint)\b/i.test(message) && (changeLanguage || /\b(read|review|check|analy[sz]\w*)\b/i.test(message)));
+  const changeLanguage = /\b(update|updated|refresh|refreshed|rebuild|reread|re-read|rerun|re-run|sync|synchronize|change|changed|new|latest|reflect|revise|revised)\b/i.test(message);
+  return changeLanguage && /\b(brand|brain|profile|identity)\b/i.test(message);
 }
 
 function isTypographyInspectionInstruction(value: string) {
@@ -3011,6 +3015,15 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
       window.removeEventListener("market-agent-delivery-updated", handleDeliveryUpdate);
     };
   }, [projectId, mailchimp.canManage]);
+
+  useEffect(() => {
+    window.sessionStorage.setItem(`market-agent:campaign-current-section:${projectId}`, section);
+  }, [projectId, section]);
+
+  useEffect(() => {
+    if (selectedId) window.sessionStorage.setItem(`market-agent:campaign-selected-newsletter:${projectId}`, selectedId);
+    else window.sessionStorage.removeItem(`market-agent:campaign-selected-newsletter:${projectId}`);
+  }, [projectId, selectedId]);
 
   const createDraft = async () => {
     setWorking("create");

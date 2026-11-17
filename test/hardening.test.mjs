@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isPanelRun } from "../server/db.mjs";
-import { isPrivateAddress } from "../server/agent.mjs";
+import { isBrandSourceRefreshRequest, isPrivateAddress } from "../server/agent.mjs";
 import { campaignPublicationTarget, personalizeInvitationTemplate, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
 import { scoreMarketingOutput } from "../server/evaluation.mjs";
 import { handleSchedule } from "../server/schedule-handler.mjs";
@@ -13,6 +13,11 @@ test("balanced review runs count against the panel budget", () => {
   assert.equal(isPanelRun({ model: "Three-way strategy review" }), true);
   assert.equal(isPanelRun({ model: "Collaborative review" }), true);
   assert.equal(isPanelRun({ executionMode: "single", model: "Standard analysis" }), false);
+});
+
+test("draft copy mentioning future updates from a site does not trigger a Brand refresh", () => {
+  assert.equal(isBrandSourceRefreshRequest("If useful, subscribe for future updates from the site."), false);
+  assert.equal(isBrandSourceRefreshRequest("Update the Brand from the live website."), true);
 });
 
 test("direct delivery accepts one reviewed recipient and rejects additions", () => {

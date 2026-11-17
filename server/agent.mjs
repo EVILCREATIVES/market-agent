@@ -236,6 +236,9 @@ export async function runProjectConversation(payload, env = process.env) {
     : "No earlier conversation.";
   const prompt = `${buildContext(workspace)}
 
+CURRENT INTERFACE LOCATION
+${JSON.stringify(payload?.uiContext || {})}
+
 CURRENT CONNECTED ACCOUNTS
 ${connectionContext(connections)}
 
@@ -284,6 +287,31 @@ Reply directly and naturally. Always acknowledge and comment on the user's actua
     createdAt: new Date().toISOString(),
     starter: true,
   };
+}
+
+export async function planProjectInterfaceActions(payload, env = process.env) {
+  const message = String(payload?.message || "").trim().slice(0, 12_000);
+  if (!message || (!env.OPENAI_API_KEY && !env.GOOGLE_GENERATIVE_AI_API_KEY)) return { summary: "", actions: [] };
+  const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
+  const editable = payload?.editable && typeof payload.editable === "object" ? payload.editable : {};
+  const prompt = `${buildContext(workspace)}
+
+EDITABLE INTERFACE STATE
+${JSON.stringify(editable, null, 2).slice(0, 36_000)}
+
+USER MESSAGE
+${message}
+
+Decide whether this message asks Market Agent to change something already editable in the app. The assistant is an operator: when the user asks for an edit, correction, rewrite, replacement, or clearly rejects current draft copy, return the exact low-risk in-app action required to save the correction now. The uiContext page and campaignSection identify what the user is looking at and are authoritative: on Campaigns, edit the matching visible campaign, invitation, or newsletter record; do not update Brand unless the message explicitly says Brand. A frustrated reaction to a visible email, invitation, newsletter, or campaign draft means improve that draft rather than merely apologizing. Use the supplied target id when present. Preserve fields the user did not ask to change by returning an empty string for them.
+
+Never infer a Brand-source refresh merely because draft copy contains words such as “updates” and “site”. Only update a Brand field when the user explicitly asks to edit that Brand information. Never send, schedule, publish, connect an account, spend money, delete data, or alter an already sent item. Those external or destructive operations require their existing approval flow. Never claim an action succeeded here; this step only describes actions that the server will attempt and verify. If the user is asking a question, giving general product feedback, or requesting an unsupported/destructive/external action, return no actions. For a campaign text edit, copy an exact existing excerpt into findText and put the complete replacement in replacementText. For an invitation or newsletter rewrite, return complete, ready-to-use copy without commentary or bracket placeholders, except the supported merge token {{first_name}} and the required invitation link token {{invitation_url}}.`;
+  return generateStructuredObject({
+    env,
+    name: "project_interface_actions",
+    system: `${operatorSystem} You convert explicit user instructions into verified, low-risk edits to saved app drafts.`,
+    prompt,
+    schema: projectInterfaceActionsSchema(),
+  });
 }
 
 function isTypographyInspectionRequest(message) {
@@ -337,13 +365,10 @@ async function inspectTypographyFromProjectSources(payload, workspace, message) 
   };
 }
 
-function isBrandSourceRefreshRequest(message) {
+export function isBrandSourceRefreshRequest(message) {
   const value = String(message || "").toLowerCase();
-  const changeLanguage = /\b(upd\w*|refresh\w*|rebuild\w*|reread\w*|rerun\w*|re-run|sync\w*|chang\w*|new|latest|reflect\w*|revis\w*|based)\b/i.test(value);
-  const explicitBrandUpdate = changeLanguage && /\b(brand|brain|profile|identity)\b/i.test(value);
-  const sourceReview = /\b(website|web\s*site|site|source|deck|figma|slides?|presentation|pptx|powerpoint)\b/i.test(value)
-    && (changeLanguage || /\b(read|review|check|analy[sz]\w*)\b/i.test(value));
-  return explicitBrandUpdate || sourceReview;
+  const changeLanguage = /\b(update|updated|refresh|refreshed|rebuild|reread|re-read|rerun|re-run|sync|synchronize|change|changed|new|latest|reflect|revise|revised)\b/i.test(value);
+  return changeLanguage && /\b(brand|brain|profile|identity)\b/i.test(value);
 }
 
 async function refreshBrandFromProjectSources(payload, workspace, message, env) {
@@ -904,6 +929,44 @@ function prospectConversionSchema() {
       invitationBody: { type: "string" },
       invitationStrategy: { type: "string", enum: ["project_first", "direct_signup"] },
       invitationCtaLabel: { type: "string" },
+    },
+  };
+}
+
+function projectInterfaceActionsSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["summary", "actions"],
+    properties: {
+      summary: { type: "string" },
+      actions: {
+        type: "array",
+        maxItems: 6,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["type", "targetId", "field", "value", "subject", "previewText", "headline", "body", "closing", "ctaLabel", "url", "strategy", "findText", "replacementText", "direction", "reason"],
+          properties: {
+            type: { type: "string", enum: ["none", "update_workspace", "update_invitation", "update_newsletter", "create_newsletter", "update_campaign_text"] },
+            targetId: { type: "string" },
+            field: { type: "string", enum: ["", "name", "website", "description", "segmentation", "positioning", "manifesto", "audience", "valueProposition", "voice", "guardrails", "notes", "brand.primaryColor", "brand.secondaryColor", "brand.accentColor", "brand.neutralLightColor", "brand.neutralDarkColor", "brand.typography", "brand.lookAndFeel", "brand.photographyStyle", "brand.imageryStyle", "brand.notes", "emailIdentity.senderName", "emailIdentity.businessDetails", "emailIdentity.physicalAddress", "emailIdentity.addressPreference", "growth.objective", "growth.primaryConversion", "growth.analyticsEvent", "growth.rationale"] },
+            value: { type: "string" },
+            subject: { type: "string" },
+            previewText: { type: "string" },
+            headline: { type: "string" },
+            body: { type: "string" },
+            closing: { type: "string" },
+            ctaLabel: { type: "string" },
+            url: { type: "string" },
+            strategy: { type: "string", enum: ["", "project_first", "direct_signup", "custom"] },
+            findText: { type: "string" },
+            replacementText: { type: "string" },
+            direction: { type: "string" },
+            reason: { type: "string" },
+          },
+        },
+      },
     },
   };
 }

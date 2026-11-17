@@ -236,6 +236,35 @@ export async function getNewsletterDashboard(userId, projectId, env = process.en
   };
 }
 
+export async function getNewsletterActionContext(userId, projectId, options = {}, env = process.env) {
+  await ensureTables(env);
+  const selectedNewsletterId = String(options?.newsletterId || "").slice(0, 200);
+  const [draftResult, campaignResult] = await Promise.all([
+    getPool(env).query(
+      `SELECT * FROM market_agent_newsletters
+       WHERE user_id = $1 AND project_id = $2 AND status IN ('draft','failed')
+         AND ($3 = '' OR id = $3)
+       ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+      [userId, projectId, selectedNewsletterId],
+    ),
+    getPool(env).query(
+      `SELECT * FROM market_agent_optin_campaigns
+       WHERE user_id = $1 AND project_id = $2
+       ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+      [userId, projectId],
+    ),
+  ]);
+  let workspace = {};
+  try {
+    const loaded = await loadStateForUser(userId, env);
+    workspace = loaded.state.projects.find((item) => item.id === projectId) || {};
+  } catch { /* The editable records remain available without workspace enrichment. */ }
+  return {
+    newsletter: draftResult.rows[0] ? serializeDraft(draftResult.rows[0]) : null,
+    invitation: campaignResult.rows[0] ? serializeOptinCampaign(campaignResult.rows[0], env, workspace) : null,
+  };
+}
+
 export async function stageContactImport(userId, projectId, input, env = process.env) {
   await ensureTables(env);
   const parsed = parseContactCsv(input?.text);
