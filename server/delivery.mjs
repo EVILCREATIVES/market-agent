@@ -85,6 +85,11 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
   if (unique.size > 1_000) throw deliveryError("Invitation campaigns are limited to 1,000 individual recipients at a time.", 400);
   const runId = prospectInvitationRunId(campaign.id);
   const approvalId = randomUUID();
+  const repeatSend = input?.resend === true && input?.repeatConfirmed === true;
+  if (repeatSend) {
+    const current = await getProspectInvitationStats(userId, projectId, campaign.id, env);
+    if (current.scheduled > 0) throw deliveryError("Wait for the currently scheduled invitation batch to finish before approving a repeat send.", 409);
+  }
   const client = await getPool(env).connect();
   let inserted = 0;
   try {
@@ -112,7 +117,7 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
         invitationStrategy: campaign.invitationStrategy || "custom",
         rationale: "One-time invitation to the approved project destination.",
       };
-      const idempotencyKey = createHash("sha256").update(`${userId}:${projectId}:${runId}:${recipient.email}`).digest("hex");
+      const idempotencyKey = createHash("sha256").update(`${userId}:${projectId}:${runId}:${repeatSend ? approvalId : "initial"}:${recipient.email}`).digest("hex");
       const result = await client.query(
         `INSERT INTO market_agent_delivery_jobs
           (id,user_id,project_id,run_id,channel,payload,status,idempotency_key,approved_at,next_attempt_at,created_at,updated_at)

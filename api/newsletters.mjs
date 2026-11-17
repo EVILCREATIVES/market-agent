@@ -77,6 +77,7 @@ export default async function handler(req, res) {
     }
     if (action === "schedule-optin-invitations") {
       if (req.body?.approvalConfirmed !== true) return res.status(400).json({ error: "Approve the invitation campaign before it is scheduled." });
+      if (req.body?.resend === true && req.body?.repeatConfirmed !== true) return res.status(400).json({ error: "Confirm the repeat send and its recipient count first." });
       const dashboard = await getNewsletterDashboard(userId, projectId);
       const campaign = (dashboard.conversionCampaigns || []).find((item) => item.id === String(req.body?.id || ""));
       if (!campaign) return res.status(404).json({ error: "The invitation campaign was not found." });
