@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { isPanelRun } from "../server/db.mjs";
 import { isBrandSourceRefreshRequest, isPrivateAddress } from "../server/agent.mjs";
-import { campaignPublicationTarget, personalizeInvitationTemplate, renderInvitationEmailHtml, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
+import { campaignPublicationTarget, personalizeInvitationTemplate, renderInvitationEmailHtml, resolveInvitationDestination, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
 import { scoreMarketingOutput } from "../server/evaluation.mjs";
 import { handleSchedule } from "../server/schedule-handler.mjs";
 import { projectLogoVariants, safeMailchimpSignupUrl, selectNewsletterLogoVariant, signupFormUrlFromResponses } from "../server/newsletters.mjs";
@@ -46,7 +46,14 @@ test("invitation delivery renders the approved brand, message, action, and opt-o
   assert.match(html, /https:\/\/assets\.example\.com\/lumen\.png/);
   assert.match(html, /https:\/\/assets\.example\.com\/hero\.jpg/);
   assert.match(html, /Try the demo/);
+  assert.match(html, />https:\/\/visit-lumen\.com\/<\/a>/);
   assert.match(html, /Stop future invitations/);
+});
+
+test("invitation destination falls back to the Brand website and normalizes assistant domains", () => {
+  assert.equal(resolveInvitationDestination("", "", "https://www.visit-lumen.com/"), "https://www.visit-lumen.com/");
+  assert.equal(resolveInvitationDestination("visit-lumen.com"), "https://visit-lumen.com/");
+  assert.equal(resolveInvitationDestination("not a link", "https://www.visit-lumen.com/"), "https://www.visit-lumen.com/");
 });
 
 test("campaign coverage recognizes the full promised publication cadence", () => {

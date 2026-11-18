@@ -60,7 +60,7 @@ export function personalizeInvitationTemplate(template, recipient = {}, signupUr
 }
 
 export function renderInvitationEmailHtml(workspace = {}, campaign = {}, input = {}) {
-  const destination = safeInvitationLink(input.invitationUrl || campaign.invitationUrl || campaign.publicUrl);
+  const destination = resolveInvitationDestination(input.invitationUrl, campaign.invitationUrl, workspace?.website, campaign.publicUrl);
   const subject = String(input.subject || campaign.invitationSubject || "Invitation").trim();
   const body = String(input.body || campaign.invitationBody || "").trim();
   const cta = String(input.ctaLabel || campaign.invitationCtaLabel || "Open").trim().slice(0, 100) || "Open";
@@ -76,7 +76,7 @@ export function renderInvitationEmailHtml(workspace = {}, campaign = {}, input =
   const content = body.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean).filter((item) => item !== destination && item !== "{{invitation_url}}" && item !== "{{signup_url}}").map((item) => `<p style="margin:0 0 18px;font:400 16px/1.65 Arial,sans-serif;color:${text}">${emailParagraphs(item)}</p>`).join("");
   const testBanner = input.test === true ? `<tr><td style="padding:11px 28px;background:#fff3cd;color:#654d03;font:700 12px/1.4 Arial,sans-serif;text-align:center">TEST EMAIL — no prospect received this message</td></tr>` : "";
   const optOut = input.unsubscribeUrl ? `<br><a href="${escapeEmailAttribute(input.unsubscribeUrl)}" style="color:#666">Stop future invitations</a>` : "";
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeEmailHtml(subject)}</title></head><body style="margin:0;padding:0;background:${background}"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:${background};padding:28px 12px"><tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border-radius:12px;overflow:hidden"><tr><td style="height:8px;background:${primary}"></td></tr>${testBanner}<tr><td style="padding:28px 34px 22px">${logo ? `<img src="${escapeEmailAttribute(logo)}" alt="${escapeEmailAttribute(name)}" style="display:block;max-width:190px;max-height:72px;width:auto;height:auto">` : `<div style="font:700 13px Arial,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:${primary}">${escapeEmailHtml(name)}</div>`}</td></tr>${hero ? `<tr><td><img src="${escapeEmailAttribute(hero.url)}" alt="${escapeEmailAttribute(hero.alt)}" width="640" style="display:block;width:100%;max-width:640px;height:auto;max-height:420px;object-fit:cover"></td></tr>` : ""}<tr><td style="padding:30px 34px 18px"><h1 style="margin:0 0 22px;font:700 30px/1.2 Arial,sans-serif;color:${text}">${escapeEmailHtml(subject)}</h1>${content}${destination ? `<p style="margin:4px 0 24px"><a href="${escapeEmailAttribute(destination)}" style="display:inline-block;padding:13px 20px;background:${primary};color:#ffffff;text-decoration:none;border-radius:7px;font:700 15px Arial,sans-serif">${escapeEmailHtml(cta)}</a></p>` : ""}${signature ? `<p style="margin:24px 0 0;font:600 14px/1.55 Arial,sans-serif;color:${text}">${signature}</p>` : ""}</td></tr><tr><td style="padding:20px 34px;background:#f2f1ee;font:400 12px/1.5 Arial,sans-serif;color:#666">This is a direct project invitation, not a newsletter subscription.${optOut}</td></tr></table></td></tr></table></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeEmailHtml(subject)}</title></head><body style="margin:0;padding:0;background:${background}"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:${background};padding:28px 12px"><tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border-radius:12px;overflow:hidden"><tr><td style="height:8px;background:${primary}"></td></tr>${testBanner}<tr><td style="padding:28px 34px 22px">${logo ? `<img src="${escapeEmailAttribute(logo)}" alt="${escapeEmailAttribute(name)}" style="display:block;max-width:190px;max-height:72px;width:auto;height:auto">` : `<div style="font:700 13px Arial,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:${primary}">${escapeEmailHtml(name)}</div>`}</td></tr>${hero ? `<tr><td><img src="${escapeEmailAttribute(hero.url)}" alt="${escapeEmailAttribute(hero.alt)}" width="640" style="display:block;width:100%;max-width:640px;height:auto;max-height:420px;object-fit:cover"></td></tr>` : ""}<tr><td style="padding:30px 34px 18px"><h1 style="margin:0 0 22px;font:700 30px/1.2 Arial,sans-serif;color:${text}">${escapeEmailHtml(subject)}</h1>${content}${destination ? `<p style="margin:4px 0 8px"><a href="${escapeEmailAttribute(destination)}" style="display:inline-block;padding:13px 20px;background:${primary};color:#ffffff;text-decoration:none;border-radius:7px;font:700 15px Arial,sans-serif">${escapeEmailHtml(cta)}</a></p><p style="margin:0 0 24px;font:400 12px/1.5 Arial,sans-serif;color:#777">Or open: <a href="${escapeEmailAttribute(destination)}" style="color:${primary};word-break:break-all">${escapeEmailHtml(destination)}</a></p>` : ""}${signature ? `<p style="margin:24px 0 0;font:600 14px/1.55 Arial,sans-serif;color:${text}">${signature}</p>` : ""}</td></tr><tr><td style="padding:20px 34px;background:#f2f1ee;font:400 12px/1.5 Arial,sans-serif;color:#666">This is a direct project invitation, not a newsletter subscription.${optOut}</td></tr></table></td></tr></table></body></html>`;
 }
 
 function invitationLogo(workspace) {
@@ -98,9 +98,19 @@ function safeInvitationImage(value) {
   return /^https:\/\/[^\s<>]+$/i.test(source) ? source : "";
 }
 
-function safeInvitationLink(value) {
-  const source = String(value || "").trim();
-  return /^https:\/\/[^\s<>]+$/i.test(source) ? source : "";
+export function resolveInvitationDestination(...values) {
+  for (const value of values) {
+    const source = String(value || "").trim();
+    if (!source || /[\s<>]/.test(source)) continue;
+    const candidate = /^https?:\/\//i.test(source) ? source : `https://${source}`;
+    try {
+      const url = new URL(candidate);
+      if (url.protocol === "https:" && url.hostname.includes(".") && !url.username && !url.password && url.hostname !== "localhost") return url.toString();
+    } catch {
+      // Try the next known project destination.
+    }
+  }
+  return "";
 }
 
 function safeEmailColor(value, fallback) {
@@ -127,8 +137,10 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
   if (!connections.gmail?.canSend) throw deliveryError("Connect this project's mailbox and approve sending access before scheduling invitations.", 409);
   if (!campaign?.id || campaign?.status !== "active") throw deliveryError("Activate the invitation before scheduling its email.", 409);
   const signupUrl = String(campaign.publicUrl || "").trim();
-  const invitationUrl = String(input?.invitationUrl || campaign.invitationUrl || signupUrl).trim();
-  if (!/^https:\/\//i.test(invitationUrl)) throw deliveryError("The invitation needs a public HTTPS destination before it can be scheduled.", 409);
+  const { state } = await loadStateForUser(userId, env);
+  const workspace = state.projects.find((item) => item.id === projectId) || {};
+  const invitationUrl = resolveInvitationDestination(input?.invitationUrl, campaign.invitationUrl, workspace.website, signupUrl);
+  if (!invitationUrl) throw deliveryError("The invitation needs a public HTTPS destination before it can be scheduled.", 409);
   const subjectTemplate = String(input?.subject || campaign.invitationSubject || "").replace(/[\r\n]+/g, " ").trim().slice(0, 300);
   let bodyTemplate = String(input?.body || campaign.invitationBody || "").trim().slice(0, 20_000);
   if (!subjectTemplate || !bodyTemplate) throw deliveryError("Review the invitation subject and message before scheduling it.", 400);
@@ -145,8 +157,6 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
   if (!unique.size) throw deliveryError("There are no eligible staged prospects to invite.", 409);
   if (unique.size > 1_000) throw deliveryError("Invitation campaigns are limited to 1,000 individual recipients at a time.", 400);
   const runId = prospectInvitationRunId(campaign.id);
-  const { state } = await loadStateForUser(userId, env);
-  const workspace = state.projects.find((item) => item.id === projectId) || {};
   const approvalId = randomUUID();
   const repeatSend = input?.resend === true && input?.repeatConfirmed === true;
   if (repeatSend) {
@@ -210,13 +220,14 @@ export async function sendProspectInvitationTest(userId, projectId, campaign, in
   const connections = await getConnectionStatus(userId, projectId, env);
   const recipient = String(connections.gmail?.accountEmail || "").trim().toLowerCase();
   if (!connections.gmail?.canSend || !recipient) throw deliveryError("Connect this project's mailbox before sending a test.", 409);
-  const invitationUrl = String(input?.invitationUrl || campaign?.invitationUrl || campaign?.publicUrl || "").trim();
+  const { state } = await loadStateForUser(userId, env);
+  const workspace = state.projects.find((item) => item.id === projectId) || {};
+  const invitationUrl = resolveInvitationDestination(input?.invitationUrl, campaign?.invitationUrl, workspace.website, campaign?.publicUrl);
+  if (!invitationUrl) throw deliveryError("Add a public project or action link before sending the test.", 409);
   const subject = personalizeInvitationTemplate(String(input?.subject || campaign?.invitationSubject || "Invitation test"), { firstName: "Test", company: "Your organization" }, invitationUrl);
   let body = personalizeInvitationTemplate(String(input?.body || campaign?.invitationBody || ""), { firstName: "Test", company: "Your organization" }, invitationUrl);
   if (!body) throw deliveryError("Write the invitation message before sending a test.", 400);
   body = `TEST — This invitation has not been sent to prospects.\n\n${body}`;
-  const { state } = await loadStateForUser(userId, env);
-  const workspace = state.projects.find((item) => item.id === projectId) || {};
   const html = renderInvitationEmailHtml(workspace, campaign, { subject, body: body.replace(/^TEST[^\n]*\n+/i, ""), invitationUrl, ctaLabel: input?.invitationCtaLabel || campaign?.invitationCtaLabel, test: true });
   const result = await sendGmailMessage(userId, projectId, { to: recipient, subject: `[TEST] ${subject}`, body, html }, env);
   return { recipient, sentAt: result.sentAt, externalId: result.externalId };

@@ -1327,13 +1327,18 @@ function normalizeInvitationBody(value, workspace = {}) {
 }
 
 function safeInvitationUrl(value, fallback = "") {
-  const normalized = normalizeHttpUrl(value) || normalizeHttpUrl(fallback);
+  const normalizeCandidate = (candidate) => {
+    const source = String(candidate || "").trim();
+    if (!source || /[\s<>]/.test(source)) return "";
+    return normalizeHttpUrl(source) || normalizeHttpUrl(`https://${source}`);
+  };
+  const normalized = normalizeCandidate(value) || normalizeCandidate(fallback);
   try {
     const url = new URL(normalized);
-    if (url.protocol !== "https:" || url.username || url.password || url.hostname === "localhost" || /^(127\.|10\.|192\.168\.|169\.254\.)/.test(url.hostname)) return normalizeHttpUrl(fallback);
+    if (url.protocol !== "https:" || url.username || url.password || url.hostname === "localhost" || /^(127\.|10\.|192\.168\.|169\.254\.)/.test(url.hostname)) return normalizeCandidate(fallback);
     return url.toString();
   } catch {
-    return normalizeHttpUrl(fallback);
+    return normalizeCandidate(fallback);
   }
 }
 

@@ -339,7 +339,7 @@ ${JSON.stringify(invitation, null, 2).slice(0, 12_000)}
 USER CORRECTION
 ${direction}
 
-Rewrite the saved prospect invitation exactly as requested. This is an invitation to one prospect, not a newsletter. Keep it human and specific. Do not describe the workflow, do not add headings such as RECIPIENT PREVIEW, and do not add bracket placeholders. {{first_name}} is allowed for the greeting and {{invitation_url}} must appear exactly once in the body. If the direction says people should experience a project or demo before deciding whether to subscribe, use project_first, direct them to the project website, and make subscription an optional later action rather than the email's request. The call to action must match the destination.`,
+Rewrite the saved prospect invitation exactly as requested. This is an invitation to one prospect, not a newsletter. Keep it human and specific. Do not describe the workflow, do not add headings such as RECIPIENT PREVIEW, and do not add bracket placeholders. {{first_name}} is allowed for the greeting and {{invitation_url}} must appear exactly once in the body. The token is filled at send time: never leave the url field empty. Unless the user explicitly supplies another link, use the saved project website shown above. If the user asks to change the link and gives a domain or URL, return that exact destination in url, normalized to https://. If the direction says people should experience a project or demo before deciding whether to subscribe, use project_first, direct them to the project website, and make subscription an optional later action rather than the email's request. The call to action must match the destination.`,
     schema: prospectInvitationRevisionSchema(),
   });
   return {
