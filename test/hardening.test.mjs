@@ -41,13 +41,14 @@ test("invitation delivery renders the approved brand, message, action, and opt-o
     brand: { primaryColor: "#8CC35E", neutralLightColor: "#FAF9F7", neutralDarkColor: "#1A1A1A", logoVariants: [{ usage: "email", url: "https://assets.example.com/lumen.png" }] },
     emailIdentity: { senderName: "Riccardo", businessDetails: "LUMEN · riccardo@example.com", addressPreference: "omit" },
     sourceMedia: [{ kind: "image", name: "Venue experience", role: "hero", recommendation: "reuse", url: "https://assets.example.com/hero.jpg" }],
-  }, { invitationCtaLabel: "Try the demo" }, { subject: "An invitation to try LUMEN", body: "Hi Alex,\n\nSee the experience.", invitationUrl: "https://visit-lumen.com/", unsubscribeUrl: "https://marketagent.shop/unsubscribe/test" });
+  }, { invitationCtaLabel: "Try the demo" }, { subject: "An invitation to try LUMEN", body: "Hi Alex,\n\nSee the experience here:\n\nhttps://visit-lumen.com/\n\nTell us what you think.", invitationUrl: "https://visit-lumen.com/", unsubscribeUrl: "https://marketagent.shop/unsubscribe/test" });
   assert.match(html, /An invitation to try LUMEN/);
   assert.match(html, /https:\/\/assets\.example\.com\/lumen\.png/);
   assert.match(html, /https:\/\/assets\.example\.com\/hero\.jpg/);
   assert.match(html, /Try the demo/);
   assert.match(html, />https:\/\/visit-lumen\.com\/<\/a>/);
   assert.match(html, /Stop future invitations/);
+  assert.ok(html.indexOf(">Try the demo</a>") < html.indexOf("Tell us what you think."));
 });
 
 test("invitation destination falls back to the Brand website and normalizes assistant domains", () => {
