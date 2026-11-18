@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { EncryptJWT, jwtDecrypt } from "jose";
 import { getPool } from "./db.mjs";
 import { getSocialConnectionStatus } from "./social-connections.mjs";
@@ -160,6 +160,7 @@ export async function sendGmailMessage(userId, projectId, message, env = process
   const bcc = normalizeEmailList(message?.bcc, 1);
   const subject = cleanHeader(message?.subject, 300);
   const body = String(message?.body || "").trim().slice(0, 100_000);
+  const html = String(message?.html || "").trim().slice(0, 250_000);
   const unsubscribeUrl = /^https:\/\/[^\s<>]+$/i.test(String(message?.unsubscribeUrl || "")) ? String(message.unsubscribeUrl) : "";
   if (to.length !== 1 || cc.length || bcc.length) throw connectionError("Direct email is limited to one approved recipient per delivery item. Use the newsletter connection for audience sends.", 400);
   if (!subject || !body) throw connectionError("The approved email needs a subject and message.", 400);
@@ -168,7 +169,7 @@ export async function sendGmailMessage(userId, projectId, message, env = process
   if (!Array.isArray(row.scopes) || !row.scopes.includes("https://www.googleapis.com/auth/gmail.send")) throw connectionError("Reconnect the mailbox and approve sending access.", 403);
   const credentials = decryptCredentials(row.encrypted_credentials, env);
   const accessToken = await validGoogleAccessToken(userId, projectId, credentials, env);
-  const mime = [
+  const commonHeaders = [
     `From: ${cleanHeader(row.account_email, 320)}`,
     `To: ${to.join(", ")}`,
     ...(cc.length ? [`Cc: ${cc.join(", ")}`] : []),
@@ -176,6 +177,25 @@ export async function sendGmailMessage(userId, projectId, message, env = process
     `Subject: ${subject}`,
     ...(unsubscribeUrl ? [`List-Unsubscribe: <${unsubscribeUrl}>`, "List-Unsubscribe-Post: List-Unsubscribe=One-Click"] : []),
     "MIME-Version: 1.0",
+  ];
+  const boundary = `market-agent-${randomUUID()}`;
+  const mime = html ? [
+    ...commonHeaders,
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    body.replace(/\r?\n/g, "\r\n"),
+    `--${boundary}`,
+    "Content-Type: text/html; charset=UTF-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    html.replace(/\r?\n/g, "\r\n"),
+    `--${boundary}--`,
+  ].join("\r\n") : [
+    ...commonHeaders,
     "Content-Type: text/plain; charset=UTF-8",
     "Content-Transfer-Encoding: 8bit",
     "",

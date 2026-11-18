@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { isPanelRun } from "../server/db.mjs";
 import { isBrandSourceRefreshRequest, isPrivateAddress } from "../server/agent.mjs";
-import { campaignPublicationTarget, personalizeInvitationTemplate, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
+import { campaignPublicationTarget, personalizeInvitationTemplate, renderInvitationEmailHtml, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
 import { scoreMarketingOutput } from "../server/evaluation.mjs";
 import { handleSchedule } from "../server/schedule-handler.mjs";
 import { projectLogoVariants, safeMailchimpSignupUrl, selectNewsletterLogoVariant, signupFormUrlFromResponses } from "../server/newsletters.mjs";
@@ -33,6 +33,20 @@ test("invitation templates personalize one recipient and keep the approved proje
     "Hi Alex,\n\nUpdates for Venue One: https://visit-lumen.com/",
   );
   assert.equal(personalizeInvitationTemplate("Hi {{first_name}}", {}, ""), "Hi there");
+});
+
+test("invitation delivery renders the approved brand, message, action, and opt-out", () => {
+  const html = renderInvitationEmailHtml({
+    name: "LUMEN",
+    brand: { primaryColor: "#8CC35E", neutralLightColor: "#FAF9F7", neutralDarkColor: "#1A1A1A", logoVariants: [{ usage: "email", url: "https://assets.example.com/lumen.png" }] },
+    emailIdentity: { senderName: "Riccardo", businessDetails: "LUMEN · riccardo@example.com", addressPreference: "omit" },
+    sourceMedia: [{ kind: "image", name: "Venue experience", role: "hero", recommendation: "reuse", url: "https://assets.example.com/hero.jpg" }],
+  }, { invitationCtaLabel: "Try the demo" }, { subject: "An invitation to try LUMEN", body: "Hi Alex,\n\nSee the experience.", invitationUrl: "https://visit-lumen.com/", unsubscribeUrl: "https://marketagent.shop/unsubscribe/test" });
+  assert.match(html, /An invitation to try LUMEN/);
+  assert.match(html, /https:\/\/assets\.example\.com\/lumen\.png/);
+  assert.match(html, /https:\/\/assets\.example\.com\/hero\.jpg/);
+  assert.match(html, /Try the demo/);
+  assert.match(html, /Stop future invitations/);
 });
 
 test("campaign coverage recognizes the full promised publication cadence", () => {

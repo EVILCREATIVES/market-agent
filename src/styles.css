@@ -2833,6 +2833,97 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-run-row em,
 .op-review-state { font-size: var(--op-type-label); }
 
+.op-email-mode-tabs { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; margin-bottom: 18px; padding: 7px; border: 1px solid #dedbd3; border-radius: 14px; background: #f1efe9; }
+.op-email-mode-tabs button { min-width: 0; min-height: 64px; padding: 12px 15px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: #5f5b55; display: flex; align-items: center; gap: 11px; text-align: left; cursor: pointer; }
+.op-email-mode-tabs button.active { border-color: #d5c9f4; background: #fff; color: #563bb8; box-shadow: 0 5px 16px rgba(52,43,30,.06); }
+.op-email-mode-tabs button > span { display: grid; gap: 2px; }
+.op-email-mode-tabs strong { font-size: 14px; }
+.op-email-mode-tabs small { color: #817d76; font-size: 11px; font-weight: 500; line-height: 1.35; }
+
+.op-invitation-recipients,
+.op-invitation-workspace { margin-bottom: 18px; padding: 22px; border: 1px solid #ded9ee; border-radius: 15px; background: #fbfbf8; box-shadow: var(--shadow); }
+.op-invitation-recipients > header,
+.op-invitation-workspace > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.op-invitation-recipients header small,
+.op-invitation-workspace header small,
+.op-invitation-empty > div small { color: #6c51c5; font-size: 10px; font-weight: 800; letter-spacing: .09em; }
+.op-invitation-recipients h2,
+.op-invitation-workspace h2,
+.op-invitation-empty h2 { margin: 5px 0 4px; font-size: 21px; line-height: 1.2; }
+.op-invitation-recipients header p,
+.op-invitation-workspace header p,
+.op-invitation-empty p { max-width: 760px; margin: 0; color: #74716a; font-size: 12px; line-height: 1.55; }
+.op-invitation-recipients header em,
+.op-invitation-workspace > header > em { flex: none; padding: 7px 10px; border-radius: 99px; background: #eee8ff; color: #6248bd; font-size: 11px; font-style: normal; font-weight: 750; }
+.op-invitation-recipient-actions { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(220px,.34fr); align-items: end; gap: 16px; margin-top: 18px; }
+.op-invitation-recipient-actions > div:first-child { display: grid; grid-template-columns: minmax(180px,1.3fr) repeat(3,minmax(120px,.75fr)) auto; gap: 9px; align-items: end; }
+.op-invitation-recipient-actions > span { align-self: center; color: #99948c; font-size: 11px; font-weight: 700; }
+.op-invitation-recipient-actions label,
+.op-invitation-controls label,
+.op-invitation-sendbar label,
+.op-invitation-empty label { min-width: 0; display: grid; gap: 6px; color: #625e57; font-size: 11px; font-weight: 750; }
+.op-invitation-recipient-actions input,
+.op-invitation-controls input,
+.op-invitation-controls select,
+.op-invitation-controls textarea,
+.op-invitation-sendbar input,
+.op-invitation-sendbar select,
+.op-invitation-empty textarea { width: 100%; min-width: 0; min-height: 42px; padding: 10px 11px; border: 1px solid #d8d3e1; border-radius: 9px; background: #fff; color: #2d2b27; font: 500 12px/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
+.op-invitation-recipient-actions button,
+.op-invitation-csv button,
+.op-invitation-controls button,
+.op-invitation-sendbar button,
+.op-invitation-empty button { min-height: 42px; padding: 10px 14px; border: 1px solid #d2c7ed; border-radius: 9px; background: #fff; color: #6047bd; font-size: 11px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; gap: 7px; cursor: pointer; }
+.op-invitation-recipient-actions button,
+.op-invitation-controls button.primary,
+.op-invitation-sendbar button.primary,
+.op-invitation-empty > button { border-color: #6e50d7; background: #6e50d7; color: #fff; }
+.op-invitation-recipient-actions button:disabled,
+.op-invitation-controls button:disabled,
+.op-invitation-sendbar button:disabled,
+.op-invitation-empty button:disabled { opacity: .5; cursor: default; }
+.op-invitation-csv { display: grid; gap: 6px; }
+.op-invitation-csv small { color: #858079; font-size: 10px; line-height: 1.4; }
+
+.op-invitation-empty { display: grid; grid-template-columns: minmax(220px,.7fr) minmax(320px,1.2fr) auto; gap: 18px; align-items: end; }
+.op-invitation-empty textarea { min-height: 82px; resize: vertical; }
+.op-invitation-builder { display: grid; grid-template-columns: minmax(340px,.92fr) minmax(390px,1.08fr); gap: 22px; align-items: start; margin-top: 18px; }
+.op-invitation-controls { display: grid; gap: 13px; padding: 18px; border: 1px solid #e0dce7; border-radius: 12px; background: #fff; }
+.op-invitation-controls textarea { min-height: 84px; resize: vertical; }
+.op-invitation-controls textarea.message { min-height: 230px; }
+.op-invitation-assistant { padding: 14px; border-radius: 10px; background: #f3effd; display: grid; gap: 10px; }
+.op-invitation-assistant textarea { border-color: #cec1ef; }
+.op-invitation-assistant button { justify-self: start; }
+.op-invitation-action-fields { display: grid; grid-template-columns: minmax(130px,.4fr) minmax(220px,1fr); gap: 10px; }
+.op-invitation-controls > button.primary { justify-self: end; }
+
+.op-invitation-email-preview { min-width: 0; border: 1px solid #dcd7e5; border-radius: 12px; background: #f1efe9; overflow: hidden; }
+.op-invitation-email-preview > header { padding: 13px 16px; border-bottom: 1px solid #ded9e6; background: #fff; display: grid; gap: 3px; }
+.op-invitation-email-preview > header small { color: #6c51c5; font-size: 9px; font-weight: 800; letter-spacing: .08em; }
+.op-invitation-email-preview > header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.op-invitation-email-canvas { width: min(100% - 34px,640px); margin: 17px auto; border-radius: 10px; background: #fff; box-shadow: 0 12px 28px rgba(35,29,22,.08); overflow: hidden; border-top: 7px solid var(--invitation-primary,#6e50d7); }
+.op-invitation-email-canvas > .logo { display: block; width: auto; max-width: 170px; max-height: 65px; margin: 24px 28px 20px; object-fit: contain; }
+.op-invitation-email-canvas > .wordmark { display: block; padding: 24px 28px 20px; color: var(--invitation-primary,#6e50d7); font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }
+.op-invitation-email-canvas > .hero { display: block; width: 100%; max-height: 310px; object-fit: cover; }
+.op-invitation-email-canvas main { padding: 26px 28px 30px; }
+.op-invitation-email-canvas main h3 { margin: 0 0 20px; color: #292724; font-size: 27px; line-height: 1.2; letter-spacing: -.02em; }
+.op-invitation-email-canvas main p { margin: 0 0 16px; color: #2d2b27; font-size: 14px; line-height: 1.65; white-space: pre-line; }
+.op-invitation-email-canvas main > a { display: inline-flex; margin: 3px 0 18px; padding: 12px 17px; border-radius: 7px; background: var(--invitation-primary,#6e50d7); color: #fff; font-size: 12px; font-weight: 800; text-decoration: none; }
+.op-invitation-email-canvas main p.signature { margin-top: 8px; font-size: 12px; font-weight: 650; }
+.op-invitation-email-canvas > footer { padding: 17px 28px; background: #f2f1ee; color: #6f6a63; font-size: 10px; line-height: 1.45; }
+
+.op-invitation-sendbar { display: grid; grid-template-columns: minmax(180px,1fr) minmax(160px,.45fr) minmax(100px,.25fr) auto auto; gap: 10px; align-items: end; margin-top: 20px; padding-top: 18px; border-top: 1px solid #ddd9d1; }
+.op-invitation-sendbar > div { align-self: center; display: grid; gap: 3px; }
+.op-invitation-sendbar > div strong { font-size: 13px; }
+.op-invitation-sendbar > div small,
+.op-invitation-save-note { color: #7d7871; font-size: 10px; line-height: 1.4; }
+.op-invitation-pending { align-self: center; padding: 10px 12px; border-radius: 8px; background: #eee8ff; color: #6248bd; font-size: 11px; font-weight: 750; }
+.op-invitation-save-note { grid-column: 1/-1; text-align: right; }
+.op-invitation-history { display: grid; grid-template-columns: repeat(4,1fr); gap: 9px; margin-top: 14px; }
+.op-invitation-history span { padding: 12px 14px; border-radius: 9px; background: #f0eee8; display: grid; gap: 3px; }
+.op-invitation-history small { color: #77736c; font-size: 9px; }
+.op-invitation-history strong { font-size: 18px; }
+
 .optin-public-page { min-height: 100vh; display: grid; place-items: center; padding: 32px; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 .optin-public-page > section { width: min(720px, 100%); padding: clamp(34px, 7vw, 72px); border: 1px solid; border-radius: 24px; background: rgba(255,255,255,.88); box-shadow: 0 28px 80px rgba(28,24,20,.11); text-align: center; backdrop-filter: blur(16px); }
 .optin-public-page img { display: block; width: auto; max-width: min(240px, 70%); max-height: 84px; object-fit: contain; margin: 0 auto 40px; }
@@ -2853,6 +2944,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .op-optin-invitation, .op-optin-invitation__strategy, .op-optin-invitation__content, .op-optin-invitation__approval { grid-column: auto; grid-template-columns: 1fr; }
   .op-optin-invitation__status { grid-template-columns: repeat(2,1fr); }
   .op-optin-funnel { grid-column: auto; }
+  .op-invitation-recipient-actions,
+  .op-invitation-builder,
+  .op-invitation-empty { grid-template-columns: 1fr; }
+  .op-invitation-recipient-actions > div:first-child { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .op-invitation-recipient-actions > span { display: none; }
+  .op-invitation-sendbar { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .op-invitation-sendbar > div { grid-column: 1/-1; }
 }
 
 @media (max-width: 620px) {
@@ -2874,6 +2972,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .op-optin-funnel { grid-template-columns: 1fr; }
   .op-optin-funnel i { transform: rotate(90deg); justify-self: center; }
   .op-optin-preview iframe { min-height: 520px; }
+  .op-email-mode-tabs,
+  .op-invitation-recipient-actions > div:first-child,
+  .op-invitation-action-fields,
+  .op-invitation-sendbar,
+  .op-invitation-history { grid-template-columns: 1fr; }
+  .op-invitation-recipients,
+  .op-invitation-workspace { padding: 18px; }
+  .op-invitation-recipients > header,
+  .op-invitation-workspace > header { flex-direction: column; }
+  .op-invitation-email-canvas { width: calc(100% - 18px); margin: 9px auto; }
   .optin-public-page { padding: 14px; }
   .optin-public-page > section { padding: 34px 22px; border-radius: 18px; }
 }

@@ -1,4 +1,5 @@
 import { requireUser } from "../server/auth.mjs";
+import { rewriteProspectInvitation } from "../server/agent.mjs";
 import { consumeAiUsage, connectorAllowedForAccess } from "../server/billing.mjs";
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 import {
@@ -16,7 +17,7 @@ import {
   updateNewsletterDraft,
   updateOptinCampaign,
 } from "../server/newsletters.mjs";
-import { getProspectInvitationStats, scheduleProspectInvitations } from "../server/delivery.mjs";
+import { getProspectInvitationStats, scheduleProspectInvitations, sendProspectInvitationTest } from "../server/delivery.mjs";
 
 export const config = { maxDuration: 300 };
 
@@ -63,8 +64,7 @@ export default async function handler(req, res) {
     }
     if (action === "import-contact-list") return res.status(200).json(await importContactList(userId, projectId, req.body));
     if (action === "create-optin-campaign") {
-      if (!connectorAllowedForAccess(accessEnv, "mailchimp")) return res.status(403).json({ error: "Prospect conversion requires an active Mailchimp connection and your APIs or managed plan." });
-      if (req.body?.approvalConfirmed !== true) return res.status(400).json({ error: "Approve publishing the public opt-in page first." });
+      if (req.body?.approvalConfirmed !== true) return res.status(400).json({ error: "Approve creating the invitation first." });
       await consumeAiUsage(userId, "agent", accessEnv);
       const created = await createOptinCampaign(userId, projectId, req.body?.direction, accessEnv);
       created.campaign.invitation = await getProspectInvitationStats(userId, projectId, created.campaign.id);
@@ -74,6 +74,25 @@ export default async function handler(req, res) {
       const updated = await updateOptinCampaign(userId, projectId, String(req.body?.id || ""), req.body);
       updated.campaign.invitation = await getProspectInvitationStats(userId, projectId, updated.campaign.id);
       return res.status(200).json(updated);
+    }
+    if (action === "rewrite-invitation") {
+      await consumeAiUsage(userId, "chat", accessEnv);
+      const dashboard = await getNewsletterDashboard(userId, projectId);
+      const campaign = (dashboard.conversionCampaigns || []).find((item) => item.id === String(req.body?.id || ""));
+      if (!campaign) return res.status(404).json({ error: "The invitation was not found." });
+      const { state } = await import("../server/db.mjs").then(({ loadStateForUser }) => loadStateForUser(userId));
+      const workspace = state.projects.find((item) => item.id === projectId) || {};
+      const revision = await rewriteProspectInvitation({ workspace, invitation: campaign, message: req.body?.direction }, accessEnv);
+      const updated = await updateOptinCampaign(userId, projectId, campaign.id, { ...revision, approvalConfirmed: true });
+      updated.campaign.invitation = await getProspectInvitationStats(userId, projectId, updated.campaign.id);
+      return res.status(200).json(updated);
+    }
+    if (action === "send-invitation-test") {
+      if (req.body?.approvalConfirmed !== true) return res.status(400).json({ error: "Approve the test email first." });
+      const dashboard = await getNewsletterDashboard(userId, projectId);
+      const campaign = (dashboard.conversionCampaigns || []).find((item) => item.id === String(req.body?.id || ""));
+      if (!campaign) return res.status(404).json({ error: "The invitation was not found." });
+      return res.status(200).json(await sendProspectInvitationTest(userId, projectId, campaign, req.body, accessEnv));
     }
     if (action === "schedule-optin-invitations") {
       if (req.body?.approvalConfirmed !== true) return res.status(400).json({ error: "Approve the invitation campaign before it is scheduled." });

@@ -523,11 +523,15 @@ export async function createOptinCampaign(userId, projectId, direction, userApiE
   const { state } = await loadStateForUser(userId, env);
   const workspace = state.projects.find((item) => item.id === projectId);
   if (!workspace) throw newsletterError("The project could not be found.", 404);
-  const { credentials } = await connectionCredentials(userId, projectId, env);
-  const audienceId = requireAudience(credentials);
-  const audience = await mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}?fields=id,name,subscribe_url_short,subscribe_url_long`);
-  const signupUrl = await resolveMailchimpSignupUrl(credentials, audienceId, audience, true);
-  if (!signupUrl) throw newsletterError("Mailchimp did not return its hosted signup form after Market Agent initialized the selected audience form. Open Mailchimp Forms settings for this audience once, then retry.", 409);
+  let signupUrl = "";
+  try {
+    const { credentials } = await connectionCredentials(userId, projectId, env);
+    const audienceId = requireAudience(credentials);
+    const audience = await mailchimpRequest(credentials, `/lists/${encodeURIComponent(audienceId)}?fields=id,name,subscribe_url_short,subscribe_url_long`);
+    signupUrl = await resolveMailchimpSignupUrl(credentials, audienceId, audience, true);
+  } catch {
+    // Invitations can point to the project or another action without a newsletter connection.
+  }
   const prospectResult = await getPool(env).query(
     "SELECT COALESCE(SUM(unknown_count),0)::int AS count FROM market_agent_contact_imports WHERE user_id = $1 AND project_id = $2",
     [userId, projectId],
@@ -537,7 +541,7 @@ export async function createOptinCampaign(userId, projectId, direction, userApiE
   const id = randomUUID();
   const publicToken = randomBytes(24).toString("base64url");
   const publicUrl = `${applicationOrigin(env)}/join/${encodeURIComponent(publicToken)}`;
-  const invitationStrategy = generated?.invitationStrategy === "direct_signup" ? "direct_signup" : "project_first";
+  const invitationStrategy = generated?.invitationStrategy === "direct_signup" && signupUrl ? "direct_signup" : "project_first";
   const invitationUrl = invitationStrategy === "direct_signup" ? publicUrl : safeInvitationUrl(workspace.website, publicUrl);
   const result = await getPool(env).query(
     `INSERT INTO market_agent_optin_campaigns
@@ -571,7 +575,7 @@ export async function createOptinCampaign(userId, projectId, direction, userApiE
 
 export async function updateOptinCampaign(userId, projectId, id, input, env = process.env) {
   await ensureTables(env);
-  if (input?.approvalConfirmed !== true) throw newsletterError("Approve the public opt-in page change first.", 400);
+  if (input?.approvalConfirmed !== true) throw newsletterError("Approve the invitation change first.", 400);
   const current = await getPool(env).query(
     "SELECT * FROM market_agent_optin_campaigns WHERE id = $1 AND user_id = $2 AND project_id = $3 LIMIT 1",
     [id, userId, projectId],

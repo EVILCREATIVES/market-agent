@@ -59,12 +59,73 @@ export function personalizeInvitationTemplate(template, recipient = {}, signupUr
     .trim();
 }
 
+export function renderInvitationEmailHtml(workspace = {}, campaign = {}, input = {}) {
+  const destination = safeInvitationLink(input.invitationUrl || campaign.invitationUrl || campaign.publicUrl);
+  const subject = String(input.subject || campaign.invitationSubject || "Invitation").trim();
+  const body = String(input.body || campaign.invitationBody || "").trim();
+  const cta = String(input.ctaLabel || campaign.invitationCtaLabel || "Open").trim().slice(0, 100) || "Open";
+  const brand = workspace?.brand || {};
+  const primary = safeEmailColor(brand.primaryColor, "#6e50d7");
+  const background = safeEmailColor(brand.neutralLightColor, "#f6f5f2");
+  const text = safeEmailColor(brand.neutralDarkColor, "#202020");
+  const name = String(workspace?.name || "Project").trim();
+  const logo = invitationLogo(workspace);
+  const hero = invitationHero(workspace);
+  const identity = workspace?.emailIdentity || {};
+  const signature = [identity.senderName, identity.businessDetails, identity.addressPreference === "include" ? identity.physicalAddress : ""].filter(Boolean).map((line) => emailParagraphs(line)).join("<br>");
+  const content = body.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean).filter((item) => item !== destination && item !== "{{invitation_url}}" && item !== "{{signup_url}}").map((item) => `<p style="margin:0 0 18px;font:400 16px/1.65 Arial,sans-serif;color:${text}">${emailParagraphs(item)}</p>`).join("");
+  const testBanner = input.test === true ? `<tr><td style="padding:11px 28px;background:#fff3cd;color:#654d03;font:700 12px/1.4 Arial,sans-serif;text-align:center">TEST EMAIL — no prospect received this message</td></tr>` : "";
+  const optOut = input.unsubscribeUrl ? `<br><a href="${escapeEmailAttribute(input.unsubscribeUrl)}" style="color:#666">Stop future invitations</a>` : "";
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeEmailHtml(subject)}</title></head><body style="margin:0;padding:0;background:${background}"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:${background};padding:28px 12px"><tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border-radius:12px;overflow:hidden"><tr><td style="height:8px;background:${primary}"></td></tr>${testBanner}<tr><td style="padding:28px 34px 22px">${logo ? `<img src="${escapeEmailAttribute(logo)}" alt="${escapeEmailAttribute(name)}" style="display:block;max-width:190px;max-height:72px;width:auto;height:auto">` : `<div style="font:700 13px Arial,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:${primary}">${escapeEmailHtml(name)}</div>`}</td></tr>${hero ? `<tr><td><img src="${escapeEmailAttribute(hero.url)}" alt="${escapeEmailAttribute(hero.alt)}" width="640" style="display:block;width:100%;max-width:640px;height:auto;max-height:420px;object-fit:cover"></td></tr>` : ""}<tr><td style="padding:30px 34px 18px"><h1 style="margin:0 0 22px;font:700 30px/1.2 Arial,sans-serif;color:${text}">${escapeEmailHtml(subject)}</h1>${content}${destination ? `<p style="margin:4px 0 24px"><a href="${escapeEmailAttribute(destination)}" style="display:inline-block;padding:13px 20px;background:${primary};color:#ffffff;text-decoration:none;border-radius:7px;font:700 15px Arial,sans-serif">${escapeEmailHtml(cta)}</a></p>` : ""}${signature ? `<p style="margin:24px 0 0;font:600 14px/1.55 Arial,sans-serif;color:${text}">${signature}</p>` : ""}</td></tr><tr><td style="padding:20px 34px;background:#f2f1ee;font:400 12px/1.5 Arial,sans-serif;color:#666">This is a direct project invitation, not a newsletter subscription.${optOut}</td></tr></table></td></tr></table></body></html>`;
+}
+
+function invitationLogo(workspace) {
+  const variants = Array.isArray(workspace?.brand?.logoVariants) ? workspace.brand.logoVariants : [];
+  const selected = variants.find((item) => item?.usage === "email") || variants.find((item) => item?.usage === "primary") || variants[0];
+  return safeInvitationImage(selected?.url || workspace?.brand?.logoDataUrl);
+}
+
+function invitationHero(workspace) {
+  const media = Array.isArray(workspace?.sourceMedia) ? workspace.sourceMedia : [];
+  const selected = media.find((item) => item?.kind === "image" && item?.recommendation === "reuse" && !/\b(logo|favicon|icon|wordmark|brand mark)\b/i.test(`${item?.name || ""} ${item?.role || ""}`))
+    || media.find((item) => item?.kind === "image" && !/\b(logo|favicon|icon|wordmark|brand mark)\b/i.test(`${item?.name || ""} ${item?.role || ""}`));
+  const url = safeInvitationImage(selected?.url);
+  return url ? { url, alt: String(selected?.name || selected?.role || "").slice(0, 180) } : null;
+}
+
+function safeInvitationImage(value) {
+  const source = String(value || "").trim();
+  return /^https:\/\/[^\s<>]+$/i.test(source) ? source : "";
+}
+
+function safeInvitationLink(value) {
+  const source = String(value || "").trim();
+  return /^https:\/\/[^\s<>]+$/i.test(source) ? source : "";
+}
+
+function safeEmailColor(value, fallback) {
+  const color = String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
+}
+
+function emailParagraphs(value) {
+  return escapeEmailHtml(value).replace(/\r?\n/g, "<br>");
+}
+
+function escapeEmailHtml(value) {
+  return String(value || "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[character]);
+}
+
+function escapeEmailAttribute(value) {
+  return escapeEmailHtml(value).replace(/`/g, "&#96;");
+}
+
 export async function scheduleProspectInvitations(userId, projectId, campaign, recipients, input = {}, userApiEnv = {}, env = process.env) {
   await ensureDeliveryTable(env);
   if (!channelAllowedForAccess("gmail", userApiEnv)) throw deliveryError("Direct invitation delivery is available after connecting your APIs or activating the managed plan.", 403);
   const connections = await getConnectionStatus(userId, projectId, env);
   if (!connections.gmail?.canSend) throw deliveryError("Connect this project's mailbox and approve sending access before scheduling invitations.", 409);
-  if (!campaign?.id || campaign?.status !== "active") throw deliveryError("Publish the signup page before scheduling its invitation email.", 409);
+  if (!campaign?.id || campaign?.status !== "active") throw deliveryError("Activate the invitation before scheduling its email.", 409);
   const signupUrl = String(campaign.publicUrl || "").trim();
   const invitationUrl = String(input?.invitationUrl || campaign.invitationUrl || signupUrl).trim();
   if (!/^https:\/\//i.test(invitationUrl)) throw deliveryError("The invitation needs a public HTTPS destination before it can be scheduled.", 409);
@@ -84,6 +145,8 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
   if (!unique.size) throw deliveryError("There are no eligible staged prospects to invite.", 409);
   if (unique.size > 1_000) throw deliveryError("Invitation campaigns are limited to 1,000 individual recipients at a time.", 400);
   const runId = prospectInvitationRunId(campaign.id);
+  const { state } = await loadStateForUser(userId, env);
+  const workspace = state.projects.find((item) => item.id === projectId) || {};
   const approvalId = randomUUID();
   const repeatSend = input?.resend === true && input?.repeatConfirmed === true;
   if (repeatSend) {
@@ -103,11 +166,14 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
     for (const recipient of unique.values()) {
       if (suppressed.has(recipient.email)) continue;
       const scheduledAt = new Date(requestedStart.getTime() + index * intervalMinutes * 60_000).toISOString();
+      const personalizedSubject = personalizeInvitationTemplate(subjectTemplate, recipient, invitationUrl);
+      const personalizedBody = personalizeInvitationTemplate(bodyTemplate, recipient, invitationUrl);
       const payload = {
         recipient: recipient.email,
         recipientName: [recipient.firstName, recipient.lastName].filter(Boolean).join(" "),
-        subject: personalizeInvitationTemplate(subjectTemplate, recipient, invitationUrl),
-        text: personalizeInvitationTemplate(bodyTemplate, recipient, invitationUrl),
+        subject: personalizedSubject,
+        text: personalizedBody,
+        html: renderInvitationEmailHtml(workspace, campaign, { subject: personalizedSubject, body: personalizedBody, invitationUrl, ctaLabel: input?.invitationCtaLabel || campaign.invitationCtaLabel, unsubscribeUrl: "{{unsubscribe_url}}" }),
         scheduledAt,
         campaignApprovalId: approvalId,
         campaignId: campaign.id,
@@ -137,6 +203,23 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
   }
   const summary = await getProspectInvitationStats(userId, projectId, campaign.id, env);
   return { runId, inserted, sender: connections.gmail.accountEmail, intervalMinutes, ...summary };
+}
+
+export async function sendProspectInvitationTest(userId, projectId, campaign, input = {}, userApiEnv = {}, env = process.env) {
+  if (!channelAllowedForAccess("gmail", userApiEnv)) throw deliveryError("Test delivery is available after connecting your APIs or activating the managed plan.", 403);
+  const connections = await getConnectionStatus(userId, projectId, env);
+  const recipient = String(connections.gmail?.accountEmail || "").trim().toLowerCase();
+  if (!connections.gmail?.canSend || !recipient) throw deliveryError("Connect this project's mailbox before sending a test.", 409);
+  const invitationUrl = String(input?.invitationUrl || campaign?.invitationUrl || campaign?.publicUrl || "").trim();
+  const subject = personalizeInvitationTemplate(String(input?.subject || campaign?.invitationSubject || "Invitation test"), { firstName: "Test", company: "Your organization" }, invitationUrl);
+  let body = personalizeInvitationTemplate(String(input?.body || campaign?.invitationBody || ""), { firstName: "Test", company: "Your organization" }, invitationUrl);
+  if (!body) throw deliveryError("Write the invitation message before sending a test.", 400);
+  body = `TEST — This invitation has not been sent to prospects.\n\n${body}`;
+  const { state } = await loadStateForUser(userId, env);
+  const workspace = state.projects.find((item) => item.id === projectId) || {};
+  const html = renderInvitationEmailHtml(workspace, campaign, { subject, body: body.replace(/^TEST[^\n]*\n+/i, ""), invitationUrl, ctaLabel: input?.invitationCtaLabel || campaign?.invitationCtaLabel, test: true });
+  const result = await sendGmailMessage(userId, projectId, { to: recipient, subject: `[TEST] ${subject}`, body, html }, env);
+  return { recipient, sentAt: result.sentAt, externalId: result.externalId };
 }
 
 export async function getProspectInvitationStats(userId, projectId, campaignId, env = process.env) {
@@ -454,10 +537,14 @@ async function completeDeliveryExecution(row, userId, env) {
       const suppressed = await getPool(env).query("SELECT 1 FROM market_agent_email_suppressions WHERE user_id = $1 AND project_id = $2 AND email = $3 LIMIT 1", [userId, row.project_id, String(payload.recipient || "").toLowerCase()]);
       if (suppressed.rows[0]) throw deliveryError("This recipient previously opted out and is suppressed.", 409);
       const optOutUrl = createEmailOptOutUrl(row.id, env);
-      payload = { ...payload, text: `${String(payload.text || "").trim()}\n\nStop future emails from this sender: ${optOutUrl}` };
+      payload = {
+        ...payload,
+        text: `${String(payload.text || "").trim()}\n\nStop future emails from this sender: ${optOutUrl}`,
+        html: String(payload.html || "").replaceAll("{{unsubscribe_url}}", optOutUrl),
+      };
     }
     const result = row.channel === "gmail"
-      ? await sendGmailMessage(userId, row.project_id, { to: payload.recipient, subject: payload.subject, body: payload.text, unsubscribeUrl: createEmailOptOutUrl(row.id, env) }, env)
+      ? await sendGmailMessage(userId, row.project_id, { to: payload.recipient, subject: payload.subject, body: payload.text, html: payload.html, unsubscribeUrl: createEmailOptOutUrl(row.id, env) }, env)
       : row.channel === "shopify"
         ? await createShopifyDraft(userId, row.project_id, payload, env)
         : await publishSocialPost(userId, row.project_id, row.channel, payload, env);
