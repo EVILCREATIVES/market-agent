@@ -540,6 +540,10 @@ export interface SocialConnectionStatus {
   destinationName?: string;
   approvalRequired?: boolean;
   approvalStatus?: "pending_approval" | "approved";
+  communityApprovalStatus?: "pending" | "approved" | "unavailable";
+  organizationConfigured?: boolean;
+  organizationConnected?: boolean;
+  personalConnected?: boolean;
 }
 
 export type DeliveryJobStatus = "awaiting_approval" | "scheduled" | "running" | "submitted" | "complete" | "failed" | "dead_letter" | "cancelled";

@@ -20,7 +20,8 @@ Production base URL: `https://www.marketagent.shop`
 | Provider | Production redirect or webhook | Vercel server variables |
 | --- | --- | --- |
 | Google | `/api/google-callback` and `/api/google-analytics-callback` | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` |
-| LinkedIn | `/api/social-callback` | `LINKEDIN_CLIENT_ID`, `LINKEDIN_CLIENT_SECRET` |
+| LinkedIn personal profile | `/api/social-callback` | `LINKEDIN_CLIENT_ID`, `LINKEDIN_CLIENT_SECRET` |
+| LinkedIn company Pages | `/api/social-callback` | `LINKEDIN_COMMUNITY_CLIENT_ID`, `LINKEDIN_COMMUNITY_CLIENT_SECRET`, `LINKEDIN_COMMUNITY_ACCESS_STATUS` |
 | Instagram | `/api/social-callback` | `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET`, `INSTAGRAM_CONFIG_ID` |
 | TikTok | `/api/social-callback` | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` |
 | X | `/api/social-callback` | `X_CLIENT_ID`, `X_CLIENT_SECRET` |
@@ -34,7 +35,7 @@ Use the full production origin before each path. Keep every secret server-only i
 ## Already configured
 
 - Google: enable Gmail API, Google Analytics Admin API, and Google Analytics Data API. The app requests send-only Gmail access and read-only Analytics access. Each user signs into their own Google account and selects their own property.
-- LinkedIn: enable Sign In with LinkedIn using OpenID Connect and Share on LinkedIn. The authenticated member is the authorizer, not the automatic publishing destination. Market Agent requires a separate per-project destination choice and never defaults to the member's personal profile. Personal posting uses `w_member_social`. For company pages, obtain LinkedIn Community Management approval, add `rw_organization_admin`, `r_organization_social`, and `w_organization_social`, then set `LINKEDIN_ORGANIZATION_ACCESS=true` and reconnect. Company pages are shown before the optional personal profile.
+- LinkedIn: keep the existing OpenID/Share app for optional personal-profile publishing. Use a separate Page-only app for Community Management, because the review app must not depend on the member-login product. During review set `LINKEDIN_COMMUNITY_ACCESS_STATUS=pending`. After approval, add the dedicated app credentials, set it to `approved`, and connect with a Page administrator. The Page app requests `rw_organization_admin`, `r_organization_social`, and `w_organization_social`; company Pages are shown before the optional personal profile and are never inferred from the member account.
 - LinkedIn Groups: the current official Community Management capability covers company pages and profile/page activity, not general group search, joining, or group posting. Campaign research may recommend publicly verifiable groups, but joining and participation must be marked as manual user actions and must never be reported as completed by the connector.
 
 ## Requires platform-owner approval

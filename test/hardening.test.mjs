@@ -8,6 +8,30 @@ import { scoreMarketingOutput } from "../server/evaluation.mjs";
 import { handleSchedule } from "../server/schedule-handler.mjs";
 import { projectLogoVariants, safeMailchimpSignupUrl, selectNewsletterLogoVariant, signupFormUrlFromResponses } from "../server/newsletters.mjs";
 import { createBrandLogoAccessUrl } from "../server/brand-logos.mjs";
+import { linkedinCommunityApprovalStatus, socialConnectorConfigured } from "../server/social-connections.mjs";
+
+test("LinkedIn company-page review stays separate from optional personal publishing", () => {
+  const secure = "connection-key-with-at-least-32-characters";
+  assert.equal(linkedinCommunityApprovalStatus({ LINKEDIN_COMMUNITY_ACCESS_STATUS: "pending" }), "pending");
+  assert.equal(socialConnectorConfigured("linkedin-community", {
+    CONNECTION_ENCRYPTION_KEY: secure,
+    LINKEDIN_COMMUNITY_CLIENT_ID: "community-client",
+    LINKEDIN_COMMUNITY_CLIENT_SECRET: "community-secret",
+    LINKEDIN_COMMUNITY_ACCESS_STATUS: "pending",
+  }), false);
+  assert.equal(socialConnectorConfigured("linkedin-community", {
+    CONNECTION_ENCRYPTION_KEY: secure,
+    LINKEDIN_COMMUNITY_CLIENT_ID: "community-client",
+    LINKEDIN_COMMUNITY_CLIENT_SECRET: "community-secret",
+    LINKEDIN_COMMUNITY_ACCESS_STATUS: "approved",
+  }), true);
+  assert.equal(socialConnectorConfigured("linkedin", {
+    CONNECTION_ENCRYPTION_KEY: secure,
+    LINKEDIN_CLIENT_ID: "personal-client",
+    LINKEDIN_CLIENT_SECRET: "personal-secret",
+    LINKEDIN_COMMUNITY_ACCESS_STATUS: "pending",
+  }), true);
+});
 
 test("balanced review runs count against the panel budget", () => {
   assert.equal(isPanelRun({ executionMode: "panel", model: "Standard analysis" }), true);

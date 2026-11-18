@@ -4,6 +4,8 @@ import { safeFetchPublic } from "./agent.mjs";
 import { getPool } from "./db.mjs";
 
 export const SOCIAL_PROVIDERS = ["linkedin", "instagram", "tiktok", "youtube", "x", "discord", "reddit"];
+const LINKEDIN_COMMUNITY_PROVIDER = "linkedin-community";
+const CONNECTION_PROVIDERS = [...SOCIAL_PROVIDERS, LINKEDIN_COMMUNITY_PROVIDER];
 
 const SOCIAL_SCOPES = {
   linkedin: ["openid", "profile", "email", "w_member_social"],
@@ -21,6 +23,8 @@ const SOCIAL_SCOPES = {
   reddit: ["identity", "read", "submit", "mysubreddits"],
 };
 
+const LINKEDIN_COMMUNITY_SCOPES = ["rw_organization_admin", "r_organization_social", "w_organization_social"];
+
 function tiktokCredentials(env) {
   const useSandbox = String(env.TIKTOK_ENVIRONMENT || "").toLowerCase() === "sandbox";
   return {
@@ -29,12 +33,19 @@ function tiktokCredentials(env) {
   };
 }
 
-function linkedinScopes(env) {
-  const scopes = [...SOCIAL_SCOPES.linkedin];
-  if (String(env.LINKEDIN_ORGANIZATION_ACCESS || "").toLowerCase() === "true") {
-    scopes.push("rw_organization_admin", "r_organization_social", "w_organization_social");
-  }
-  return scopes;
+export function linkedinCommunityApprovalStatus(env = process.env) {
+  const status = String(env.LINKEDIN_COMMUNITY_ACCESS_STATUS || "").trim().toLowerCase();
+  if (["approved", "pending", "unavailable"].includes(status)) return status;
+  return String(env.LINKEDIN_ORGANIZATION_ACCESS || "").toLowerCase() === "true" ? "approved" : "pending";
+}
+
+function linkedinCommunityConfigured(env) {
+  return Boolean(
+    env.CONNECTION_ENCRYPTION_KEY
+    && env.LINKEDIN_COMMUNITY_CLIENT_ID
+    && env.LINKEDIN_COMMUNITY_CLIENT_SECRET
+    && linkedinCommunityApprovalStatus(env) === "approved",
+  );
 }
 
 let socialTableReady = false;
@@ -47,24 +58,19 @@ export async function getSocialConnectionStatus(userId, projectId = "project-def
     `SELECT provider, account_id, account_label, account_email, encrypted_credentials, scopes, status, connected_at, updated_at
        FROM market_agent_connections
       WHERE user_id = $1 AND project_id = $2 AND provider = ANY($3::text[])`,
-    [userId, projectId, SOCIAL_PROVIDERS],
+    [userId, projectId, CONNECTION_PROVIDERS],
   );
+  const linkedInRows = result.rows.filter((row) => ["linkedin", LINKEDIN_COMMUNITY_PROVIDER].includes(row.provider) && row.status === "connected");
   for (const row of result.rows) {
-    if (row.status !== "connected" || !SOCIAL_PROVIDERS.includes(row.provider)) continue;
+    if (row.status !== "connected" || !SOCIAL_PROVIDERS.includes(row.provider) || row.provider === "linkedin") continue;
     const scopes = Array.isArray(row.scopes) ? row.scopes : [];
     const approvalRequired = row.provider === "reddit" && !redditAccessApproved(env);
-    const destinationCredentials = ["linkedin", "instagram"].includes(row.provider) ? decryptCredentials(row.encrypted_credentials, env) : null;
-    const linkedInCredentials = row.provider === "linkedin" ? destinationCredentials : null;
-    const linkedInDestinations = row.provider === "linkedin" ? normalizeLinkedInDestinations(linkedInCredentials?.destinations, row) : [];
-    const linkedInDestinationId = row.provider === "linkedin" ? String(linkedInCredentials?.destinationId || "") : "";
-    const linkedInDestination = linkedInDestinations.find((destination) => destination.id === linkedInDestinationId);
+    const destinationCredentials = row.provider === "instagram" ? decryptCredentials(row.encrypted_credentials, env) : null;
     const instagramCredentials = row.provider === "instagram" ? destinationCredentials : null;
     const instagramDestinations = row.provider === "instagram" ? normalizeInstagramDestinations(instagramCredentials?.destinations) : [];
     const instagramDestinationId = row.provider === "instagram" ? String(instagramCredentials?.destinationId || "") : "";
     const instagramDestination = instagramDestinations.find((destination) => destination.id === instagramDestinationId);
-    const destinationReady = row.provider === "linkedin"
-      ? Boolean(linkedInDestination)
-      : row.provider === "instagram"
+    const destinationReady = row.provider === "instagram"
         ? Boolean(instagramDestination)
         : true;
     status[row.provider] = {
@@ -75,32 +81,35 @@ export async function getSocialConnectionStatus(userId, projectId = "project-def
       scopes,
       connectedAt: row.connected_at || row.updated_at || null,
       canPublish: !approvalRequired && providerCanPublish(row.provider, scopes, row) && destinationReady,
-      destinations: row.provider === "reddit" ? safeRedditCommunities(row, env) : row.provider === "linkedin" ? linkedInDestinations : row.provider === "instagram" ? instagramDestinations : [],
-      destinationId: row.provider === "reddit" ? String(row.account_email || "") : row.provider === "linkedin" ? linkedInDestinationId : row.provider === "instagram" ? instagramDestinationId : "",
-      destinationName: row.provider === "reddit" && row.account_email ? `r/${row.account_email}` : row.provider === "linkedin" ? String(linkedInDestination?.name || "") : row.provider === "instagram" ? String(instagramDestination?.name || "") : "",
+      destinations: row.provider === "reddit" ? safeRedditCommunities(row, env) : row.provider === "instagram" ? instagramDestinations : [],
+      destinationId: row.provider === "reddit" ? String(row.account_email || "") : row.provider === "instagram" ? instagramDestinationId : "",
+      destinationName: row.provider === "reddit" && row.account_email ? `r/${row.account_email}` : row.provider === "instagram" ? String(instagramDestination?.name || "") : "",
       ...(row.provider === "reddit" ? {
         approvalRequired,
         approvalStatus: approvalRequired ? "pending_approval" : "approved",
       } : {}),
     };
   }
+  status.linkedin = linkedInStatus(linkedInRows, env);
   return status;
 }
 
-export async function createSocialAuthorizationUrl({ provider, userId, projectId, origin }, env = process.env) {
+export async function createSocialAuthorizationUrl({ provider, userId, projectId, origin, connectionMode = "personal" }, env = process.env) {
   if (!SOCIAL_PROVIDERS.includes(provider)) throw connectionError("That social connection is not supported.", 400);
-  requireSocialConnector(provider, env);
+  const connectionProvider = provider === "linkedin" && connectionMode === "organization" ? LINKEDIN_COMMUNITY_PROVIDER : provider;
+  requireSocialConnector(connectionProvider, env);
   const redirectUri = `${normalizeOrigin(origin)}${provider === "youtube" ? "/api/youtube-callback" : "/api/social-callback"}`;
   const codeVerifier = provider === "x" ? randomBytes(48).toString("base64url") : "";
-  const state = await createConnectionState({ userId, projectId, provider, redirectUri, codeVerifier }, env);
+  const state = await createConnectionState({ userId, projectId, provider: connectionProvider, redirectUri, codeVerifier }, env);
 
   if (provider === "linkedin") {
+    const community = connectionProvider === LINKEDIN_COMMUNITY_PROVIDER;
     return authorizationUrl("https://www.linkedin.com/oauth/v2/authorization", {
       response_type: "code",
-      client_id: env.LINKEDIN_CLIENT_ID,
+      client_id: community ? env.LINKEDIN_COMMUNITY_CLIENT_ID : env.LINKEDIN_CLIENT_ID,
       redirect_uri: redirectUri,
       state,
-      scope: linkedinScopes(env).join(" "),
+      scope: (community ? LINKEDIN_COMMUNITY_SCOPES : SOCIAL_SCOPES.linkedin).join(" "),
     });
   }
   if (provider === "instagram") {
@@ -177,26 +186,29 @@ export async function createSocialAuthorizationUrl({ provider, userId, projectId
 export async function finishSocialAuthorization({ code, state }, env = process.env) {
   if (!code || !state) throw connectionError("The social network did not return a complete authorization response.", 400);
   const request = await readConnectionState(state, env);
-  if (!SOCIAL_PROVIDERS.includes(request.provider)) throw connectionError("The connection request is invalid.", 400);
+  if (!CONNECTION_PROVIDERS.includes(request.provider)) throw connectionError("The connection request is invalid.", 400);
   requireSocialConnector(request.provider, env);
   const result = await finishProvider(request.provider, code, request, env);
   await storeConnection({ userId: request.userId, projectId: request.projectId, provider: request.provider, ...result }, env);
-  return { provider: request.provider, userId: request.userId, projectId: request.projectId, accountLabel: result.accountLabel };
+  return { provider: request.provider === LINKEDIN_COMMUNITY_PROVIDER ? "linkedin" : request.provider, userId: request.userId, projectId: request.projectId, accountLabel: result.accountLabel };
 }
 
 export async function disconnectSocialConnection(userId, projectId, provider, env = process.env) {
   if (!SOCIAL_PROVIDERS.includes(provider)) throw connectionError("That social connection is not supported.", 400);
   await ensureSocialTable(env);
+  const providers = provider === "linkedin" ? ["linkedin", LINKEDIN_COMMUNITY_PROVIDER] : [provider];
   await getPool(env).query(
-    "DELETE FROM market_agent_connections WHERE user_id = $1 AND project_id = $2 AND provider = $3",
-    [userId, projectId || "project-default", provider],
+    "DELETE FROM market_agent_connections WHERE user_id = $1 AND project_id = $2 AND provider = ANY($3::text[])",
+    [userId, projectId || "project-default", providers],
   );
 }
 
 export async function selectSocialDestination(userId, projectId, provider, destinationId, env = process.env) {
   if (!["linkedin", "instagram", "reddit"].includes(provider)) throw connectionError("This connection does not require a destination selection.", 400);
   requireSocialConnector(provider, env);
-  const row = await readSocialConnection(userId, projectId, provider, env);
+  const row = provider === "linkedin"
+    ? await findLinkedInDestinationRow(userId, projectId, destinationId, env)
+    : await readSocialConnection(userId, projectId, provider, env);
   if (!row || row.status !== "connected") throw connectionError(`Connect ${providerLabel(provider)} before choosing a destination.`, 409);
   const credentials = decryptCredentials(row.encrypted_credentials, env);
   if (provider === "linkedin") {
@@ -210,8 +222,9 @@ export async function selectSocialDestination(userId, projectId, provider, desti
     credentials.destinationId = selected.id;
     await getPool(env).query(
       "UPDATE market_agent_connections SET encrypted_credentials = $4, updated_at = NOW() WHERE user_id = $1 AND project_id = $2 AND provider = $3",
-      [userId, projectId, provider, encryptCredentials(credentials, env)],
+      [userId, projectId, row.provider || provider, encryptCredentials(credentials, env)],
     );
+    await clearOtherLinkedInSelections(userId, projectId, row.provider || provider, env);
     return getSocialConnectionStatus(userId, projectId, env);
   }
   if (provider === "instagram") {
@@ -242,7 +255,9 @@ export async function selectSocialDestination(userId, projectId, provider, desti
 export async function publishSocialPost(userId, projectId, provider, payload, env = process.env) {
   if (!SOCIAL_PROVIDERS.includes(provider)) throw connectionError("Choose a supported social channel.", 400);
   requireSocialConnector(provider, env);
-  const row = await readSocialConnection(userId, projectId, provider, env);
+  const row = provider === "linkedin"
+    ? await selectedLinkedInRow(userId, projectId, env)
+    : await readSocialConnection(userId, projectId, provider, env);
   if (!row || row.status !== "connected") throw connectionError(`Connect ${providerLabel(provider)} before publishing.`, 409);
   const scopes = Array.isArray(row.scopes) ? row.scopes : [];
   if (!providerCanPublish(provider, scopes, row)) throw connectionError(provider === "reddit" ? "Choose a Reddit community for this project before publishing." : `Reconnect ${providerLabel(provider)} and approve publishing access.`, 403);
@@ -250,7 +265,7 @@ export async function publishSocialPost(userId, projectId, provider, payload, en
   const text = String(payload?.text || "").trim();
   if (!text) throw connectionError("The approved post has no copy.", 400);
   if (provider === "discord") return publishDiscord(row, credentials, { ...payload, text });
-  const accessToken = await validSocialAccessToken(userId, projectId, provider, credentials, env);
+  const accessToken = await validSocialAccessToken(userId, projectId, row.provider || provider, credentials, env);
   if (provider === "linkedin") return publishLinkedIn(row, credentials, accessToken, { ...payload, text }, env);
   if (provider === "instagram") return publishInstagram(row, credentials, accessToken, { ...payload, text }, env);
   if (provider === "tiktok") return publishTikTok(row, accessToken, { ...payload, text });
@@ -315,12 +330,14 @@ export async function getSocialPostStatus(userId, projectId, provider, externalI
 
 export async function getSocialAnalyticsAccess(userId, projectId, provider, env = process.env) {
   if (!SOCIAL_PROVIDERS.includes(provider)) throw connectionError("That social analytics channel is not supported.", 400);
-  const row = await readSocialConnection(userId, projectId, provider, env);
+  const row = provider === "linkedin"
+    ? await selectedLinkedInRow(userId, projectId, env, { preferOrganization: true })
+    : await readSocialConnection(userId, projectId, provider, env);
   if (!row || row.status !== "connected") return null;
   const credentials = decryptCredentials(row.encrypted_credentials, env);
   const accessToken = provider === "discord"
     ? String(credentials.accessToken || "")
-    : await validSocialAccessToken(userId, projectId, provider, credentials, env);
+    : await validSocialAccessToken(userId, projectId, row.provider || provider, credentials, env);
   return {
     accountId: String(row.account_id || ""),
     accountLabel: String(row.account_label || row.account_email || providerLabel(provider)),
@@ -333,7 +350,8 @@ export async function getSocialAnalyticsAccess(userId, projectId, provider, env 
 
 export function socialConnectorConfigured(provider, env = process.env) {
   const secure = Boolean(env.CONNECTION_ENCRYPTION_KEY);
-  if (provider === "linkedin") return Boolean(secure && env.LINKEDIN_CLIENT_ID && env.LINKEDIN_CLIENT_SECRET);
+  if (provider === "linkedin") return Boolean(secure && env.LINKEDIN_CLIENT_ID && env.LINKEDIN_CLIENT_SECRET) || linkedinCommunityConfigured(env);
+  if (provider === LINKEDIN_COMMUNITY_PROVIDER) return linkedinCommunityConfigured(env);
   if (provider === "instagram") return Boolean(secure && env.INSTAGRAM_APP_ID && env.INSTAGRAM_APP_SECRET && env.INSTAGRAM_CONFIG_ID);
   if (provider === "tiktok") {
     const { clientKey, clientSecret } = tiktokCredentials(env);
@@ -356,6 +374,7 @@ export function socialConnectorConfigured(provider, env = process.env) {
 
 async function finishProvider(provider, code, request, env) {
   if (provider === "linkedin") return finishLinkedIn(code, request, env);
+  if (provider === LINKEDIN_COMMUNITY_PROVIDER) return finishLinkedInCommunity(code, request, env);
   if (provider === "instagram") return finishInstagram(code, request, env);
   if (provider === "tiktok") return finishTikTok(code, request, env);
   if (provider === "youtube") return finishYouTube(code, request, env);
@@ -386,6 +405,28 @@ async function finishLinkedIn(code, request, env) {
   };
 }
 
+async function finishLinkedInCommunity(code, request, env) {
+  const tokens = await exchangeFormToken("https://www.linkedin.com/oauth/v2/accessToken", {
+    grant_type: "authorization_code",
+    code,
+    client_id: env.LINKEDIN_COMMUNITY_CLIENT_ID,
+    client_secret: env.LINKEDIN_COMMUNITY_CLIENT_SECRET,
+    redirect_uri: request.redirectUri,
+  }, "LinkedIn");
+  const scopes = splitScopes(tokens.scope);
+  const missing = LINKEDIN_COMMUNITY_SCOPES.filter((scope) => !scopes.includes(scope));
+  if (missing.length) throw connectionError("LinkedIn did not grant the approved company-page permissions. Confirm Community Management approval, then reconnect.", 403);
+  const destinations = await readLinkedInOrganizationDestinations(tokens.access_token, env);
+  if (!destinations.length) throw connectionError("No LinkedIn company page administered by this account was returned. Sign in with a Page super admin or content admin.", 409);
+  return {
+    accountId: destinations[0].id,
+    accountLabel: "LinkedIn company pages",
+    accountEmail: "",
+    scopes,
+    credentials: { ...tokenCredentials(tokens), destinations, destinationId: destinations.length === 1 ? destinations[0].id : "" },
+  };
+}
+
 async function readLinkedInDestinations(accessToken, profile, scopes, env) {
   const personal = {
     id: `urn:li:person:${String(profile.sub || "")}`,
@@ -395,37 +436,41 @@ async function readLinkedInDestinations(accessToken, profile, scopes, env) {
   };
   if (!scopes.includes("w_organization_social") || !scopes.some((scope) => ["rw_organization_admin", "r_organization_admin"].includes(scope))) return [personal];
   try {
-    const version = env.LINKEDIN_VERSION || "202609";
-    const response = await fetchJson("https://api.linkedin.com/rest/organizationAcls?q=roleAssignee&state=APPROVED&count=100", {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "X-Restli-Protocol-Version": "2.0.0",
-        "Linkedin-Version": version,
-      },
-    }, "LinkedIn could not read the company pages administered by this member.");
-    const urns = Array.from(new Set((response.elements || [])
-      .filter((item) => item?.state === "APPROVED" && ["ADMINISTRATOR", "CONTENT_ADMINISTRATOR", "DIRECT_SPONSORED_CONTENT_POSTER"].includes(String(item?.role || "")))
-      .map((item) => String(item.organizationTarget || item.organization || ""))
-      .filter((urn) => /^urn:li:organization(?:Brand)?:/i.test(urn))));
-    const organizations = await Promise.all(urns.map(async (urn) => {
-      const id = urn.split(":").pop();
-      let name = `LinkedIn company page ${id}`;
-      try {
-        const organization = await fetchJson(`https://api.linkedin.com/rest/organizations/${encodeURIComponent(id)}`, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "X-Restli-Protocol-Version": "2.0.0",
-            "Linkedin-Version": version,
-          },
-        }, "LinkedIn could not read a company-page name.");
-        name = String(organization.localizedName || organization.name?.localized?.en_US || name);
-      } catch { /* Preserve the verified page id when its display name is unavailable. */ }
-      return { id: urn, name, label: "Company page · recommended", type: "organization" };
-    }));
+    const organizations = await readLinkedInOrganizationDestinations(accessToken, env);
     return [...organizations, personal];
   } catch {
     return [personal];
   }
+}
+
+async function readLinkedInOrganizationDestinations(accessToken, env) {
+  const version = env.LINKEDIN_VERSION || "202609";
+  const response = await fetchJson("https://api.linkedin.com/rest/organizationAcls?q=roleAssignee&state=APPROVED&count=100", {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "X-Restli-Protocol-Version": "2.0.0",
+      "Linkedin-Version": version,
+    },
+  }, "LinkedIn could not read the company pages administered by this member.");
+  const urns = Array.from(new Set((response.elements || [])
+    .filter((item) => item?.state === "APPROVED" && ["ADMINISTRATOR", "CONTENT_ADMINISTRATOR", "DIRECT_SPONSORED_CONTENT_POSTER"].includes(String(item?.role || "")))
+    .map((item) => String(item.organizationTarget || item.organization || ""))
+    .filter((urn) => /^urn:li:organization(?:Brand)?:/i.test(urn))));
+  return Promise.all(urns.map(async (urn) => {
+    const id = urn.split(":").pop();
+    let name = `LinkedIn company page ${id}`;
+    try {
+      const organization = await fetchJson(`https://api.linkedin.com/rest/organizations/${encodeURIComponent(id)}`, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "X-Restli-Protocol-Version": "2.0.0",
+          "Linkedin-Version": version,
+        },
+      }, "LinkedIn could not read a company-page name.");
+      name = String(organization.localizedName || organization.name?.localized?.en_US || name);
+    } catch { /* Keep the verified Page id when LinkedIn omits its display name. */ }
+    return { id: urn, name, label: "Company page · recommended", type: "organization" };
+  }));
 }
 
 function normalizeLinkedInDestinations(values, row) {
@@ -449,6 +494,42 @@ function normalizeLinkedInDestinations(values, row) {
     });
   }
   return destinations.sort((left, right) => Number(left.type === "person") - Number(right.type === "person"));
+}
+
+function linkedInStatus(rows, env) {
+  const personalRow = rows.find((row) => row.provider === "linkedin") || null;
+  const organizationRow = rows.find((row) => row.provider === LINKEDIN_COMMUNITY_PROVIDER) || null;
+  const entries = rows.map((row) => {
+    const credentials = decryptCredentials(row.encrypted_credentials, env);
+    const destinations = normalizeLinkedInDestinations(credentials.destinations, row);
+    const destinationId = String(credentials.destinationId || "");
+    return { row, credentials, destinations, destinationId, destination: destinations.find((item) => item.id === destinationId) || null };
+  });
+  const selected = entries.find((entry) => entry.destination?.type === "organization")
+    || entries.find((entry) => entry.destination)
+    || null;
+  const destinations = entries
+    .flatMap((entry) => entry.destinations)
+    .filter((destination, index, values) => values.findIndex((item) => item.id === destination.id) === index)
+    .sort((left, right) => Number(left.type === "person") - Number(right.type === "person"));
+  const accountRow = selected?.row || organizationRow || personalRow;
+  const scopes = Array.isArray(selected?.row?.scopes) ? selected.row.scopes : Array.isArray(accountRow?.scopes) ? accountRow.scopes : [];
+  return {
+    configured: socialConnectorConfigured("linkedin", env),
+    connected: Boolean(rows.length),
+    accountId: String(accountRow?.account_id || ""),
+    accountLabel: String(accountRow?.account_label || accountRow?.account_email || ""),
+    scopes,
+    connectedAt: accountRow?.connected_at || accountRow?.updated_at || null,
+    canPublish: Boolean(selected?.destination) && providerCanPublish("linkedin", scopes, selected?.row),
+    destinations,
+    destinationId: String(selected?.destinationId || ""),
+    destinationName: String(selected?.destination?.name || ""),
+    communityApprovalStatus: linkedinCommunityApprovalStatus(env),
+    organizationConfigured: linkedinCommunityConfigured(env),
+    organizationConnected: Boolean(organizationRow),
+    personalConnected: Boolean(personalRow),
+  };
 }
 
 async function finishInstagram(code, request, env) {
@@ -746,12 +827,57 @@ async function storeConnection({ userId, projectId, provider, accountId, account
 async function readSocialConnection(userId, projectId, provider, env) {
   await ensureSocialTable(env);
   const result = await getPool(env).query(
-    `SELECT account_id, account_label, account_email, encrypted_credentials, scopes, status
+    `SELECT provider, account_id, account_label, account_email, encrypted_credentials, scopes, status
        FROM market_agent_connections
       WHERE user_id = $1 AND project_id = $2 AND provider = $3 LIMIT 1`,
     [userId, projectId, provider],
   );
   return result.rows[0] || null;
+}
+
+async function readLinkedInRows(userId, projectId, env) {
+  await ensureSocialTable(env);
+  const result = await getPool(env).query(
+    `SELECT provider, account_id, account_label, account_email, encrypted_credentials, scopes, status, connected_at, updated_at
+       FROM market_agent_connections
+      WHERE user_id = $1 AND project_id = $2 AND provider = ANY($3::text[])`,
+    [userId, projectId, ["linkedin", LINKEDIN_COMMUNITY_PROVIDER]],
+  );
+  return result.rows.filter((row) => row.status === "connected");
+}
+
+async function findLinkedInDestinationRow(userId, projectId, destinationId, env) {
+  const rows = await readLinkedInRows(userId, projectId, env);
+  return rows.find((row) => {
+    const credentials = decryptCredentials(row.encrypted_credentials, env);
+    return normalizeLinkedInDestinations(credentials.destinations, row).some((destination) => destination.id === String(destinationId || ""));
+  }) || null;
+}
+
+async function selectedLinkedInRow(userId, projectId, env, { preferOrganization = false } = {}) {
+  const rows = await readLinkedInRows(userId, projectId, env);
+  const selected = rows.filter((row) => {
+    const credentials = decryptCredentials(row.encrypted_credentials, env);
+    return normalizeLinkedInDestinations(credentials.destinations, row).some((destination) => destination.id === credentials.destinationId);
+  });
+  const selectedOrganization = selected.find((row) => row.provider === LINKEDIN_COMMUNITY_PROVIDER);
+  if (selectedOrganization) return selectedOrganization;
+  if (selected.length) return selected[0];
+  if (preferOrganization) return rows.find((row) => row.provider === LINKEDIN_COMMUNITY_PROVIDER) || rows[0] || null;
+  return rows[0] || null;
+}
+
+async function clearOtherLinkedInSelections(userId, projectId, selectedProvider, env) {
+  const rows = await readLinkedInRows(userId, projectId, env);
+  for (const row of rows.filter((item) => item.provider !== selectedProvider)) {
+    const credentials = decryptCredentials(row.encrypted_credentials, env);
+    if (!credentials.destinationId) continue;
+    credentials.destinationId = "";
+    await getPool(env).query(
+      "UPDATE market_agent_connections SET encrypted_credentials = $4, updated_at = NOW() WHERE user_id = $1 AND project_id = $2 AND provider = $3",
+      [userId, projectId, row.provider, encryptCredentials(credentials, env)],
+    );
+  }
 }
 
 async function validSocialAccessToken(userId, projectId, provider, credentials, env) {
@@ -1266,6 +1392,12 @@ function emptySocialStatus(env) {
       scopes: [],
       connectedAt: null,
       canPublish: false,
+      ...(provider === "linkedin" ? {
+        communityApprovalStatus: linkedinCommunityApprovalStatus(env),
+        organizationConfigured: linkedinCommunityConfigured(env),
+        organizationConnected: false,
+        personalConnected: false,
+      } : {}),
       ...(provider === "reddit" ? {
         approvalRequired: !redditAccessApproved(env),
         approvalStatus: redditAccessApproved(env) ? "approved" : "pending_approval",
@@ -1350,10 +1482,14 @@ function validMediaUrl(value) {
 }
 
 function providerLabel(provider) {
+  if (provider === LINKEDIN_COMMUNITY_PROVIDER) return "LinkedIn company pages";
   return provider === "x" ? "X" : provider === "youtube" ? "YouTube" : `${provider.charAt(0).toUpperCase()}${provider.slice(1)}`;
 }
 
 function requireSocialConnector(provider, env) {
+  if (provider === LINKEDIN_COMMUNITY_PROVIDER && linkedinCommunityApprovalStatus(env) !== "approved") {
+    throw connectionError("LinkedIn is still reviewing Market Agent's Community Management access. Company-page connection will unlock after approval.", 503);
+  }
   if (provider === "reddit" && !redditAccessApproved(env)) {
     throw connectionError("Reddit requires explicit written commercial Data API approval. Authorization remains disabled until Reddit approves Market Agent.", 503);
   }

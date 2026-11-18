@@ -73,7 +73,7 @@ export default async function handler(req, res) {
       : provider === "shopify"
         ? await createShopifyAuthorizationUrl({ userId, projectId, origin, storeDomain: req.body?.storeDomain })
       : SOCIAL_PROVIDERS.includes(provider)
-        ? await createSocialAuthorizationUrl({ provider, userId, projectId, origin })
+        ? await createSocialAuthorizationUrl({ provider, userId, projectId, origin, connectionMode: req.body?.connectionMode })
         : await createGoogleAuthorizationUrl({ userId, projectId, appEmail: email, origin });
     return res.status(200).json({ authorizationUrl });
   } catch (error) {

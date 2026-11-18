@@ -59,8 +59,9 @@ The deployment's three AI keys fund only the limited demo and active managed sub
 - `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, and `ANTHROPIC_API_KEY` — platform-funded demo and managed text access; never a fallback for BYOK users
 - `OPENAI_MODEL`, `GOOGLE_MODEL`, and `ANTHROPIC_MODEL` — optional model overrides
 - `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `CONNECTION_ENCRYPTION_KEY` — Gmail and Google Analytics OAuth plus encrypted token storage
-- `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` — LinkedIn OAuth and member posting
-- `LINKEDIN_ORGANIZATION_ACCESS=true` — request approved Community Management scopes for per-project company-page selection; leave false until LinkedIn approves the app
+- `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` — the existing OpenID/member-posting app; personal publishing stays optional
+- `LINKEDIN_COMMUNITY_CLIENT_ID` and `LINKEDIN_COMMUNITY_CLIENT_SECRET` — the dedicated Page-only Community Management app
+- `LINKEDIN_COMMUNITY_ACCESS_STATUS=pending|approved|unavailable` — leave `pending` during review, then switch to `approved` after LinkedIn grants access
 - `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET`, and `INSTAGRAM_CONFIG_ID` — Instagram Unified Login and professional-account publishing
 - `TIKTOK_CLIENT_KEY` and `TIKTOK_CLIENT_SECRET` — TikTok Login Kit and Content Posting API
 - `X_CLIENT_ID` and `X_CLIENT_SECRET` — X OAuth 2.0 posting
