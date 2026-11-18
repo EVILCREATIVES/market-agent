@@ -3036,8 +3036,11 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
   const projectId = workspace.id;
   const campaignGoal = inferProjectGrowthPlan(workspace);
   const mailchimp = connections.mailchimp;
-  const [section, setSection] = useState<CampaignWorkspaceSection>("overview");
-  const [emailMode, setEmailMode] = useState<"newsletter" | "invitation">("newsletter");
+  const [section, setSection] = useState<CampaignWorkspaceSection>(() => {
+    const saved = window.sessionStorage.getItem(`market-agent:campaign-current-section:${projectId}`) as CampaignWorkspaceSection | null;
+    return saved && ["overview", "newsletter", "linkedin", "instagram", "tiktok", "youtube", "x", "discord", "reddit"].includes(saved) ? saved : "overview";
+  });
+  const [emailMode, setEmailMode] = useState<"newsletter" | "invitation">(() => window.sessionStorage.getItem(`market-agent:campaign-email-mode:${projectId}`) === "invitation" ? "invitation" : "newsletter");
   const [deliveryJobs, setDeliveryJobs] = useState<DeliveryJob[]>([]);
   const [dashboard, setDashboard] = useState<NewsletterDashboard | null>(null);
   const [loading, setLoading] = useState(false);
@@ -3045,7 +3048,7 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
   const [direction, setDirection] = useState("");
   const [optinDirection, setOptinDirection] = useState("");
   const [optinFeedback, setOptinFeedback] = useState("");
-  const [selectedId, setSelectedId] = useState("");
+  const [selectedId, setSelectedId] = useState(() => window.sessionStorage.getItem(`market-agent:campaign-selected-newsletter:${projectId}`) || "");
   const [scheduleTime, setScheduleTime] = useState(() => nextQuarterLocal());
   const [subscriberOpen, setSubscriberOpen] = useState(false);
   const [subscriber, setSubscriber] = useState({ email: "", firstName: "", lastName: "", consentConfirmed: false });
@@ -3079,8 +3082,12 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
     setDashboard(null);
     setSelectedId("");
     const requestedSection = window.sessionStorage.getItem(`market-agent:campaign-section:${projectId}`) as CampaignWorkspaceSection | null;
+    const rememberedSection = window.sessionStorage.getItem(`market-agent:campaign-current-section:${projectId}`) as CampaignWorkspaceSection | null;
+    const nextSection = requestedSection || rememberedSection;
     window.sessionStorage.removeItem(`market-agent:campaign-section:${projectId}`);
-    setSection(requestedSection === "newsletter" ? "newsletter" : "overview");
+    setSection(nextSection && ["overview", "newsletter", "linkedin", "instagram", "tiktok", "youtube", "x", "discord", "reddit"].includes(nextSection) ? nextSection : "overview");
+    setEmailMode(window.sessionStorage.getItem(`market-agent:campaign-email-mode:${projectId}`) === "invitation" ? "invitation" : "newsletter");
+    setSelectedId(window.sessionStorage.getItem(`market-agent:campaign-selected-newsletter:${projectId}`) || "");
     setContactDetails({});
     setSubscriberDetails(null);
     setOptinFeedback("");
@@ -3104,6 +3111,10 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
   useEffect(() => {
     window.sessionStorage.setItem(`market-agent:campaign-current-section:${projectId}`, section);
   }, [projectId, section]);
+
+  useEffect(() => {
+    window.sessionStorage.setItem(`market-agent:campaign-email-mode:${projectId}`, emailMode);
+  }, [projectId, emailMode]);
 
   useEffect(() => {
     if (selectedId) window.sessionStorage.setItem(`market-agent:campaign-selected-newsletter:${projectId}`, selectedId);
