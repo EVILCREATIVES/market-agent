@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { isPanelRun } from "../server/db.mjs";
 import { isBrandSourceRefreshRequest, isPrivateAddress } from "../server/agent.mjs";
-import { campaignPublicationTarget, personalizeInvitationTemplate, renderInvitationEmailHtml, resolveInvitationDestination, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
+import { applyInvitationTracking, campaignPublicationTarget, createInvitationTrackingUrl, personalizeInvitationTemplate, renderInvitationEmailHtml, resolveInvitationDestination, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
+import { canonicalAnalyticsPath, prepareAnalyticsLandingRows, prepareAnalyticsPageRows } from "../server/analytics.mjs";
 import { scoreMarketingOutput } from "../server/evaluation.mjs";
 import { handleSchedule } from "../server/schedule-handler.mjs";
 import { projectLogoVariants, safeMailchimpSignupUrl, selectNewsletterLogoVariant, signupFormUrlFromResponses } from "../server/newsletters.mjs";
@@ -56,6 +57,35 @@ test("invitation destination falls back to the Brand website and normalizes assi
   assert.equal(resolveInvitationDestination("", "", "https://www.visit-lumen.com/"), "https://www.visit-lumen.com/");
   assert.equal(resolveInvitationDestination("visit-lumen.com"), "https://visit-lumen.com/");
   assert.equal(resolveInvitationDestination("not a link", "https://www.visit-lumen.com/"), "https://www.visit-lumen.com/");
+});
+
+test("invitation tracking replaces the approved destination without exposing recipient data", () => {
+  const env = { APP_BASE_URL: "https://marketagent.shop", CONNECTION_ENCRYPTION_KEY: "test-signing-key-with-at-least-32-characters" };
+  const tracked = createInvitationTrackingUrl("job-1", env);
+  assert.match(tracked, /^https:\/\/marketagent\.shop\/api\/invitation-click\?token=/);
+  assert.doesNotMatch(tracked, /recipient|alex|example\.com/i);
+  const payload = applyInvitationTracking({ invitationUrl: "https://visit-lumen.com/", text: "Open https://visit-lumen.com/", html: '<a href="https://visit-lumen.com/">Open</a>' }, tracked);
+  assert.match(payload.text, /marketagent\.shop\/api\/invitation-click/);
+  assert.match(payload.html, /marketagent\.shop\/api\/invitation-click/);
+  assert.doesNotMatch(payload.text, /visit-lumen\.com/);
+});
+
+test("analytics removes 404 probes and admin activity and merges query variants", () => {
+  const pages = prepareAnalyticsPageRows([
+    { pagePathPlusQueryString: "/about", pageTitle: "404: This page could not be found.", screenPageViews: 1, activeUsers: 1 },
+    { pagePathPlusQueryString: "/admin/settings?tab=analytics", pageTitle: "LUMEN", screenPageViews: 1, activeUsers: 1 },
+    { pagePathPlusQueryString: "/generate?from=one", pageTitle: "LUMEN", screenPageViews: 2, activeUsers: 1, userEngagementDuration: 20 },
+    { pagePathPlusQueryString: "/generate?from=two", pageTitle: "LUMEN", screenPageViews: 3, activeUsers: 2, userEngagementDuration: 30 },
+  ]);
+  assert.equal(canonicalAnalyticsPath("/generate?from=one"), "/generate");
+  assert.equal(pages.length, 1);
+  assert.equal(pages[0].pagePathPlusQueryString, "/generate");
+  assert.equal(pages[0].screenPageViews, 5);
+  const landing = prepareAnalyticsLandingRows([
+    { landingPagePlusQueryString: "/contact", sessions: 1, engagedSessions: 0, averageSessionDuration: 0, keyEvents: 0 },
+    { landingPagePlusQueryString: "/generate?from=one", sessions: 1, activeUsers: 1, engagedSessions: 1, averageSessionDuration: 20, keyEvents: 1 },
+  ]);
+  assert.deepEqual(landing.map((row) => row.landingPagePlusQueryString), ["/generate"]);
 });
 
 test("campaign coverage recognizes the full promised publication cadence", () => {

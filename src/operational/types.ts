@@ -488,6 +488,10 @@ export interface ProspectConversionCampaign {
     sent: number;
     failed: number;
     cancelled: number;
+    clicks: number;
+    uniqueClicks: number;
+    firstClickedAt: string | null;
+    lastClickedAt: string | null;
     startsAt: string | null;
     endsAt: string | null;
   };

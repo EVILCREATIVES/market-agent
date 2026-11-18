@@ -1,0 +1,4 @@
+ALTER TABLE market_agent_delivery_jobs
+  ADD COLUMN IF NOT EXISTS click_count INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS first_clicked_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS last_clicked_at TIMESTAMPTZ;

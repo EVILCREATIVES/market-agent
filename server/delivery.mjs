@@ -257,6 +257,10 @@ export async function getProspectInvitationStats(userId, projectId, campaignId, 
       COUNT(*) FILTER (WHERE status = 'complete')::int AS sent,
       COUNT(*) FILTER (WHERE status IN ('failed','dead_letter'))::int AS failed,
       COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled,
+      COALESCE(SUM(click_count), 0)::int AS clicks,
+      COUNT(*) FILTER (WHERE click_count > 0)::int AS unique_clicks,
+      MIN(first_clicked_at) AS first_clicked_at,
+      MAX(last_clicked_at) AS last_clicked_at,
       MIN(NULLIF(payload->>'scheduledAt','')::timestamptz) AS starts_at,
       MAX(NULLIF(payload->>'scheduledAt','')::timestamptz) AS ends_at
      FROM market_agent_delivery_jobs
@@ -270,6 +274,10 @@ export async function getProspectInvitationStats(userId, projectId, campaignId, 
     sent: Number(row.sent || 0),
     failed: Number(row.failed || 0),
     cancelled: Number(row.cancelled || 0),
+    clicks: Number(row.clicks || 0),
+    uniqueClicks: Number(row.unique_clicks || 0),
+    firstClickedAt: row.first_clicked_at ? new Date(row.first_clicked_at).toISOString() : null,
+    lastClickedAt: row.last_clicked_at ? new Date(row.last_clicked_at).toISOString() : null,
     startsAt: row.starts_at ? new Date(row.starts_at).toISOString() : null,
     endsAt: row.ends_at ? new Date(row.ends_at).toISOString() : null,
   };
@@ -563,6 +571,9 @@ async function completeDeliveryExecution(row, userId, env) {
       const suppressed = await getPool(env).query("SELECT 1 FROM market_agent_email_suppressions WHERE user_id = $1 AND project_id = $2 AND email = $3 LIMIT 1", [userId, row.project_id, String(payload.recipient || "").toLowerCase()]);
       if (suppressed.rows[0]) throw deliveryError("This recipient previously opted out and is suppressed.", 409);
       const optOutUrl = createEmailOptOutUrl(row.id, env);
+      if (payload.campaignType === "prospect_invitation" && resolveInvitationDestination(payload.invitationUrl)) {
+        payload = applyInvitationTracking(payload, createInvitationTrackingUrl(row.id, env));
+      }
       payload = {
         ...payload,
         text: `${String(payload.text || "").trim()}\n\nStop future emails from this sender: ${optOutUrl}`,
@@ -586,6 +597,59 @@ async function completeDeliveryExecution(row, userId, env) {
     const failed = await recordDeliveryFailure(row, safeError(error), env);
     return { job: serializeDeliveryJob(failed) };
   }
+}
+
+export function applyInvitationTracking(payload = {}, trackedUrl = "") {
+  const original = resolveInvitationDestination(payload.invitationUrl);
+  const replacement = resolveInvitationDestination(trackedUrl);
+  if (!original || !replacement) return { ...payload };
+  const escapedOriginal = escapeEmailAttribute(original);
+  const escapedReplacement = escapeEmailAttribute(replacement);
+  return {
+    ...payload,
+    text: String(payload.text || "").replaceAll(original, replacement),
+    html: String(payload.html || "").replaceAll(escapedOriginal, escapedReplacement).replaceAll(original, escapedReplacement),
+  };
+}
+
+export function createInvitationTrackingUrl(id, env = process.env) {
+  const origin = String(env.APP_BASE_URL || env.MAILCHIMP_REDIRECT_BASE_URL || "").replace(/\/$/, "");
+  if (!/^https:\/\//i.test(origin)) throw deliveryError("The public app address is not configured for invitation tracking.", 503);
+  const signature = createHmac("sha256", deliveryMediaSecret(env)).update(`invitation-click:${id}`).digest("base64url");
+  return `${origin}/api/invitation-click?token=${encodeURIComponent(`${id}.${signature}`)}`;
+}
+
+export async function recordInvitationClick(token, env = process.env) {
+  await ensureDeliveryTable(env);
+  const split = String(token || "").lastIndexOf(".");
+  const id = split > 0 ? String(token).slice(0, split) : "";
+  const signature = split > 0 ? String(token).slice(split + 1) : "";
+  if (!id || !signature) throw deliveryError("This invitation link is invalid.", 400);
+  const expected = createHmac("sha256", deliveryMediaSecret(env)).update(`invitation-click:${id}`).digest("base64url");
+  const receivedBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (receivedBuffer.length !== expectedBuffer.length || !timingSafeEqual(receivedBuffer, expectedBuffer)) throw deliveryError("This invitation link is invalid.", 403);
+  const result = await getPool(env).query(
+    `UPDATE market_agent_delivery_jobs
+        SET click_count = click_count + 1,
+            first_clicked_at = COALESCE(first_clicked_at, NOW()),
+            last_clicked_at = NOW(),
+            updated_at = NOW()
+      WHERE id = $1 AND channel = 'gmail' AND payload->>'campaignType' = 'prospect_invitation'
+      RETURNING payload`,
+    [id],
+  );
+  const payload = result.rows[0]?.payload || {};
+  const destination = resolveInvitationDestination(payload.invitationUrl);
+  if (!destination) throw deliveryError("This invitation link is no longer available.", 404);
+  const url = new URL(destination);
+  const campaignId = String(payload.campaignId || "project").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 100) || "project";
+  url.searchParams.set("utm_id", campaignId);
+  url.searchParams.set("utm_source", "market-agent");
+  url.searchParams.set("utm_medium", "email");
+  url.searchParams.set("utm_campaign", `invitation-${campaignId}`);
+  url.searchParams.set("utm_content", "primary-cta");
+  return { destination: url.toString() };
 }
 
 function createEmailOptOutUrl(id, env) {
@@ -1002,6 +1066,7 @@ async function ensureDeliveryTable(env) {
       approved_at TIMESTAMPTZ, completed_at TIMESTAMPTZ,
       idempotency_key TEXT NOT NULL DEFAULT '', attempt_count INTEGER NOT NULL DEFAULT 0,
       max_attempts INTEGER NOT NULL DEFAULT 5, next_attempt_at TIMESTAMPTZ, dead_lettered_at TIMESTAMPTZ,
+      click_count INTEGER NOT NULL DEFAULT 0, first_clicked_at TIMESTAMPTZ, last_clicked_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS market_agent_delivery_jobs_user_project_run_idx ON market_agent_delivery_jobs (user_id, project_id, run_id, created_at DESC);
@@ -1011,6 +1076,9 @@ async function ensureDeliveryTable(env) {
     ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 5;
     ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ;
     ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS dead_lettered_at TIMESTAMPTZ;
+    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS click_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS first_clicked_at TIMESTAMPTZ;
+    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS last_clicked_at TIMESTAMPTZ;
     CREATE UNIQUE INDEX IF NOT EXISTS market_agent_delivery_jobs_idempotency_uidx ON market_agent_delivery_jobs (user_id, idempotency_key) WHERE idempotency_key <> '';
     DO $$ BEGIN
       IF EXISTS (

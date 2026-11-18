@@ -253,8 +253,8 @@ export async function getAnalyticsReport(userId, projectId, range = "28daysAgo",
     previousCampaignEvents: reportRows(previousCampaignEvents).filter(isAttributedCampaignRow),
     keyEvents: reportRows(keyEvents).filter((row) => Number(row.keyEvents || 0) > 0),
     acquisition: reportRows(acquisition),
-    landingPages: reportRows(landingPages),
-    pages: reportRows(pages),
+    landingPages: prepareAnalyticsLandingRows(reportRows(landingPages)),
+    pages: prepareAnalyticsPageRows(reportRows(pages)),
     downloads: reportRows(downloads).filter(hasMeaningfulLink),
     outboundLinks: reportRows(outboundLinks).filter(hasMeaningfulLink),
     videos: reportRows(videos).filter((row) => meaningfulValue(row.videoTitle) || meaningfulValue(row.videoUrl)),
@@ -286,6 +286,72 @@ function isInternalTransition(row) {
     const to = new URL(String(row.pageLocation || ""));
     return from.hostname && from.hostname === to.hostname && `${from.pathname}${from.search}` !== `${to.pathname}${to.search}`;
   } catch { return false; }
+}
+
+const COMMON_PROBE_PATHS = new Set([
+  "/about", "/about-us", "/contact", "/contact-us", "/help", "/impressum", "/imprint", "/legal",
+  "/privacy", "/privacy-policy", "/support", "/team", "/terms", "/terms-and-conditions",
+]);
+
+export function canonicalAnalyticsPath(value) {
+  const source = String(value || "").trim();
+  if (!source || source === "(not set)") return "/";
+  try {
+    const url = source.startsWith("http://") || source.startsWith("https://") ? new URL(source) : new URL(source, "https://analytics.invalid");
+    const pathname = url.pathname.replace(/\/{2,}/g, "/") || "/";
+    return pathname.length > 1 ? pathname.replace(/\/$/, "") : pathname;
+  } catch {
+    const pathname = source.split(/[?#]/, 1)[0].replace(/\/{2,}/g, "/") || "/";
+    return pathname.length > 1 ? pathname.replace(/\/$/, "") : pathname;
+  }
+}
+
+function internalAnalyticsPath(value) {
+  return /^\/admin(?:\/|$)/i.test(canonicalAnalyticsPath(value));
+}
+
+function missingPageTitle(value) {
+  return /(?:^|\b)404(?:\b|:)|page (?:could not be|was not) found|not found/i.test(String(value || ""));
+}
+
+export function prepareAnalyticsPageRows(rows = []) {
+  const groups = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const path = canonicalAnalyticsPath(row.pagePathPlusQueryString);
+    if (internalAnalyticsPath(path) || missingPageTitle(row.pageTitle)) continue;
+    const current = groups.get(path) || { pagePathPlusQueryString: path, pageTitle: row.pageTitle || "", screenPageViews: 0, activeUsers: 0, userEngagementDuration: 0, scrolledUsers: 0, keyEvents: 0 };
+    for (const metric of ["screenPageViews", "activeUsers", "userEngagementDuration", "scrolledUsers", "keyEvents"]) current[metric] += Number(row[metric] || 0);
+    if (!meaningfulValue(current.pageTitle) && meaningfulValue(row.pageTitle)) current.pageTitle = row.pageTitle;
+    groups.set(path, current);
+  }
+  return [...groups.values()].sort((left, right) => Number(right.screenPageViews || 0) - Number(left.screenPageViews || 0));
+}
+
+export function prepareAnalyticsLandingRows(rows = []) {
+  const groups = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const path = canonicalAnalyticsPath(row.landingPagePlusQueryString);
+    const isZeroValueProbe = COMMON_PROBE_PATHS.has(path.toLowerCase())
+      && Number(row.sessions || 0) <= 2
+      && Number(row.engagedSessions || 0) === 0
+      && Number(row.averageSessionDuration || 0) === 0
+      && Number(row.keyEvents || 0) === 0;
+    if (internalAnalyticsPath(path) || isZeroValueProbe) continue;
+    const current = groups.get(path) || { landingPagePlusQueryString: path, sessions: 0, activeUsers: 0, engagedSessions: 0, averageSessionDuration: 0, screenPageViewsPerSession: 0, keyEvents: 0, _weightedDuration: 0, _weightedViews: 0 };
+    const sessions = Number(row.sessions || 0);
+    current.sessions += sessions;
+    current.activeUsers += Number(row.activeUsers || 0);
+    current.engagedSessions += Number(row.engagedSessions || 0);
+    current.keyEvents += Number(row.keyEvents || 0);
+    current._weightedDuration += Number(row.averageSessionDuration || 0) * sessions;
+    current._weightedViews += Number(row.screenPageViewsPerSession || 0) * sessions;
+    groups.set(path, current);
+  }
+  return [...groups.values()].map((row) => {
+    const sessions = Math.max(1, Number(row.sessions || 0));
+    const { _weightedDuration, _weightedViews, ...clean } = row;
+    return { ...clean, engagementRate: Number(clean.engagedSessions || 0) / sessions, averageSessionDuration: _weightedDuration / sessions, screenPageViewsPerSession: _weightedViews / sessions };
+  }).sort((left, right) => Number(right.sessions || 0) - Number(left.sessions || 0));
 }
 
 function isAttributedCampaignRow(row) {
