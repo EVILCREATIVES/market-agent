@@ -2,11 +2,13 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "schedules": {
     "market-agent-delivery": { "schedule": "*/15 * * * *", "function": "api/scheduled-delivery", "timezone": "UTC" },
-    "market-agent-autonomy": { "schedule": "0 * * * *", "function": "api/scheduled-agent", "timezone": "UTC" }
+    "market-agent-autonomy": { "schedule": "0 * * * *", "function": "api/scheduled-agent", "timezone": "UTC" },
+    "market-agent-memory": { "schedule": "15 * * * *", "function": "api/scheduled-memory", "timezone": "UTC" }
   },
   "functions": {
     "api/scheduled-delivery.mjs": { "maxDuration": 60, "experimentalTriggers": [{ "type": "schedule/v1beta" }] },
-    "api/scheduled-agent.mjs": { "maxDuration": 300, "experimentalTriggers": [{ "type": "schedule/v1beta" }] }
+    "api/scheduled-agent.mjs": { "maxDuration": 300, "experimentalTriggers": [{ "type": "schedule/v1beta" }] },
+    "api/scheduled-memory.mjs": { "maxDuration": 300, "experimentalTriggers": [{ "type": "schedule/v1beta" }] }
   },
   "rewrites": [{ "source": "/((?!api/|assets/|market-agent-mark\\.svg$|tiktok.*\\.txt$).*)", "destination": "/index.html" }],
   "headers": [

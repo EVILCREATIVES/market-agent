@@ -549,9 +549,13 @@ function ProjectChat({ userId, workspace, currentPage, activeCampaignRunId, open
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
   const [uploadingLabel, setUploadingLabel] = useState("");
+  const [activeChatDay, setActiveChatDay] = useState(() => localChatDay(new Date()));
+  const [pinnedMessages, setPinnedMessages] = useState<Set<string>>(() => new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
-  const messages = workspace.chatMessages || [];
+  const allMessages = workspace.chatMessages || [];
+  const messages = allMessages.filter((message) => localChatDay(new Date(message.createdAt)) === activeChatDay);
+  const archivedMessageCount = allMessages.length - messages.length;
 
   useEffect(() => {
     if (!open) return;
@@ -559,6 +563,26 @@ function ProjectChat({ userId, workspace, currentPage, activeCampaignRunId, open
   }, [open, messages.length, sending]);
 
   useEffect(() => { setDraft(""); setAttachments([]); }, [workspace.id]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setActiveChatDay(localChatDay(new Date())), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const pinMessage = async (message: ProjectChatMessage) => {
+    try {
+      const response = await apiFetch("/api/memory", {
+        method: "POST",
+        body: JSON.stringify({ action: "pin", projectId: workspace.id, note: message.content, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The note could not be pinned.");
+      setPinnedMessages((current) => new Set([...current, message.id]));
+      notify("Pinned to the agent’s project memory.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The note could not be pinned.");
+    }
+  };
 
   const addAttachments = (files: FileList | null) => {
     const incoming = Array.from(files || []);
@@ -654,7 +678,7 @@ function ProjectChat({ userId, workspace, currentPage, activeCampaignRunId, open
       const routedContext = routingNotes.length ? `${content}\n\nATTACHMENT ROUTING ALREADY COMPLETED\n${routingNotes.map((note) => `- ${note}`).join("\n")}\nAcknowledge these completed placements clearly. Do not ask the user to upload or move the files again. A contact list belongs to Campaigns, never Brand or Content Library. Do not claim that no contacts were processed when a staged count is supplied.` : content;
       const campaignSection = currentPage === "campaigns" ? window.sessionStorage.getItem(`market-agent:campaign-current-section:${workspace.id}`) || "overview" : "";
       const selectedNewsletterId = campaignSection === "newsletter" ? window.sessionStorage.getItem(`market-agent:campaign-selected-newsletter:${workspace.id}`) || "" : "";
-      const response = await apiFetch("/api/chat", { method: "POST", body: JSON.stringify({ projectId: workspace.id, activeCampaignRunId, workspace: routedWorkspace, history: nextHistory, message: routedContext, uiContext: { page: currentPage, campaignSection, selectedRunId: activeCampaignRunId, selectedNewsletterId }, intent: isTypographyInspectionInstruction(content) ? "inspect-typography" : isBrandSourceRefreshInstruction(content) ? "refresh-brand" : undefined, useWeb: true }) });
+      const response = await apiFetch("/api/chat", { method: "POST", body: JSON.stringify({ projectId: workspace.id, activeCampaignRunId, workspace: routedWorkspace, history: nextHistory, message: routedContext, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, uiContext: { page: currentPage, campaignSection, selectedRunId: activeCampaignRunId, selectedNewsletterId }, intent: isTypographyInspectionInstruction(content) ? "inspect-typography" : isBrandSourceRefreshInstruction(content) ? "refresh-brand" : undefined, useWeb: true }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The project assistant could not reply.");
       if (data.assetAction?.jobs && activeCampaignRunId) window.dispatchEvent(new CustomEvent("market-agent-delivery-updated", { detail: { runId: activeCampaignRunId, jobs: data.assetAction.jobs } }));
@@ -735,9 +759,10 @@ function ProjectChat({ userId, workspace, currentPage, activeCampaignRunId, open
     {open && <aside className="op-project-chat" aria-label="Project chat">
       <header><span><Sparkles size={17} /></span><div><strong>Project agent</strong><small>{workspace.name || "Current project"} · memory on</small></div><button onClick={onClose} aria-label="Close project chat"><X size={17} /></button></header>
       <div className="op-project-chat__messages" ref={scrollRef}>
+        {archivedMessageCount > 0 && <div className="op-project-chat__archive-note"><Bookmark size={12} /><small>Earlier conversations are archived. Pinned notes and relevant history remain in the agent’s memory.</small></div>}
         {guide && <div className="assistant op-project-chat__guide"><span><Sparkles size={13} /></span><div><p>{guide.message}</p><div className="op-project-chat__guide-actions">{guide.targetId && <button onClick={onGuideHelp}>Help me connect{guide.targetName ? ` ${guide.targetName}` : ""}</button>}<button className="secondary" onClick={onGuideLater}>I’ll do it later</button></div></div></div>}
         {messages.length === 0 && !guide && <div className="assistant"><span><Sparkles size={13} /></span><p>I’m here throughout the workspace. Ask me anything, correct the strategy, or give me an instruction—I’ll answer and remember it for this project.</p></div>}
-        {messages.map((message) => <div className={message.role} key={message.id}><span>{message.role === "assistant" ? <Sparkles size={13} /> : "You"}</span><div className="op-project-chat__message"><p>{message.content}</p>{message.attachments?.length ? <div className="op-project-chat__message-assets">{message.attachments.map((asset) => <span key={asset.id}>{asset.kind === "image" ? <ImageIcon size={12} /> : asset.kind === "video" ? <Video size={12} /> : <FileText size={12} />}<b>{asset.name}</b><small>{asset.destinations.map(assetDestinationLabel).join(" + ")}</small></span>)}</div> : null}</div></div>)}
+        {messages.map((message) => <div className={message.role} key={message.id}><span>{message.role === "assistant" ? <Sparkles size={13} /> : "You"}</span><div className="op-project-chat__message"><p>{message.content}</p>{message.attachments?.length ? <div className="op-project-chat__message-assets">{message.attachments.map((asset) => <span key={asset.id}>{asset.kind === "image" ? <ImageIcon size={12} /> : asset.kind === "video" ? <Video size={12} /> : <FileText size={12} />}<b>{asset.name}</b><small>{asset.destinations.map(assetDestinationLabel).join(" + ")}</small></span>)}</div> : null}<button className={`op-project-chat__pin ${pinnedMessages.has(message.id) ? "pinned" : ""}`} onClick={() => void pinMessage(message)} disabled={pinnedMessages.has(message.id)} title="Pin this message to project memory"><Bookmark size={11} />{pinnedMessages.has(message.id) ? "Pinned" : "Remember"}</button></div></div>)}
         {sending && <div className="assistant thinking"><span><LoaderCircle className="spin" size={13} /></span><p>{uploadingLabel || "Reading the project and your message…"}</p></div>}
       </div>
       {attachments.length > 0 && <div className="op-project-chat__attachments">{attachments.map((file, index) => <span key={`${file.name}-${file.size}`}><Paperclip size={12} /><b>{file.name}</b><button onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${file.name}`}><X size={12} /></button></span>)}</div>}
@@ -748,6 +773,14 @@ function ProjectChat({ userId, workspace, currentPage, activeCampaignRunId, open
 
 function assetDestinationLabel(value: string) {
   return ({ content: "Content Library", brand: "Brand", campaign: "Campaign" } as Record<string, string>)[value] || value;
+}
+
+function localChatDay(value: Date) {
+  if (!Number.isFinite(value.getTime())) return "";
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function isBrandSourceRefreshInstruction(value: string) {

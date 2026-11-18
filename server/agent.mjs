@@ -2663,6 +2663,7 @@ function buildContext(workspace) {
   const projectMemory = Array.isArray(workspace.chatMessages)
     ? workspace.chatMessages.slice(-16).map((item) => `${item?.role === "assistant" ? "Agent" : "User"}: ${String(item?.content || "").slice(0, 3000)}`).join("\n")
     : "";
+  const longTermMemory = String(workspace.conversationMemory || "").trim().slice(0, 18_000);
   const growth = operatorGrowthPlan(workspace);
   return `
   BRAND WORKSPACE
@@ -2675,6 +2676,9 @@ Website: ${workspace.website || "Not supplied"}
   Brand voice: ${workspace.voice || "Not supplied"}
 Claims and guardrails: ${workspace.guardrails || "No claims supplied; do not invent any."}
   Additional brand notes: ${workspace.notes || "None supplied"}
+
+PROJECT MEMORY
+${longTermMemory || "No pinned notes or relevant earlier conversation were retrieved."}
 
 EMAIL IDENTITY
 Sender name: ${workspace.emailIdentity?.senderName || "Not supplied — ask before presenting an email as ready"}

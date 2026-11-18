@@ -17,6 +17,7 @@ import { createNewsletterDraft, deliverNewsletter, getContactImportDetails, getN
 import { getAgentPerformanceContext } from "./growth.mjs";
 import { getConnectionStatus } from "./connections.mjs";
 import { createBrandLogoAccessUrl, getBrandLogo } from "./brand-logos.mjs";
+import { archiveProjectConversationDays, getProjectConversationMemory, pinProjectConversationNote } from "./conversation-memory.mjs";
 
 const port = Number(process.env.PORT || 8787);
 
@@ -162,9 +163,23 @@ const server = http.createServer(async (req, res) => {
       }
       const userApiEnv = await loadUserApiEnv(userId);
       await consumeAiUsage(userId, "chat", userApiEnv);
-      return json(res, 200, await runProjectConversation(payload, userApiEnv));
+      const projectId = String(payload?.projectId || payload?.workspace?.id || "project-default");
+      const conversationMemory = await getProjectConversationMemory(userId, projectId, payload?.message, payload?.timeZone).catch(() => "");
+      void archiveProjectConversationDays(userId, projectId, payload?.timeZone).catch(() => undefined);
+      return json(res, 200, await runProjectConversation({ ...payload, workspace: { ...(payload?.workspace || {}), conversationMemory } }, userApiEnv));
     } catch (error) {
       return json(res, error.statusCode || 500, { error: error.message || "The project assistant could not reply." });
+    }
+  }
+
+  if (req.method === "POST" && req.url === "/api/memory") {
+    try {
+      const { userId } = await requireUser(req);
+      const payload = await readJson(req);
+      if (payload?.action !== "pin") return json(res, 400, { error: "Unsupported memory action." });
+      return json(res, 200, await pinProjectConversationNote(userId, String(payload?.projectId || ""), payload?.note, payload?.timeZone));
+    } catch (error) {
+      return json(res, error.statusCode || 500, { error: error.message || "The project note could not be saved." });
     }
   }
 

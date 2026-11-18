@@ -7,6 +7,8 @@ import { findProjectAssetForInstruction, listProjectAssets, updateProjectAsset }
 import { replaceDeliveryMediaFromAsset } from "../server/delivery.mjs";
 import { createNewsletterDraft, getNewsletterActionContext, updateLatestNewsletterLink, updateLatestNewsletterLogo, updateNewsletterDraft, updateOptinCampaign } from "../server/newsletters.mjs";
 import { getCampaignActionContext, updateCampaignLink, updateCampaignText } from "../server/campaign-edits.mjs";
+import { archiveProjectConversationDays, getProjectConversationMemory } from "../server/conversation-memory.mjs";
+import { waitUntil } from "@vercel/functions";
 
 export const config = { maxDuration: 120 };
 
@@ -19,6 +21,10 @@ export default async function handler(req, res) {
     const connections = await getConnectionStatus(userId, projectId);
     const library = await listProjectAssets(userId, projectId, userApiEnv).catch(() => ({ assets: [] }));
     const message = String(req.body?.message || "");
+    const timeZone = String(req.body?.timeZone || "UTC");
+    const conversationMemory = await getProjectConversationMemory(userId, projectId, message, timeZone).catch(() => "");
+    const rememberedWorkspace = { ...(req.body?.workspace || {}), conversationMemory };
+    waitUntil(archiveProjectConversationDays(userId, projectId, timeZone).catch(() => undefined));
     const runId = String(req.body?.activeCampaignRunId || "").slice(0, 200);
     let assetAction = null;
     let newsletterAction = null;
@@ -69,7 +75,7 @@ export default async function handler(req, res) {
         getNewsletterActionContext(userId, projectId, { newsletterId: uiContext.selectedNewsletterId }).catch(() => ({ newsletter: null, invitation: null })),
         getCampaignActionContext(userId, projectId, campaignRunIdForContext).catch(() => null),
       ]);
-      const actionWorkspace = { ...(req.body?.workspace || {}), contentLibraryAssets: libraryContext };
+      const actionWorkspace = { ...rememberedWorkspace, contentLibraryAssets: libraryContext };
       let plan;
       if (newsletterContext.invitation && isInvitationEditRequest(message)) {
         const revision = await rewriteProspectInvitation({ workspace: actionWorkspace, invitation: newsletterContext.invitation, message }, userApiEnv);
@@ -102,7 +108,7 @@ export default async function handler(req, res) {
         });
       }
     }
-    const result = await runProjectConversation({ ...(req.body || {}), projectId, message: completedContext, workspace: { ...(req.body?.workspace || {}), contentLibraryAssets: libraryContext }, connections }, userApiEnv);
+    const result = await runProjectConversation({ ...(req.body || {}), projectId, message: completedContext, workspace: { ...rememberedWorkspace, contentLibraryAssets: libraryContext }, connections }, userApiEnv);
     return res.status(200).json({ ...result, assetAction, newsletterAction, newsletterLogoAction, campaignAction });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message || "The project assistant could not reply." });

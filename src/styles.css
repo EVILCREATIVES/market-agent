@@ -1946,6 +1946,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-project-chat__messages > div { display: flex; align-items: flex-start; gap: 7px; max-width: 92%; }
 .op-project-chat__messages > div > span { flex: 0 0 auto; min-width: 25px; height: 25px; border-radius: 8px; background: #e9e4fb; color: #684bc7; display: grid; place-items: center; font-size: 7.5px; font-weight: 800; }
 .op-project-chat__message { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.op-project-chat__archive-note { align-self: stretch; max-width: 100% !important; padding: 8px 9px; border: 1px solid #ddd7ec; border-radius: 9px; background: #f7f4ff; color: #6f638a; display: flex; align-items: center !important; gap: 7px !important; font-size: 7.5px; line-height: 1.4; }
+.op-project-chat__archive-note > svg { flex: 0 0 auto; color: #6a4eca; }
 .op-project-chat__messages p { margin: 0; padding: 9px 10px; border: 1px solid #dfdcd4; border-radius: 4px 11px 11px 11px; background: white; color: #43413b; font-size: 9px; line-height: 1.55; white-space: pre-wrap; }
 .op-project-chat__messages .user { align-self: flex-end; flex-direction: row-reverse; }
 .op-project-chat__messages .user > span { background: #33322f; color: white; }
@@ -1954,6 +1956,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-project-chat__message-assets > span { min-width: 0; padding: 7px 8px; border: 1px solid #ddd8ec; border-radius: 8px; background: #faf8ff; color: #51486a; display: grid; grid-template-columns: 14px minmax(0,1fr); gap: 2px 6px; align-items: center; }
 .op-project-chat__message-assets b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 8px; }
 .op-project-chat__message-assets small { grid-column: 2; color: #837997; font-size: 7px; }
+.op-project-chat__pin { align-self: flex-start; border: 0; background: transparent; color: #877f95; padding: 2px 4px; display: inline-flex; align-items: center; gap: 3px; font-size: 6.8px; font-weight: 700; cursor: pointer; }
+.op-project-chat__messages .user .op-project-chat__pin { align-self: flex-end; }
+.op-project-chat__pin:hover, .op-project-chat__pin.pinned { color: #6548c4; }
+.op-project-chat__pin:disabled { cursor: default; opacity: 1; }
 .op-project-chat__messages .thinking p { color: #807d76; }
 .op-project-chat__messages > .op-project-chat__guide { max-width: 100%; }
 .op-project-chat__guide > div { min-width: 0; display: flex; flex-direction: column; gap: 8px; }

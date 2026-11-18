@@ -43,7 +43,14 @@ export async function loadStateForUser(userId, env = process.env) {
     database.query("SELECT state, revision FROM market_agent_states WHERE user_id = $1", [userId]),
     database.query("SELECT data FROM market_agent_runs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 250", [userId]).catch(() => ({ rows: [] })),
     database.query("SELECT project_id, data FROM market_agent_schedules WHERE user_id = $1", [userId]).catch(() => ({ rows: [] })),
-    database.query("SELECT project_id, data FROM market_agent_project_messages WHERE user_id = $1 ORDER BY created_at ASC", [userId]).catch(() => ({ rows: [] })),
+    database.query(
+      `SELECT project_id,data,created_at FROM (
+         SELECT project_id,data,created_at,
+                ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY created_at DESC) AS message_rank
+         FROM market_agent_project_messages WHERE user_id = $1
+       ) recent WHERE message_rank <= 80 ORDER BY project_id,created_at ASC`,
+      [userId],
+    ).catch(() => ({ rows: [] })),
   ]);
   if (!result.rows[0]) return { state: defaultState(), isEmpty: true, revision: 0 };
   const state = normalizeState(result.rows[0].state);
