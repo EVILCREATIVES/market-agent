@@ -33,6 +33,7 @@ test("invitation templates personalize one recipient and keep the approved proje
     "Hi Alex,\n\nUpdates for Venue One: https://visit-lumen.com/",
   );
   assert.equal(personalizeInvitationTemplate("Hi {{first_name}}", {}, ""), "Hi there");
+  assert.equal(personalizeInvitationTemplate("Hi {{first_name}}\n\n{{invitation_button}}", { firstName: "Alex" }, "https://visit-lumen.com/"), "Hi Alex\n\nhttps://visit-lumen.com/");
 });
 
 test("invitation delivery renders the approved brand, message, action, and opt-out", () => {

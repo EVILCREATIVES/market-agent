@@ -1292,7 +1292,7 @@ function serializeOptinCampaign(row, env, workspace = {}) {
   const projectName = cleanHeader(workspace?.name, 100) || "the project";
   const defaultSubject = invitationStrategy === "project_first" ? `An invitation to explore ${projectName}` : `An invitation from ${projectName}`;
   const defaultBody = invitationStrategy === "project_first"
-    ? `Hi {{first_name}},\n\nI thought ${projectName} might be relevant to your work. I’d like to invite you to explore it here:\n\n{{invitation_url}}\n\nIf the project is useful, you can choose to subscribe for future updates from the site. If it is not relevant, no action is needed.`
+    ? `Hi {{first_name}},\n\nI thought ${projectName} might be relevant to your work. I’d like to invite you to explore it here:\n\n{{invitation_button}}\n\nIf the project is useful, you can choose to subscribe for future updates from the site. If it is not relevant, no action is needed.`
     : normalizeInvitationBody("", workspace);
   return {
     id: row.id,
@@ -1304,7 +1304,7 @@ function serializeOptinCampaign(row, env, workspace = {}) {
     privacyNote: row.privacy_note || "Confirm your email to subscribe. Unsubscribe at any time.",
     promotionText: row.promotion_text || "",
     invitationSubject: row.invitation_subject || defaultSubject,
-    invitationBody: row.invitation_body || defaultBody,
+    invitationBody: normalizeInvitationBody(row.invitation_body || defaultBody, workspace),
     invitationStrategy,
     invitationCtaLabel: row.invitation_cta_label || (invitationStrategy === "direct_signup" ? "Subscribe" : "Explore the project"),
     invitationUrl,
@@ -1320,9 +1320,10 @@ function normalizeInvitationBody(value, workspace = {}) {
   let body = cleanText(value, 20_000);
   if (!body) {
     const name = cleanHeader(workspace?.name, 100) || "our team";
-    body = `Hi {{first_name}},\n\nI thought you might find ${name}'s updates useful. If you would like to receive them, you can review the details and subscribe here:\n\n{{invitation_url}}\n\nIf this is not relevant, no action is needed.`;
+    body = `Hi {{first_name}},\n\nI thought you might find ${name}'s updates useful. If you would like to receive them, you can review the details and subscribe here:\n\n{{invitation_button}}\n\nIf this is not relevant, no action is needed.`;
   }
-  if (!body.includes("{{invitation_url}}") && !body.includes("{{signup_url}}") && !/https:\/\//i.test(body)) body = `${body}\n\n{{invitation_url}}`;
+  body = body.replaceAll("{{signup_url}}", "{{invitation_button}}").replaceAll("{{invitation_url}}", "{{invitation_button}}");
+  if (!body.includes("{{invitation_button}}") && !/https:\/\//i.test(body)) body = `${body}\n\n{{invitation_button}}`;
   return body;
 }
 

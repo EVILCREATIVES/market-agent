@@ -3,7 +3,7 @@ import { planProjectInterfaceActions, rewriteProspectInvitation, runProjectConve
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 import { consumeAiUsage } from "../server/billing.mjs";
 import { getConnectionStatus } from "../server/connections.mjs";
-import { findProjectAssetForInstruction, listProjectAssets } from "../server/assets.mjs";
+import { findProjectAssetForInstruction, listProjectAssets, updateProjectAsset } from "../server/assets.mjs";
 import { replaceDeliveryMediaFromAsset } from "../server/delivery.mjs";
 import { createNewsletterDraft, getNewsletterActionContext, updateLatestNewsletterLink, updateLatestNewsletterLogo, updateNewsletterDraft, updateOptinCampaign } from "../server/newsletters.mjs";
 import { getCampaignActionContext, updateCampaignLink, updateCampaignText } from "../server/campaign-edits.mjs";
@@ -86,7 +86,7 @@ export default async function handler(req, res) {
           editable: { uiContext, newsletter: newsletterContext.newsletter, invitation: newsletterContext.invitation, campaign: campaignContext },
         }, userApiEnv);
       }
-      const execution = await executeInterfaceActions({ userId, projectId, runId: campaignRunIdForContext, workspace: req.body?.workspace || {}, plan, newsletterContext, userApiEnv });
+      const execution = await executeInterfaceActions({ userId, projectId, runId: campaignRunIdForContext, workspace: req.body?.workspace || {}, plan, newsletterContext, libraryContext, userApiEnv });
       if (execution.attempted) {
         return res.status(200).json({
           reply: execution.reply,
@@ -96,6 +96,7 @@ export default async function handler(req, res) {
           newsletterLogoAction,
           invitationAction: execution.invitationAction,
           campaignAction: execution.campaignAction,
+          libraryAction: execution.libraryAction,
           workspaceUpdate: execution.workspaceUpdate,
           interfaceActions: execution.results,
         });
@@ -108,7 +109,7 @@ export default async function handler(req, res) {
   }
 }
 
-async function executeInterfaceActions({ userId, projectId, runId, workspace, plan, newsletterContext, userApiEnv }) {
+async function executeInterfaceActions({ userId, projectId, runId, workspace, plan, newsletterContext, libraryContext, userApiEnv }) {
   const actions = Array.isArray(plan?.actions) ? plan.actions.filter((action) => action?.type && action.type !== "none") : [];
   if (!actions.length) return { attempted: false, results: [] };
   const results = [];
@@ -116,6 +117,7 @@ async function executeInterfaceActions({ userId, projectId, runId, workspace, pl
   let newsletterAction = null;
   let invitationAction = null;
   let campaignAction = null;
+  let libraryAction = null;
   for (const action of actions.slice(0, 6)) {
     try {
       if (action.type === "update_workspace") {
@@ -142,10 +144,37 @@ async function executeInterfaceActions({ userId, projectId, runId, workspace, pl
       if (action.type === "update_newsletter") {
         const targetId = String(action.targetId || newsletterContext?.newsletter?.id || "");
         if (!targetId) throw new Error("There is no editable newsletter draft in this project.");
-        const changes = compactChanges({ subject: action.subject, previewText: action.previewText, headline: action.headline, introduction: action.body, closing: action.closing, ctaLabel: action.ctaLabel, ctaUrl: action.url });
+        const changes = compactChanges({
+          subject: action.subject,
+          previewText: action.previewText,
+          headline: action.headline,
+          introduction: action.body,
+          closing: action.closing,
+          ctaLabel: action.ctaLabel,
+          ctaUrl: action.url,
+          heroImageUrl: action.heroImageUrl,
+          heroImageAlt: action.heroImageAlt,
+          logoVariantId: action.logoVariantId,
+          senderName: action.senderName,
+          businessDetails: action.businessDetails,
+          physicalAddress: action.physicalAddress,
+          addressPreference: action.addressPreference,
+        });
         if (!Object.keys(changes).length) throw new Error("The instruction did not contain a concrete newsletter change.");
         newsletterAction = await updateNewsletterDraft(userId, projectId, targetId, changes);
         results.push({ type: action.type, status: "completed", detail: `Updated newsletter “${newsletterAction.draft.content.subject}” and regenerated its preview.` });
+        continue;
+      }
+      if (action.type === "update_asset") {
+        const target = (Array.isArray(libraryContext) ? libraryContext : []).find((item) => item.id === action.targetId)
+          || (Array.isArray(libraryContext) ? libraryContext : []).find((item) => String(item.name || "").toLowerCase() === String(action.name || "").toLowerCase());
+        if (!target?.id) throw new Error("The requested Content Library asset was not found.");
+        libraryAction = await updateProjectAsset(userId, {
+          id: target.id,
+          name: String(action.name || target.name || "").trim(),
+          summary: String(action.body || target.summary || "").trim(),
+        }, userApiEnv);
+        results.push({ type: action.type, status: "completed", detail: `Updated the Content Library asset “${libraryAction.asset.name}”.` });
         continue;
       }
       if (action.type === "create_newsletter") {
@@ -177,6 +206,7 @@ async function executeInterfaceActions({ userId, projectId, runId, workspace, pl
     newsletterAction,
     invitationAction,
     campaignAction,
+    libraryAction,
   };
 }
 
@@ -189,21 +219,25 @@ function applyWorkspaceField(patch, workspace, field, rawValue) {
   if (!field || !value) return false;
   const [group, key] = String(field).split(".");
   if (!key) {
-    const allowed = ["name", "website", "description", "segmentation", "positioning", "manifesto", "audience", "valueProposition", "voice", "guardrails", "notes"];
+    const allowed = ["name", "website", "description", "segmentation", "positioning", "manifesto", "audience", "valueProposition", "voice", "guardrails", "notes", "reviewSummary", "sourcePriority", "sourceGuidance"];
     if (!allowed.includes(group)) return false;
+    if (group === "sourcePriority" && !["best-evidence", "website", "deck"].includes(value)) return false;
     patch[group] = value;
     return true;
   }
   const allowed = {
     brand: ["primaryColor", "secondaryColor", "accentColor", "neutralLightColor", "neutralDarkColor", "typography", "lookAndFeel", "photographyStyle", "imageryStyle", "notes"],
     emailIdentity: ["senderName", "businessDetails", "physicalAddress", "addressPreference"],
-    growth: ["objective", "primaryConversion", "analyticsEvent", "rationale"],
+    growth: ["objective", "primaryConversion", "analyticsEvent", "rationale", "targetValue", "targetPeriodDays"],
+    issueNotes: ["high", "attention", "context"],
   };
   if (!allowed[group]?.includes(key)) return false;
   if (group === "emailIdentity" && key === "addressPreference" && !["ask", "include", "omit"].includes(value)) return false;
   if (group === "growth" && key === "objective" && !["visibility", "leads", "sales", "audience", "newsletter"].includes(value)) return false;
   if (group === "growth" && key === "primaryConversion" && !["contact_form", "demo_request", "newsletter_signup", "purchase", "reply", "custom"].includes(value)) return false;
-  patch[group] = { ...(workspace?.[group] || {}), ...(patch[group] || {}), [key]: value };
+  const nextValue = group === "growth" && ["targetValue", "targetPeriodDays"].includes(key) ? Number(value) : value;
+  if (typeof nextValue === "number" && (!Number.isFinite(nextValue) || nextValue < 0)) return false;
+  patch[group] = { ...(workspace?.[group] || {}), ...(patch[group] || {}), [key]: nextValue };
   return true;
 }
 
@@ -213,7 +247,7 @@ function friendlyField(field) {
 
 function mayRequestInterfaceAction(value) {
   const message = String(value || "").toLowerCase();
-  const subject = /\b(email|e-mail|newsletter|invitation|message|messaggio|campaign|campagna|copy|caption|subject|body|link|url|logo|brand|profile|positioning|manifesto|audience|sender|address|asset|video|image)\b/i.test(message);
+  const subject = /\b(email|e-mail|newsletter|invitation|message|messaggio|campaign|campagna|copy|caption|subject|body|link|url|logo|brand|profile|positioning|manifesto|audience|sender|address|asset|video|image|name|description|segmentation|voice|guardrails?|notes?|issues?|colors?|palette|typography|photography|goal|conversion|analytics|website|demo|headline|preview|signature|cta|button)\b/i.test(message);
   const instruction = /\b(update|change|replace|rewrite|revise|fix|correct|edit|add|remove|use|save|create|make|set|move|swap|improve|redo|apply|start)\b/i.test(message);
   const rejection = /\b(wrong|awful|bad|terrible|shit|bullshit|useless|stupid|confusing|nothing happens|does not work|doesn't work|did not|didn't|don['’]t like|do not like|cazzo|merda|schifo)\b/i.test(message);
   return subject && (instruction || rejection);

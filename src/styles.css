@@ -2885,12 +2885,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-invitation-csv { display: grid; gap: 6px; }
 .op-invitation-csv small { color: #858079; font-size: 10px; line-height: 1.4; }
 
-.op-invitation-empty { display: grid; grid-template-columns: minmax(220px,.7fr) minmax(320px,1.2fr) auto; gap: 18px; align-items: end; }
+.op-invitation-empty { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 18px; align-items: end; }
 .op-invitation-empty textarea { min-height: 82px; resize: vertical; }
 .op-invitation-builder { display: grid; grid-template-columns: minmax(340px,.92fr) minmax(390px,1.08fr); gap: 22px; align-items: start; margin-top: 18px; }
 .op-invitation-controls { display: grid; gap: 13px; padding: 18px; border: 1px solid #e0dce7; border-radius: 12px; background: #fff; }
 .op-invitation-controls textarea { min-height: 84px; resize: vertical; }
 .op-invitation-controls textarea.message { min-height: 230px; }
+.op-invitation-token-help { color: #77716b; font-size: 10px; font-weight: 500; line-height: 1.45; }
+.op-invitation-token-help code { padding: 2px 5px; border-radius: 5px; background: #eee8ff; color: #6047bd; font: 700 10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }
 .op-invitation-assistant { padding: 14px; border-radius: 10px; background: #f3effd; display: grid; gap: 10px; }
 .op-invitation-assistant textarea { border-color: #cec1ef; }
 .op-invitation-assistant button { justify-self: start; }
@@ -2912,6 +2914,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-invitation-email-action > a { display: inline-flex; margin: 0 0 8px; padding: 12px 17px; border-radius: 7px; background: var(--invitation-primary,#6e50d7); color: #fff; font-size: 12px; font-weight: 800; text-decoration: none; }
 .op-invitation-email-canvas a.inline-destination { color: var(--invitation-primary,#6e50d7); overflow-wrap: anywhere; }
 .op-invitation-email-canvas main small.destination { display: block; color: #77736c; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.op-invitation-email-canvas main small.destination a { color: var(--invitation-primary,#6e50d7); }
 .op-invitation-email-canvas main > small.destination.missing { margin: 4px 0 20px; padding: 10px; border-radius: 7px; background: #fff1ed; color: #9b4337; font-weight: 700; }
 .op-invitation-email-canvas main p.signature { margin-top: 8px; font-size: 12px; font-weight: 650; }
 .op-invitation-email-canvas > footer { padding: 17px 28px; background: #f2f1ee; color: #6f6a63; font-size: 10px; line-height: 1.45; }

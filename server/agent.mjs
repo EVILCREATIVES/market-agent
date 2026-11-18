@@ -206,7 +206,7 @@ ${direction || "Choose the strongest honest reason for this project's relevant a
 STAGED PROSPECT CONTEXT
 ${prospectCount} prospect contact${prospectCount === 1 ? " is" : "s are"} staged for a single direct invitation. They are not subscribers and must never be described as subscribers. Market Agent will send one individual message per address only after the user reviews and approves the campaign; every message includes an opt-out, and recipients who opt out are suppressed.
 
-Choose invitationStrategy deliberately. Use "project_first" when the strongest action is to visit a website, experience a demo, review work, request a demo, or understand the offer before subscribing. Use "direct_signup" only when the newsletter itself is the primary offer. Give invitationCtaLabel a specific action such as "Visit the demo", "View the work", "Request a demo", or "Subscribe". Write concise, finished copy grounded only in supplied facts. Do not promise unavailable content, customers, results, discounts, pilots, or access. Do not mention the staged contact list, internal systems, or drafting process. The invitation must not imply an existing relationship or claim that the recipient already subscribed. It should read like a respectful, useful introduction—not a newsletter issue. Use {{first_name}} only where a natural greeting helps, and use {{company}} only where the sentence remains correct if it is empty. The invitation body must contain {{invitation_url}} exactly once as the clear action. If the chosen strategy is project_first, subscription may be presented as an optional next step available at the destination—not the main request. The privacy note should plainly say that confirmation is required and the subscriber may unsubscribe at any time.`;
+Choose invitationStrategy deliberately. Use "project_first" when the strongest action is to visit a website, experience a demo, review work, request a demo, or understand the offer before subscribing. Use "direct_signup" only when the newsletter itself is the primary offer. Give invitationCtaLabel a specific action such as "Visit the demo", "View the work", "Request a demo", or "Subscribe". Write concise, finished copy grounded only in supplied facts. Do not promise unavailable content, customers, results, discounts, pilots, or access. Do not mention the staged contact list, internal systems, or drafting process. The invitation must not imply an existing relationship or claim that the recipient already subscribed. It should read like a respectful, useful introduction—not a newsletter issue. Use {{first_name}} only where a natural greeting helps, and use {{company}} only where the sentence remains correct if it is empty. The invitation body must contain the movable {{invitation_button}} object exactly once where the action should appear. If the chosen strategy is project_first, subscription may be presented as an optional next step available at the destination—not the main request. The privacy note should plainly say that confirmation is required and the subscriber may unsubscribe at any time.`;
   return generateStructuredObject({
     env,
     name: "prospect_conversion_campaign",
@@ -302,9 +302,17 @@ ${JSON.stringify(editable, null, 2).slice(0, 36_000)}
 USER MESSAGE
 ${message}
 
-Decide whether this message asks Market Agent to change something already editable in the app. The assistant is an operator: when the user asks for an edit, correction, rewrite, replacement, or clearly rejects current draft copy, return the exact low-risk in-app action required to save the correction now. The uiContext page and campaignSection identify what the user is looking at and are authoritative: on Campaigns, edit the matching visible campaign, invitation, or newsletter record; do not update Brand unless the message explicitly says Brand. A frustrated reaction to a visible email, invitation, newsletter, or campaign draft means improve that draft rather than merely apologizing. Use the supplied target id when present. Preserve fields the user did not ask to change by returning an empty string for them.
+Decide whether this message asks Market Agent to change something already editable in the app. The assistant is an operator: when the user asks for an edit, correction, rewrite, replacement, or clearly rejects current draft copy, return the exact low-risk in-app action required to save the correction now. The uiContext page and campaignSection identify what the user is looking at and are authoritative: on Campaigns, edit the matching visible campaign, invitation, or newsletter record; do not update Brand unless the message explicitly says Brand. A frustrated reaction to a visible email, invitation, newsletter, campaign draft, Brand field, or Content Library item means improve that saved record rather than merely apologizing. Use the supplied target id when present. Preserve fields the user did not ask to change by returning an empty string for them.
 
-Never infer a Brand-source refresh merely because draft copy contains words such as “updates” and “site”. Only update a Brand field when the user explicitly asks to edit that Brand information. Never send, schedule, publish, connect an account, spend money, delete data, or alter an already sent item. Those external or destructive operations require their existing approval flow. Never claim an action succeeded here; this step only describes actions that the server will attempt and verify. If the user is asking a question, giving general product feedback, or requesting an unsupported/destructive/external action, return no actions. For a campaign text edit, copy an exact existing excerpt into findText and put the complete replacement in replacementText. For an invitation or newsletter rewrite, return complete, ready-to-use copy without commentary or bracket placeholders, except the supported merge token {{first_name}} and the required invitation link token {{invitation_url}}.`;
+Supported saved actions:
+- update_workspace changes a specific project, Brand, email identity, issue-note, source-preference, or growth field.
+- update_invitation changes the complete saved invitation and must preserve {{invitation_button}} exactly once.
+- update_newsletter changes saved newsletter copy, link, hero, logo selection, sender, contact details, or address preference.
+- create_newsletter creates a complete draft from the user's direction.
+- update_campaign_text changes exact text inside the visible saved campaign.
+- update_asset changes the name and/or summary of a Content Library item. Use the asset id from contentLibraryAssets; put the final name in name and final summary in body, leaving either empty to preserve it.
+
+Never infer a Brand-source refresh merely because draft copy contains words such as “updates” and “site”. Only update a Brand field when the user explicitly asks to edit that Brand information. Never send, schedule, publish, connect an account, spend money, delete data, or alter an already sent item. Those external or destructive operations require their existing approval flow. Never claim an action succeeded here; this step only describes actions that the server will attempt and verify. If the user is asking a question, giving general product feedback, or requesting an unsupported/destructive/external action, return no actions. For a campaign text edit, copy an exact existing excerpt into findText and put the complete replacement in replacementText. For an invitation or newsletter rewrite, return complete, ready-to-use copy without commentary or bracket placeholders, except the supported merge token {{first_name}} and the required movable action token {{invitation_button}}.`;
   return generateStructuredObject({
     env,
     name: "project_interface_actions",
@@ -339,7 +347,7 @@ ${JSON.stringify(invitation, null, 2).slice(0, 12_000)}
 USER CORRECTION
 ${direction}
 
-Rewrite the saved prospect invitation exactly as requested. This is an invitation to one prospect, not a newsletter. Keep it human and specific. Do not describe the workflow, do not add headings such as RECIPIENT PREVIEW, and do not add bracket placeholders. {{first_name}} is allowed for the greeting and {{invitation_url}} must appear exactly once in the body. The token is filled at send time: never leave the url field empty. Unless the user explicitly supplies another link, use the saved project website shown above. If the user asks to change the link and gives a domain or URL, return that exact destination in url, normalized to https://. If the direction says people should experience a project or demo before deciding whether to subscribe, use project_first, direct them to the project website, and make subscription an optional later action rather than the email's request. The call to action must match the destination.`,
+Rewrite the saved prospect invitation exactly as requested. This is an invitation to one prospect, not a newsletter. Keep it human and specific. Do not describe the workflow, do not add headings such as RECIPIENT PREVIEW, and do not add bracket placeholders. {{first_name}} is allowed for the greeting and the movable {{invitation_button}} object must appear exactly once where the action should render. The object is filled at send time: never leave the url field empty. Unless the user explicitly supplies another link, use the saved project website shown above. If the user asks to change the link and gives a domain or URL, return that exact destination in url, normalized to https://. If the direction says people should experience a project or demo before deciding whether to subscribe, use project_first, direct them to the project website, and make subscription an optional later action rather than the email's request. The call to action must match the destination.`,
     schema: prospectInvitationRevisionSchema(),
   });
   return {
@@ -983,12 +991,13 @@ function projectInterfaceActionsSchema() {
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["type", "targetId", "field", "value", "subject", "previewText", "headline", "body", "closing", "ctaLabel", "url", "strategy", "findText", "replacementText", "direction", "reason"],
+          required: ["type", "targetId", "field", "value", "name", "subject", "previewText", "headline", "body", "closing", "ctaLabel", "url", "strategy", "findText", "replacementText", "direction", "reason", "heroImageUrl", "heroImageAlt", "logoVariantId", "senderName", "businessDetails", "physicalAddress", "addressPreference"],
           properties: {
-            type: { type: "string", enum: ["none", "update_workspace", "update_invitation", "update_newsletter", "create_newsletter", "update_campaign_text"] },
+            type: { type: "string", enum: ["none", "update_workspace", "update_invitation", "update_newsletter", "create_newsletter", "update_campaign_text", "update_asset"] },
             targetId: { type: "string" },
-            field: { type: "string", enum: ["", "name", "website", "description", "segmentation", "positioning", "manifesto", "audience", "valueProposition", "voice", "guardrails", "notes", "brand.primaryColor", "brand.secondaryColor", "brand.accentColor", "brand.neutralLightColor", "brand.neutralDarkColor", "brand.typography", "brand.lookAndFeel", "brand.photographyStyle", "brand.imageryStyle", "brand.notes", "emailIdentity.senderName", "emailIdentity.businessDetails", "emailIdentity.physicalAddress", "emailIdentity.addressPreference", "growth.objective", "growth.primaryConversion", "growth.analyticsEvent", "growth.rationale"] },
+            field: { type: "string", enum: ["", "name", "website", "description", "segmentation", "positioning", "manifesto", "audience", "valueProposition", "voice", "guardrails", "notes", "reviewSummary", "sourcePriority", "sourceGuidance", "issueNotes.high", "issueNotes.attention", "issueNotes.context", "brand.primaryColor", "brand.secondaryColor", "brand.accentColor", "brand.neutralLightColor", "brand.neutralDarkColor", "brand.typography", "brand.lookAndFeel", "brand.photographyStyle", "brand.imageryStyle", "brand.notes", "emailIdentity.senderName", "emailIdentity.businessDetails", "emailIdentity.physicalAddress", "emailIdentity.addressPreference", "growth.objective", "growth.primaryConversion", "growth.analyticsEvent", "growth.rationale", "growth.targetValue", "growth.targetPeriodDays"] },
             value: { type: "string" },
+            name: { type: "string" },
             subject: { type: "string" },
             previewText: { type: "string" },
             headline: { type: "string" },
@@ -1001,6 +1010,13 @@ function projectInterfaceActionsSchema() {
             replacementText: { type: "string" },
             direction: { type: "string" },
             reason: { type: "string" },
+            heroImageUrl: { type: "string" },
+            heroImageAlt: { type: "string" },
+            logoVariantId: { type: "string" },
+            senderName: { type: "string" },
+            businessDetails: { type: "string" },
+            physicalAddress: { type: "string" },
+            addressPreference: { type: "string", enum: ["", "ask", "include", "omit"] },
           },
         },
       },

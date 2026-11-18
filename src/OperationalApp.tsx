@@ -661,6 +661,7 @@ function ProjectChat({ userId, workspace, currentPage, activeCampaignRunId, open
       if (data.newsletterAction?.draft) window.dispatchEvent(new CustomEvent("market-agent-newsletter-updated", { detail: { projectId: workspace.id, draft: data.newsletterAction.draft } }));
       if (data.newsletterLogoAction?.draft) window.dispatchEvent(new CustomEvent("market-agent-newsletter-updated", { detail: { projectId: workspace.id, draft: data.newsletterLogoAction.draft } }));
       if (data.invitationAction?.campaign) window.dispatchEvent(new CustomEvent("market-agent-newsletter-updated", { detail: { projectId: workspace.id, campaign: data.invitationAction.campaign } }));
+      if (data.libraryAction?.assets) window.dispatchEvent(new CustomEvent("market-agent-assets-updated", { detail: { projectId: workspace.id, assets: data.libraryAction.assets, proposals: data.libraryAction.proposals } }));
       if (data.campaignAction?.run) onCampaignUpdated(data.campaignAction.run as AgentRun, Number(data.campaignAction.revision || 0));
       if (data.assetAction?.asset && activeCampaignRunId) onAttachToCampaign(activeCampaignRunId, {
         id: String(data.assetAction.asset.id),
@@ -687,7 +688,10 @@ function ProjectChat({ userId, workspace, currentPage, activeCampaignRunId, open
       const assistantMessage: ProjectChatMessage = { id: crypto.randomUUID(), role: "assistant", content: contactCompletion || newsletterLogoCompletion || newsletterCompletion || String(data.reply || "I saved that."), createdAt: data.createdAt || new Date().toISOString() };
       const workspaceUpdate = data.workspaceUpdate && typeof data.workspaceUpdate === "object" ? data.workspaceUpdate : null;
       const updatedTypographySystems = Array.isArray(workspaceUpdate?.brand?.typographySystems) ? workspaceUpdate.brand.typographySystems : null;
-      const refreshedIssueNotes = typeof workspaceUpdate?.notes === "string" && workspaceUpdate.notes !== routedWorkspace.notes ? mergeAnalyzedIssueNotes(routedWorkspace.issueNotes, classifyWorkspaceNotes(workspaceUpdate.notes)) : routedWorkspace.issueNotes;
+      const explicitIssueNotes = workspaceUpdate?.issueNotes && typeof workspaceUpdate.issueNotes === "object"
+        ? { ...(routedWorkspace.issueNotes || classifyWorkspaceNotes(routedWorkspace.notes || "")), ...workspaceUpdate.issueNotes }
+        : null;
+      const refreshedIssueNotes = explicitIssueNotes || (typeof workspaceUpdate?.notes === "string" && workspaceUpdate.notes !== routedWorkspace.notes ? mergeAnalyzedIssueNotes(routedWorkspace.issueNotes, classifyWorkspaceNotes(workspaceUpdate.notes)) : routedWorkspace.issueNotes);
       const refreshedMedia = workspaceUpdate && Array.isArray(workspaceUpdate.sourceMedia)
         ? workspaceUpdate.sourceMedia.map((item: Partial<SourceMediaAsset>) => ({
           id: item.id || crypto.randomUUID(),
@@ -715,6 +719,7 @@ function ProjectChat({ userId, workspace, currentPage, activeCampaignRunId, open
       else if (data.newsletterLogoAction?.draft) notify("Newsletter logo updated in Campaigns. Nothing was sent.");
       else if (data.newsletterAction?.draft) notify(interfaceActionTypes.length ? "Newsletter saved in Campaigns. Nothing was sent." : "Newsletter link updated in Campaigns. Nothing was sent.");
       else if (data.invitationAction?.campaign) notify("Invitation email updated in Campaigns. Nothing was sent.");
+      else if (data.libraryAction?.asset) notify("Content Library asset updated.");
       else if (attachmentRecords.length) notify(`${attachmentRecords.length} ${attachmentRecords.length === 1 ? "asset was" : "assets were"} analyzed and placed by the agent.`);
       else if (workspaceUpdate) notify("The requested project changes were saved.");
     } catch (error) {
@@ -1486,15 +1491,13 @@ function ChannelCampaignWorkspace({ channel, runs, jobs, connected, onOpen, onSt
   </div>;
 }
 
-function InvitationWorkspace({ dashboard, workspace, direction, onDirection, working, feedback, mailbox, subscriptionReady, onCreate, onUpdate, onRewrite, onTest, onSchedule, onConnect }: { dashboard: NewsletterDashboard; workspace: ProductWorkspace; direction: string; onDirection: (value: string) => void; working: string; feedback: string; mailbox: ConnectionStatus["gmail"]; subscriptionReady: boolean; onCreate: () => Promise<void>; onUpdate: (campaign: ProspectConversionCampaign, changes: Partial<ProspectConversionCampaign>) => Promise<void>; onRewrite: (campaign: ProspectConversionCampaign, focus: string) => Promise<void>; onTest: (campaign: ProspectConversionCampaign, subject: string, body: string, invitationUrl: string, invitationCtaLabel: string) => Promise<void>; onSchedule: (campaign: ProspectConversionCampaign, subject: string, body: string, invitationUrl: string, invitationCtaLabel: string, startAt: string, intervalMinutes: number, repeat?: boolean) => Promise<void>; onConnect: () => void }) {
+function InvitationWorkspace({ dashboard, workspace, working, feedback, mailbox, subscriptionReady, onCreate, onUpdate, onTest, onSchedule, onConnect }: { dashboard: NewsletterDashboard; workspace: ProductWorkspace; working: string; feedback: string; mailbox: ConnectionStatus["gmail"]; subscriptionReady: boolean; onCreate: () => Promise<void>; onUpdate: (campaign: ProspectConversionCampaign, changes: Partial<ProspectConversionCampaign>) => Promise<void>; onTest: (campaign: ProspectConversionCampaign, subject: string, body: string, invitationUrl: string, invitationCtaLabel: string) => Promise<void>; onSchedule: (campaign: ProspectConversionCampaign, subject: string, body: string, invitationUrl: string, invitationCtaLabel: string, startAt: string, intervalMinutes: number, repeat?: boolean) => Promise<void>; onConnect: () => void }) {
   const campaign = dashboard.conversionCampaigns?.[0] || null;
   const prospectCount = dashboard.prospectInvitationRecipientCount ?? dashboard.contactImports.reduce((sum, item) => sum + item.unknownCount, 0);
-  const [focus, setFocus] = useState(direction || "Invite people to visit the project and decide whether it is relevant.");
   const [draft, setDraft] = useState(() => campaign ? invitationDraft(campaign) : null);
   const [startAt, setStartAt] = useState(() => nextQuarterLocal());
   const [intervalMinutes, setIntervalMinutes] = useState(2);
   useEffect(() => setDraft(campaign ? invitationDraft(campaign) : null), [campaign?.id, campaign?.updatedAt]);
-  useEffect(() => { if (direction) setFocus(direction); }, [direction]);
   const changed = Boolean(campaign && draft && ["invitationSubject", "invitationBody", "invitationStrategy", "invitationCtaLabel", "invitationUrl"].some((key) => draft[key as keyof typeof draft] !== campaign[key as keyof ProspectConversionCampaign]));
   const invitation = campaign?.invitation || { total: 0, scheduled: 0, sent: 0, failed: 0, cancelled: 0, startsAt: null, endsAt: null };
   const save = () => campaign && draft ? onUpdate(campaign, draft) : Promise.resolve();
@@ -1505,17 +1508,16 @@ function InvitationWorkspace({ dashboard, workspace, direction, onDirection, wor
     invitationCtaLabel: strategy === "direct_signup" ? "Subscribe" : strategy === "project_first" ? "Try the project" : current.invitationCtaLabel,
   } : current);
 
-  if (!campaign || !draft) return <section className="op-invitation-workspace op-invitation-empty"><div><small>INVITE NEW PEOPLE</small><h2>Create one clear invitation</h2><p>Choose the outcome. The assistant writes the email; you can edit and test it before approving any delivery.</p></div><label><span>What should recipients do?</span><textarea value={direction} onChange={(event) => onDirection(event.target.value)} placeholder="Example: Try the LUMEN demo. Subscription is optional after the visit." /></label><button onClick={() => void onCreate()} disabled={working === "create-optin"}><Sparkles size={15} />{working === "create-optin" ? "Creating…" : "Create invitation"}</button></section>;
+  if (!campaign || !draft) return <section className="op-invitation-workspace op-invitation-empty"><div><small>INVITE NEW PEOPLE</small><h2>Let the agent prepare the invitation</h2><p>The agent uses the Brand, website, audience, and connected sender to create the complete editable email and preview. Nothing is sent without approval.</p></div><button onClick={() => void onCreate()} disabled={working === "create-optin"}><Sparkles size={15} />{working === "create-optin" ? "Preparing…" : "Prepare invitation"}</button></section>;
 
   return <section className="op-invitation-workspace">
     <header><div><small>INVITE NEW PEOPLE</small><h2>Invitation email</h2><p>One workflow: add recipients, choose the goal, write and preview the email, test it, then approve delivery.</p></div><em>{prospectCount.toLocaleString()} recipient{prospectCount === 1 ? "" : "s"}</em></header>
     {feedback && <div className="op-optin-feedback"><Check size={16} /><span>{feedback}</span></div>}
     <div className="op-invitation-builder">
       <div className="op-invitation-controls">
-        <label><span>Invitation goal</span><select value={draft.invitationStrategy} onChange={(event) => chooseGoal(event.target.value as ProspectConversionCampaign["invitationStrategy"])}><option value="project_first">Visit website or try demo</option><option value="direct_signup" disabled={!subscriptionReady}>Subscribe{subscriptionReady ? "" : " — connect newsletter first"}</option><option value="custom">Another action</option></select></label>
-        <div className="op-invitation-assistant"><label><span>How should the invitation be focused?</span><textarea value={focus} onChange={(event) => setFocus(event.target.value)} placeholder="Tell the assistant what the recipient should understand and do." /></label><button onClick={() => void onRewrite(campaign, focus)} disabled={!focus.trim() || working === `rewrite-${campaign.id}`}><WandSparkles size={14} />{working === `rewrite-${campaign.id}` ? "Writing…" : "Ask assistant to write"}</button></div>
+        <label><span>Agent-selected goal · change only if needed</span><select value={draft.invitationStrategy} onChange={(event) => chooseGoal(event.target.value as ProspectConversionCampaign["invitationStrategy"])}><option value="project_first">Visit website or try demo</option><option value="direct_signup" disabled={!subscriptionReady}>Subscribe{subscriptionReady ? "" : " — connect newsletter first"}</option><option value="custom">Another action</option></select></label>
         <label><span>Subject</span><input value={draft.invitationSubject} onChange={(event) => setDraft((current) => current && { ...current, invitationSubject: event.target.value })} /></label>
-        <label><span>Message</span><textarea className="message" value={draft.invitationBody} onChange={(event) => setDraft((current) => current && { ...current, invitationBody: event.target.value })} /></label>
+        <label><span>Message</span><small className="op-invitation-token-help">Move <code>{"{{invitation_button}}"}</code> anywhere in the message to reposition the complete button and link.</small><textarea className="message" value={draft.invitationBody} onChange={(event) => setDraft((current) => current && { ...current, invitationBody: event.target.value })} /></label>
         <div className="op-invitation-action-fields"><label><span>Button label</span><input value={draft.invitationCtaLabel} onChange={(event) => setDraft((current) => current && { ...current, invitationCtaLabel: event.target.value })} /></label><label><span>Destination</span><input type="url" value={draft.invitationUrl} onChange={(event) => setDraft((current) => current && { ...current, invitationUrl: event.target.value, invitationStrategy: "custom" })} /></label></div>
         <button className="primary" disabled={!changed || working === `optin-${campaign.id}`} onClick={() => void save()}><Save size={14} />{working === `optin-${campaign.id}` ? "Saving…" : "Save invitation"}</button>
       </div>
@@ -1534,7 +1536,7 @@ function InvitationWorkspace({ dashboard, workspace, direction, onDirection, wor
 }
 
 function invitationDraft(campaign: ProspectConversionCampaign) {
-  return { invitationSubject: campaign.invitationSubject, invitationBody: campaign.invitationBody, invitationStrategy: campaign.invitationStrategy, invitationCtaLabel: campaign.invitationCtaLabel, invitationUrl: campaign.invitationUrl };
+  return { invitationSubject: campaign.invitationSubject, invitationBody: campaign.invitationBody.replaceAll("{{signup_url}}", "{{invitation_button}}").replaceAll("{{invitation_url}}", "{{invitation_button}}"), invitationStrategy: campaign.invitationStrategy, invitationCtaLabel: campaign.invitationCtaLabel, invitationUrl: campaign.invitationUrl };
 }
 
 function InvitationEmailPreview({ workspace, draft }: { workspace: ProductWorkspace; campaign: ProspectConversionCampaign; draft: ReturnType<typeof invitationDraft> }) {
@@ -1547,14 +1549,25 @@ function InvitationEmailPreview({ workspace, draft }: { workspace: ProductWorksp
   const body = draft.invitationBody.replaceAll("{{first_name}}", "Alex").replaceAll("{{company}}", "Example venue").trim();
   const paragraphs = body.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
   const primary = /^#[0-9a-f]{6}$/i.test(workspace.brand.primaryColor) ? workspace.brand.primaryColor : "#6e50d7";
-  const destination = draft.invitationUrl || workspace.website;
-  const hasActionToken = paragraphs.some((paragraph) => /{{(?:invitation|signup)_url}}/.test(paragraph));
-  const action = destination ? <div className="op-invitation-email-action"><a href={destination} onClick={(event) => event.preventDefault()}>{draft.invitationCtaLabel || "Open"}</a><small className="destination">Or open: {destination}</small></div> : <small className="destination missing">Add a destination before testing or sending.</small>;
+  const destination = invitationPreviewDestination(draft.invitationUrl || workspace.website);
+  const hasActionToken = paragraphs.some((paragraph) => /\{\{(?:invitation_button|invitation_url|signup_url)\}\}/.test(paragraph));
+  const action = destination ? <div className="op-invitation-email-action"><a href={destination} target="_blank" rel="noreferrer">{draft.invitationCtaLabel || "Open"}</a><small className="destination">Or open: <a href={destination} target="_blank" rel="noreferrer">{destination}</a></small></div> : <small className="destination missing">Add a destination before testing or sending.</small>;
   return <article className="op-invitation-email-preview"><header><small>RECIPIENT PREVIEW</small><strong>{draft.invitationSubject}</strong></header><div className="op-invitation-email-canvas" style={{ "--invitation-primary": primary } as React.CSSProperties}>{logo ? <img className="logo" src={logo} alt={workspace.name} /> : <b className="wordmark">{workspace.name}</b>}{hero && <img className="hero" src={hero} alt="" />}<main><h3>{draft.invitationSubject}</h3>{paragraphs.map((paragraph, index) => {
-    if (/^{{(?:invitation|signup)_url}}$/.test(paragraph)) return <div key={`${paragraph}-${index}`}>{action}</div>;
-    const parts = paragraph.split(/({{(?:invitation|signup)_url}})/g);
-    return <p key={`${paragraph}-${index}`}>{parts.map((part, partIndex) => /{{(?:invitation|signup)_url}}/.test(part) ? destination ? <a className="inline-destination" href={destination} onClick={(event) => event.preventDefault()} key={`${part}-${partIndex}`}>{destination}</a> : <span key={`${part}-${partIndex}`}>[destination missing]</span> : part)}</p>;
+    if (/^\{\{(?:invitation_button|invitation_url|signup_url)\}\}$/.test(paragraph)) return <div key={`${paragraph}-${index}`}>{action}</div>;
+    const parts = paragraph.split(/(\{\{(?:invitation_button|invitation_url|signup_url)\}\})/g);
+    return <p key={`${paragraph}-${index}`}>{parts.map((part, partIndex) => /\{\{(?:invitation_button|invitation_url|signup_url)\}\}/.test(part) ? destination ? <a className="inline-destination" href={destination} target="_blank" rel="noreferrer" key={`${part}-${partIndex}`}>{destination}</a> : <span key={`${part}-${partIndex}`}>[destination missing]</span> : part)}</p>;
   })}{!hasActionToken && action}<p className="signature">{workspace.emailIdentity.senderName || workspace.name}<br />{workspace.emailIdentity.businessDetails}</p></main><footer>This is a direct project invitation, not a newsletter subscription. No email is sent until you approve delivery.</footer></div></article>;
+}
+
+function invitationPreviewDestination(value: string) {
+  const source = String(value || "").trim();
+  if (!source || /[\s<>]/.test(source)) return "";
+  try {
+    const url = new URL(/^https?:\/\//i.test(source) ? source : `https://${source}`);
+    return url.protocol === "https:" && url.hostname.includes(".") ? url.toString() : "";
+  } catch {
+    return "";
+  }
 }
 
 function ProspectConversionPanel({ dashboard, projectWebsite, direction, onDirection, working, feedback, mailchimpReady, mailbox, onCreate, onUpdate, onSchedule, onConnect, notify }: { dashboard: NewsletterDashboard; projectWebsite: string; direction: string; onDirection: (value: string) => void; working: string; feedback: string; mailchimpReady: boolean; mailbox: ConnectionStatus["gmail"]; onCreate: () => Promise<void>; onUpdate: (campaign: ProspectConversionCampaign, changes: Partial<ProspectConversionCampaign>) => Promise<void>; onSchedule: (campaign: ProspectConversionCampaign, subject: string, body: string, invitationUrl: string, invitationCtaLabel: string, startAt: string, intervalMinutes: number, repeat?: boolean) => Promise<void>; onConnect: () => void; notify: (message: string) => void }) {
@@ -2288,14 +2301,22 @@ function ContentLibrary({ userId, workspace, runs, mediaConfigured, videoConfigu
 
   useEffect(() => {
     let active = true;
-    apiFetch(`/api/assets?projectId=${encodeURIComponent(workspace.id)}`)
+    const loadAssets = () => apiFetch(`/api/assets?projectId=${encodeURIComponent(workspace.id)}`)
       .then(async (response) => {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Existing assets could not be opened.");
         if (active) applyAssetResponse(data);
       })
       .catch((error) => { if (active) notify(error instanceof Error ? error.message : "Existing assets could not be opened."); });
-    return () => { active = false; };
+    const handleAssetsUpdated = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      if (detail?.projectId && detail.projectId !== workspace.id) return;
+      if (active && detail?.assets) applyAssetResponse(detail);
+      else void loadAssets();
+    };
+    void loadAssets();
+    window.addEventListener("market-agent-assets-updated", handleAssetsUpdated);
+    return () => { active = false; window.removeEventListener("market-agent-assets-updated", handleAssetsUpdated); };
   }, [workspace.id]);
 
   const registerAssetFile = async (file: File) => {
@@ -3046,7 +3067,6 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
   const [loading, setLoading] = useState(false);
   const [working, setWorking] = useState("");
   const [direction, setDirection] = useState("");
-  const [optinDirection, setOptinDirection] = useState("");
   const [optinFeedback, setOptinFeedback] = useState("");
   const [selectedId, setSelectedId] = useState(() => window.sessionStorage.getItem(`market-agent:campaign-selected-newsletter:${projectId}`) || "");
   const [scheduleTime, setScheduleTime] = useState(() => nextQuarterLocal());
@@ -3143,11 +3163,10 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
     setWorking("create-optin");
     setOptinFeedback("The assistant is preparing the editable invitation and branded preview…");
     try {
-      const response = await apiFetch("/api/newsletters", { method: "POST", body: JSON.stringify({ action: "create-optin-campaign", projectId, direction: optinDirection, approvalConfirmed: true }) });
+      const response = await apiFetch("/api/newsletters", { method: "POST", body: JSON.stringify({ action: "create-optin-campaign", projectId, approvalConfirmed: true }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The opt-in campaign could not be created.");
       setDashboard((current) => current ? { ...current, conversionCampaigns: [data.campaign as ProspectConversionCampaign, ...(current.conversionCampaigns || [])] } : current);
-      setOptinDirection("");
       setOptinFeedback("Invitation prepared. Review the message, preview, recipients, and schedule below; nothing has been sent yet.");
       notify("Invitation campaign prepared for review. Nothing has been sent.");
     } catch (error) {
@@ -3182,19 +3201,6 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
       notify("Invitation contact added. Nothing was sent.");
       await refresh();
     } catch (error) { notify(error instanceof Error ? error.message : "The invitation contact could not be added."); }
-    finally { setWorking(""); }
-  };
-
-  const rewriteInvitation = async (campaign: ProspectConversionCampaign, focus: string) => {
-    if (!focus.trim()) { notify("Describe what the invitation should achieve first."); return; }
-    setWorking(`rewrite-${campaign.id}`);
-    try {
-      const response = await apiFetch("/api/newsletters", { method: "POST", body: JSON.stringify({ action: "rewrite-invitation", projectId, id: campaign.id, direction: focus }) });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "The assistant could not rewrite the invitation.");
-      setDashboard((current) => current ? { ...current, conversionCampaigns: current.conversionCampaigns.map((item) => item.id === campaign.id ? data.campaign as ProspectConversionCampaign : item) } : current);
-      notify("The assistant rewrote and saved the invitation. Nothing was sent.");
-    } catch (error) { notify(error instanceof Error ? error.message : "The assistant could not rewrite the invitation."); }
     finally { setWorking(""); }
   };
 
@@ -3409,7 +3415,7 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
       {emailMode === "invitation" && <>
         {loading && !dashboard ? <div className="op-analytics-loading"><LoaderCircle className="spin" size={22} /> Reading invitation contacts…</div> : dashboard && <>
           <section className="op-invitation-recipients"><header><div><small>RECIPIENTS</small><h2>Add people to invite</h2><p>Add one person manually or upload a CSV. These contacts remain invitation prospects; they are not subscribed to a newsletter.</p></div><em>{dashboard.prospectInvitationRecipientCount.toLocaleString()} ready</em></header><div className="op-invitation-recipient-actions"><div><label><span>Email</span><input type="email" value={manualInvite.email} onChange={(event) => setManualInvite((current) => ({ ...current, email: event.target.value }))} /></label><label><span>First name</span><input value={manualInvite.firstName} onChange={(event) => setManualInvite((current) => ({ ...current, firstName: event.target.value }))} /></label><label><span>Last name</span><input value={manualInvite.lastName} onChange={(event) => setManualInvite((current) => ({ ...current, lastName: event.target.value }))} /></label><label><span>Company</span><input value={manualInvite.company} onChange={(event) => setManualInvite((current) => ({ ...current, company: event.target.value }))} /></label><button onClick={() => void stageManualInvitation()} disabled={!manualInvite.email.trim() || working === "invitation-manual"}><UserPlus size={14} />{working === "invitation-manual" ? "Adding…" : "Add person"}</button></div><span>or</span><div className="op-invitation-csv"><input ref={invitationCsvInput} type="file" accept=".csv,text/csv" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void stageInvitationCsv(file); }} /><button onClick={() => invitationCsvInput.current?.click()} disabled={working === "invitation-csv"}><Upload size={14} />{working === "invitation-csv" ? "Reading CSV…" : "Upload CSV"}</button><small>Email is required; names and company are optional.</small></div></div></section>
-          <InvitationWorkspace dashboard={dashboard} workspace={workspace} direction={optinDirection} onDirection={setOptinDirection} working={working} feedback={optinFeedback} mailbox={connections.gmail} subscriptionReady={mailchimp.canManage} onCreate={createOptin} onUpdate={updateOptin} onRewrite={rewriteInvitation} onTest={sendInvitationTest} onSchedule={scheduleOptinInvitations} onConnect={onConnect} />
+          <InvitationWorkspace dashboard={dashboard} workspace={workspace} working={working} feedback={optinFeedback} mailbox={connections.gmail} subscriptionReady={mailchimp.canManage} onCreate={createOptin} onUpdate={updateOptin} onTest={sendInvitationTest} onSchedule={scheduleOptinInvitations} onConnect={onConnect} />
           {dashboard.contactImports.length > 0 && <section className="op-contact-imports"><div className="op-section-title"><div><small>INVITATION LISTS</small><h2>People added</h2><p>Review every imported contact here. They are prospects for this invitation—not newsletter subscribers.</p></div></div><div>{dashboard.contactImports.map((contactImport) => <ContactImportCard key={contactImport.id} contactImport={contactImport} details={contactDetails[contactImport.id]} working={working} deliveryReady={mailchimp.canManage} onLoad={loadContactDetails} onImport={importContacts} onConnect={onConnect} />)}</div></section>}
         </>}
       </>}

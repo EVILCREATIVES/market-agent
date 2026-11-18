@@ -52,6 +52,7 @@ export function personalizeInvitationTemplate(template, recipient = {}, signupUr
   return String(template || "")
     .replaceAll("{{first_name}}", firstName || "there")
     .replaceAll("{{company}}", company)
+    .replaceAll("{{invitation_button}}", String(signupUrl || "").trim())
     .replaceAll("{{invitation_url}}", String(signupUrl || "").trim())
     .replaceAll("{{signup_url}}", String(signupUrl || "").trim())
     .replace(/[ \t]+\n/g, "\n")
@@ -76,7 +77,7 @@ export function renderInvitationEmailHtml(workspace = {}, campaign = {}, input =
   const action = destination ? `<div style="margin:4px 0 24px"><p style="margin:0 0 8px"><a href="${escapeEmailAttribute(destination)}" style="display:inline-block;padding:13px 20px;background:${primary};color:#ffffff;text-decoration:none;border-radius:7px;font:700 15px Arial,sans-serif">${escapeEmailHtml(cta)}</a></p><p style="margin:0;font:400 12px/1.5 Arial,sans-serif;color:#777">Or open: <a href="${escapeEmailAttribute(destination)}" style="color:${primary};word-break:break-all">${escapeEmailHtml(destination)}</a></p></div>` : "";
   let actionPlaced = false;
   const content = body.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean).map((item) => {
-    if (destination && [destination, "{{invitation_url}}", "{{signup_url}}"].includes(item)) {
+    if (destination && [destination, "{{invitation_button}}", "{{invitation_url}}", "{{signup_url}}"].includes(item)) {
       actionPlaced = true;
       return action;
     }
@@ -158,7 +159,7 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
   const subjectTemplate = String(input?.subject || campaign.invitationSubject || "").replace(/[\r\n]+/g, " ").trim().slice(0, 300);
   let bodyTemplate = String(input?.body || campaign.invitationBody || "").trim().slice(0, 20_000);
   if (!subjectTemplate || !bodyTemplate) throw deliveryError("Review the invitation subject and message before scheduling it.", 400);
-  if (!bodyTemplate.includes("{{invitation_url}}") && !bodyTemplate.includes("{{signup_url}}") && !bodyTemplate.includes(invitationUrl)) bodyTemplate = `${bodyTemplate}\n\n${String(input?.invitationCtaLabel || campaign.invitationCtaLabel || "Learn more")}: {{invitation_url}}`;
+  if (!bodyTemplate.includes("{{invitation_button}}") && !bodyTemplate.includes("{{invitation_url}}") && !bodyTemplate.includes("{{signup_url}}") && !bodyTemplate.includes(invitationUrl)) bodyTemplate = `${bodyTemplate}\n\n{{invitation_button}}`;
   const requestedStart = new Date(String(input?.startAt || ""));
   if (!Number.isFinite(requestedStart.getTime()) || requestedStart.getTime() < Date.now() + 10 * 60_000) throw deliveryError("Choose an invitation start time at least ten minutes from now.", 400);
   if (requestedStart.getTime() > Date.now() + 370 * 24 * 60 * 60_000) throw deliveryError("Choose an invitation start time within the next year.", 400);
