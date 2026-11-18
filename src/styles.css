@@ -2931,6 +2931,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-invitation-sendbar > div small,
 .op-invitation-save-note { color: #7d7871; font-size: 10px; line-height: 1.4; }
 .op-invitation-pending { align-self: center; padding: 10px 12px; border-radius: 8px; background: #eee8ff; color: #6248bd; font-size: 11px; font-weight: 750; }
+.op-invitation-pending-group { display: flex; align-items: center; gap: 8px; }
 .op-invitation-save-note { grid-column: 1/-1; text-align: right; }
 .op-invitation-performance { margin-top: 16px; padding: 16px; border: 1px solid #ddd7e9; border-radius: 11px; background: #faf8ff; }
 .op-invitation-performance > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
