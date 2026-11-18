@@ -1,14 +1,14 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "schedules": {
-    "market-agent-delivery": { "schedule": "*/15 * * * *", "function": "api/scheduled-delivery", "timezone": "UTC" },
-    "market-agent-autonomy": { "schedule": "0 * * * *", "function": "api/scheduled-agent", "timezone": "UTC" },
-    "market-agent-memory": { "schedule": "15 * * * *", "function": "api/scheduled-memory", "timezone": "UTC" }
-  },
+  "crons": [
+    { "path": "/api/delivery-cron", "schedule": "* * * * *" },
+    { "path": "/api/cron", "schedule": "0 * * * *" },
+    { "path": "/api/memory-cron", "schedule": "15 * * * *" }
+  ],
   "functions": {
-    "api/scheduled-delivery.mjs": { "maxDuration": 60, "experimentalTriggers": [{ "type": "schedule/v1beta" }] },
-    "api/scheduled-agent.mjs": { "maxDuration": 300, "experimentalTriggers": [{ "type": "schedule/v1beta" }] },
-    "api/scheduled-memory.mjs": { "maxDuration": 300, "experimentalTriggers": [{ "type": "schedule/v1beta" }] }
+    "api/delivery-cron.mjs": { "maxDuration": 60 },
+    "api/cron.mjs": { "maxDuration": 300 },
+    "api/memory-cron.mjs": { "maxDuration": 300 }
   },
   "rewrites": [{ "source": "/((?!api/|assets/|market-agent-mark\\.svg$|tiktok.*\\.txt$).*)", "destination": "/index.html" }],
   "headers": [

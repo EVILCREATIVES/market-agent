@@ -55,7 +55,7 @@ The deployment's three AI keys fund only the limited demo and active managed sub
 
 - `DATABASE_URL` — injected by the Neon Marketplace integration
 - `NEON_AUTH_BASE_URL` and `VITE_NEON_AUTH_URL` — injected by Neon Auth
-- `CRON_SECRET` — protects the manual fallback automation endpoint; production delivery uses private Vercel Schedules
+- `CRON_SECRET` — protects the Vercel Cron endpoints for scheduled delivery, autonomous work, and conversation archiving
 - `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, and `ANTHROPIC_API_KEY` — platform-funded demo and managed text access; never a fallback for BYOK users
 - `OPENAI_MODEL`, `GOOGLE_MODEL`, and `ANTHROPIC_MODEL` — optional model overrides
 - `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `CONNECTION_ENCRYPTION_KEY` — Gmail and Google Analytics OAuth plus encrypted token storage
