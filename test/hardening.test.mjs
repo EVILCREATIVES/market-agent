@@ -87,6 +87,11 @@ test("the assistant can edit the selected campaign from its visible detail scree
   assert.equal(editableCampaignRunId("run-1", { page: "campaigns", campaignSection: "newsletter", selectedRunId: "run-1" }), "");
 });
 
+test("the assistant can edit a selected research or audience record", () => {
+  assert.equal(editableCampaignRunId("research-1", { page: "research", selectedRunId: "research-1" }), "research-1");
+  assert.equal(editableCampaignRunId("audience-1", { page: "agent", selectedRunId: "audience-1" }), "audience-1");
+});
+
 test("draft copy mentioning future updates from a site does not trigger a Brand refresh", () => {
   assert.equal(isBrandSourceRefreshRequest("If useful, subscribe for future updates from the site."), false);
   assert.equal(isBrandSourceRefreshRequest("Update the Brand from the live website."), true);

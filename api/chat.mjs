@@ -25,7 +25,8 @@ export default async function handler(req, res) {
     const conversationMemory = await getProjectConversationMemory(userId, projectId, message, timeZone).catch(() => "");
     const rememberedWorkspace = { ...(req.body?.workspace || {}), conversationMemory };
     waitUntil(archiveProjectConversationDays(userId, projectId, timeZone).catch(() => undefined));
-    const runId = String(req.body?.activeCampaignRunId || "").slice(0, 200);
+    const runId = String(req.body?.activeRunId || req.body?.activeCampaignRunId || "").slice(0, 200);
+    const campaignRunId = String(req.body?.activeCampaignRunId || "").slice(0, 200);
     let assetAction = null;
     let newsletterAction = null;
     let newsletterLogoAction = null;
@@ -36,13 +37,13 @@ export default async function handler(req, res) {
     if (editableRunId && requestedTableColumn) {
       campaignAction = await addCampaignTableColumn(userId, projectId, editableRunId, requestedTableColumn.columnName, requestedTableColumn.defaultValue, requestedTableColumn.tableHint);
     }
-    if (runId && isCampaignAssetReplacement(message)) {
+    if (campaignRunId && isCampaignAssetReplacement(message)) {
       const asset = await findProjectAssetForInstruction(userId, projectId, message, userApiEnv);
-      if (asset) assetAction = await replaceDeliveryMediaFromAsset(userId, projectId, runId, asset, userApiEnv);
+      if (asset) assetAction = await replaceDeliveryMediaFromAsset(userId, projectId, campaignRunId, asset, userApiEnv);
     }
     const requestedNewsletterUrl = newsletterLinkUpdate(message);
     if (requestedNewsletterUrl) {
-      campaignAction = await updateCampaignLink(userId, projectId, runId, requestedNewsletterUrl).catch(() => null);
+      campaignAction = await updateCampaignLink(userId, projectId, campaignRunId, requestedNewsletterUrl).catch(() => null);
       newsletterAction = await updateLatestNewsletterLink(userId, projectId, requestedNewsletterUrl).catch((error) => {
         if (error?.statusCode === 404) return null;
         throw error;

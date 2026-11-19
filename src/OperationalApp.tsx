@@ -202,7 +202,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
   const [billing, setBilling] = useState<BillingStatus>(() => emptyBilling());
   const [accessChoiceOpen, setAccessChoiceOpen] = useState(false);
   const [billingBusy, setBillingBusy] = useState(false);
-  const [projectChatOpen, setProjectChatOpen] = useState(false);
+  const [projectChatOpen, setProjectChatOpen] = useState(true);
   const [connectionGuideTarget, setConnectionGuideTarget] = useState<ConnectionGuideTarget>(null);
 
   useEffect(() => {
@@ -548,7 +548,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
         </div>
       </main>
       {mobileOpen && <button className="op-scrim" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
-      <ProjectChat userId={userId} workspace={activeProject} currentPage={page} activeCampaignRunId={selectedRunId && campaignRuns.some((run) => run.id === selectedRunId) ? selectedRunId : page === "campaigns" ? campaignRuns[0]?.id || "" : ""} open={projectChatOpen} onOpen={() => setProjectChatOpen(true)} onClose={() => page === "integrations" ? deferConnectionGuide() : setProjectChatOpen(false)} onSave={updateWorkspace} onCampaignUpdated={applyCampaignUpdate} onAttachToCampaign={attachAssetToCampaign} onIssuesFound={addProactiveIssues} guide={page === "integrations" ? connectionGuide : null} onGuideHelp={guideConnections} onGuideLater={deferConnectionGuide} notify={notify} />
+      <ProjectChat userId={userId} workspace={activeProject} currentPage={page} activeRunId={selectedRunId && projectRuns.some((run) => run.id === selectedRunId) ? selectedRunId : ""} activeCampaignRunId={selectedRunId && campaignRuns.some((run) => run.id === selectedRunId) ? selectedRunId : page === "campaigns" ? campaignRuns[0]?.id || "" : ""} open={projectChatOpen} onOpen={() => setProjectChatOpen(true)} onClose={() => page === "integrations" ? deferConnectionGuide() : setProjectChatOpen(false)} onSave={updateWorkspace} onCampaignUpdated={applyCampaignUpdate} onAttachToCampaign={attachAssetToCampaign} onIssuesFound={addProactiveIssues} guide={page === "integrations" ? connectionGuide : null} onGuideHelp={guideConnections} onGuideLater={deferConnectionGuide} notify={notify} />
       {accessChoiceOpen && <AccessChoice billing={billing} busy={billingBusy} onDemo={() => rememberAccessChoice("trial")} onApis={() => { rememberAccessChoice("byok"); navigate("integrations"); }} onSubscribe={() => { rememberAccessChoice("managed"); void startManagedSubscription(); }} onClose={() => setAccessChoiceOpen(false)} />}
       {toast && <div className="op-toast"><Sparkles size={15} />{toast}<button onClick={() => setToast(null)}><X size={14} /></button></div>}
     </div>
@@ -568,7 +568,7 @@ function AccessChoice({ billing, busy, onDemo, onApis, onSubscribe, onClose }: {
   </aside></>;
 }
 
-function ProjectChat({ userId, workspace, currentPage, activeCampaignRunId, open, onOpen, onClose, onSave, onCampaignUpdated, onAttachToCampaign, onIssuesFound, guide, onGuideHelp, onGuideLater, notify }: { userId: string; workspace: ProductWorkspace; currentPage: Page; activeCampaignRunId: string; open: boolean; onOpen: () => void; onClose: () => void; onSave: (workspace: ProductWorkspace) => void; onCampaignUpdated: (run: AgentRun, revision: number) => void; onAttachToCampaign: (runId: string, asset: RunAssetReference, findings?: IssueFindings) => void; onIssuesFound: (projectId: string, findings: IssueFindings | undefined) => void; guide: ConnectionGuide | null; onGuideHelp: () => void; onGuideLater: () => void; notify: (message: string) => void }) {
+function ProjectChat({ userId, workspace, currentPage, activeRunId, activeCampaignRunId, open, onOpen, onClose, onSave, onCampaignUpdated, onAttachToCampaign, onIssuesFound, guide, onGuideHelp, onGuideLater, notify }: { userId: string; workspace: ProductWorkspace; currentPage: Page; activeRunId: string; activeCampaignRunId: string; open: boolean; onOpen: () => void; onClose: () => void; onSave: (workspace: ProductWorkspace) => void; onCampaignUpdated: (run: AgentRun, revision: number) => void; onAttachToCampaign: (runId: string, asset: RunAssetReference, findings?: IssueFindings) => void; onIssuesFound: (projectId: string, findings: IssueFindings | undefined) => void; guide: ConnectionGuide | null; onGuideHelp: () => void; onGuideLater: () => void; notify: (message: string) => void }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -702,7 +702,7 @@ function ProjectChat({ userId, workspace, currentPage, activeCampaignRunId, open
       const routedContext = routingNotes.length ? `${content}\n\nATTACHMENT ROUTING ALREADY COMPLETED\n${routingNotes.map((note) => `- ${note}`).join("\n")}\nAcknowledge these completed placements clearly. Do not ask the user to upload or move the files again. A contact list belongs to Campaigns, never Brand or Content Library. Do not claim that no contacts were processed when a staged count is supplied.` : content;
       const campaignSection = currentPage === "campaigns" ? window.sessionStorage.getItem(`market-agent:campaign-current-section:${workspace.id}`) || "overview" : "";
       const selectedNewsletterId = campaignSection === "newsletter" ? window.sessionStorage.getItem(`market-agent:campaign-selected-newsletter:${workspace.id}`) || "" : "";
-      const response = await apiFetch("/api/chat", { method: "POST", body: JSON.stringify({ projectId: workspace.id, activeCampaignRunId, workspace: routedWorkspace, history: nextHistory, message: routedContext, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, uiContext: { page: currentPage, campaignSection, selectedRunId: activeCampaignRunId, selectedNewsletterId }, intent: isTypographyInspectionInstruction(content) ? "inspect-typography" : isBrandSourceRefreshInstruction(content) ? "refresh-brand" : undefined, useWeb: true }) });
+      const response = await apiFetch("/api/chat", { method: "POST", body: JSON.stringify({ projectId: workspace.id, activeRunId, activeCampaignRunId, workspace: routedWorkspace, history: nextHistory, message: routedContext, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, uiContext: { page: currentPage, campaignSection, selectedRunId: activeRunId, selectedNewsletterId }, intent: isTypographyInspectionInstruction(content) ? "inspect-typography" : isBrandSourceRefreshInstruction(content) ? "refresh-brand" : undefined, useWeb: true }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The project assistant could not reply.");
       if (data.assetAction?.jobs && activeCampaignRunId) window.dispatchEvent(new CustomEvent("market-agent-delivery-updated", { detail: { runId: activeCampaignRunId, jobs: data.assetAction.jobs } }));
