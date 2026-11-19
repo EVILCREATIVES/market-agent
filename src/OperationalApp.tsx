@@ -408,7 +408,27 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
       }),
     }));
   };
-  const updateRunStatus = (id: string, status: RunStatus) => setState((current) => ({ ...current, runs: current.runs.map((run) => run.id === id ? { ...run, status } : run) }));
+  const updateRunStatus = async (id: string, status: RunStatus) => {
+    let previousStatus: RunStatus = status === "Approved" ? "Draft" : "Approved";
+    setState((current) => ({
+      ...current,
+      runs: current.runs.map((run) => {
+        if (run.id !== id) return run;
+        previousStatus = run.status;
+        return { ...run, status };
+      }),
+    }));
+    try {
+      const response = await apiFetch("/api/state", { method: "POST", body: JSON.stringify({ action: "update-run-status", runId: id, status }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The campaign review status could not be saved.");
+      cloudRevisionRef.current = Math.max(cloudRevisionRef.current, Number(data.revision || 0));
+      if (data.run) setState((current) => ({ ...current, runs: current.runs.map((run) => run.id === id ? data.run : run) }));
+    } catch (error) {
+      setState((current) => ({ ...current, runs: current.runs.map((run) => run.id === id ? { ...run, status: previousStatus } : run) }));
+      notify(error instanceof Error ? error.message : "The campaign review status could not be saved.");
+    }
+  };
   const updateRunOutput = (id: string, output: string) => setState((current) => ({ ...current, runs: current.runs.map((run) => run.id === id ? { ...run, output } : run) }));
   const applyCampaignUpdate = (run: AgentRun, revision = 0) => {
     if (revision) cloudRevisionRef.current = Math.max(cloudRevisionRef.current, revision);

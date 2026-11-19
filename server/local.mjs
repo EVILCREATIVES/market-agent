@@ -4,7 +4,7 @@ import { handleUpload } from "@vercel/blob/client";
 import { buildProductBrain, createRunRecord, readConnectedSourceMetadata, refineProductBrain, runMarketingAgent, runProjectConversation } from "./agent.mjs";
 import { approveAssetProposal, cancelAssetProposal, deleteProjectAsset, getProjectAssetPreviewUrl, listProjectAssets, listReadyCampaignAssets, registerLinkedAsset, registerUploadedAsset, serveProjectFile } from "./assets.mjs";
 import { requireUser } from "./auth.mjs";
-import { appendRunForUser, enforceRunBudget, loadStateForUser, saveStateForUser } from "./db.mjs";
+import { appendRunForUser, enforceRunBudget, loadStateForUser, saveStateForUser, updateRunStatusForUser } from "./db.mjs";
 import { approveMediaJob, cancelMediaJob, listMediaJobs, prepareMediaJob } from "./media.mjs";
 import { cancelManagedSubscription, consumeAiUsage, createManagedSubscription, getManagedSubscriptionStatus } from "./billing.mjs";
 import {
@@ -123,6 +123,7 @@ const server = http.createServer(async (req, res) => {
       const { userId } = await requireUser(req);
       if (req.method === "GET") return json(res, 200, await loadStateForUser(userId));
       const payload = await readJson(req);
+      if (payload.action === "update-run-status") return json(res, 200, await updateRunStatusForUser(userId, payload.runId, payload.status));
       const saved = await saveStateForUser(userId, payload.state, process.env, payload.baseRevision);
       return json(res, 200, { ok: true, ...saved });
     } catch (error) {

@@ -1,5 +1,5 @@
 import { requireUser } from "../server/auth.mjs";
-import { deleteRunForUser, loadStateForUser, saveStateForUser } from "../server/db.mjs";
+import { deleteRunForUser, loadStateForUser, saveStateForUser, updateRunStatusForUser } from "../server/db.mjs";
 
 export default async function handler(req, res) {
   if (!["GET", "POST", "DELETE"].includes(req.method)) {
@@ -11,6 +11,7 @@ export default async function handler(req, res) {
       return res.status(200).json(await loadStateForUser(userId));
     }
     if (req.method === "DELETE") return res.status(200).json(await deleteRunForUser(userId, req.query?.runId || req.body?.runId));
+    if (req.body?.action === "update-run-status") return res.status(200).json(await updateRunStatusForUser(userId, req.body?.runId, req.body?.status));
     const saved = await saveStateForUser(userId, req.body?.state, process.env, req.body?.baseRevision);
     return res.status(200).json({ ok: true, ...saved });
   } catch (error) {

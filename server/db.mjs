@@ -132,6 +132,48 @@ export async function appendRunForUser(userId, run, env = process.env) {
   return normalizeState(result.rows[0].state);
 }
 
+export async function updateRunStatusForUser(userId, runId, status, env = process.env) {
+  const id = String(runId || "").trim().slice(0, 200);
+  const nextStatus = String(status || "").trim();
+  if (!id || !["Draft", "Approved"].includes(nextStatus)) {
+    const error = new Error("Choose a campaign and a valid review status.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const client = await getPool(env).connect();
+  try {
+    await client.query("BEGIN");
+    const updatedRun = await client.query(
+      `UPDATE market_agent_runs
+          SET data = jsonb_set(data, '{status}', to_jsonb($3::text), true)
+        WHERE user_id = $1 AND id = $2
+        RETURNING data`,
+      [userId, id, nextStatus],
+    );
+    if (!updatedRun.rows[0]?.data) {
+      const error = new Error("The campaign could not be found.");
+      error.statusCode = 404;
+      throw error;
+    }
+    const updatedState = await client.query(
+      `UPDATE market_agent_states SET state = jsonb_set(
+         state, '{runs}',
+         COALESCE((SELECT jsonb_agg(CASE WHEN item->>'id' = $2 THEN $3::jsonb ELSE item END)
+           FROM jsonb_array_elements(COALESCE(state->'runs','[]'::jsonb)) AS item), '[]'::jsonb), true),
+         revision = revision + 1, updated_at = NOW()
+       WHERE user_id = $1 RETURNING revision`,
+      [userId, id, JSON.stringify(updatedRun.rows[0].data)],
+    );
+    await client.query("COMMIT");
+    return { run: updatedRun.rows[0].data, revision: Number(updatedState.rows[0]?.revision || 0) };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function deleteRunForUser(userId, runId, env = process.env) {
   const id = String(runId || "").trim().slice(0, 200);
   if (!id) {
