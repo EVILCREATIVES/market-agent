@@ -9,6 +9,16 @@ import { handleSchedule } from "../server/schedule-handler.mjs";
 import { projectLogoVariants, safeMailchimpSignupUrl, selectNewsletterLogoVariant, signupFormUrlFromResponses } from "../server/newsletters.mjs";
 import { createBrandLogoAccessUrl } from "../server/brand-logos.mjs";
 import { linkedinCommunityApprovalStatus, socialConnectorConfigured } from "../server/social-connections.mjs";
+import { ownerCostEstimateCents, ownerMonthlyCostCapCents } from "../server/billing.mjs";
+
+test("owner-paid analysis has a conservative global monthly cost ceiling", () => {
+  assert.equal(ownerMonthlyCostCapCents({}), 15_000);
+  assert.equal(ownerMonthlyCostCapCents({ OWNER_MONTHLY_COST_CAP_CENTS: "10000" }), 10_000);
+  assert.equal(ownerMonthlyCostCapCents({ OWNER_MONTHLY_COST_CAP_CENTS: "not-a-number" }), 15_000);
+  assert.equal(ownerCostEstimateCents("chat", {}), 25);
+  assert.equal(ownerCostEstimateCents("panel", {}), 400);
+  assert.equal(ownerCostEstimateCents("panel", { OWNER_PANEL_COST_ESTIMATE_CENTS: "250" }), 250);
+});
 
 test("LinkedIn company-page review stays separate from optional personal publishing", () => {
   const secure = "connection-key-with-at-least-32-characters";

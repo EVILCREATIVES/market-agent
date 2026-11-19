@@ -4,6 +4,15 @@ import { getPool } from "./db.mjs";
 const TRIAL_DAYS = 10;
 const MANAGED_PRICE = "29.99";
 const MANAGED_CURRENCY = "USD";
+const DEFAULT_OWNER_MONTHLY_COST_CAP_CENTS = 15_000;
+const DEFAULT_OWNER_COST_ESTIMATES_CENTS = Object.freeze({
+  chat: 25,
+  agent: 100,
+  panel: 400,
+  workspace: 100,
+  delivery: 75,
+  cron: 100,
+});
 let billingTablesReady = false;
 
 export async function getManagedSubscriptionStatus(userId, env = process.env) {
@@ -205,10 +214,33 @@ export async function consumeAiUsage(userId, purpose, accessEnv, env = process.e
   if (mode === "byok") return;
   const limits = usageLimits(mode, purpose);
   if (!limits) throw billingError("Connect your own APIs or activate the managed plan to continue.", 402);
+  const estimatedCostCents = ownerCostEstimateCents(purpose, env);
   await ensureBillingTables(env);
   const client = await getPool(env).connect();
   try {
     await client.query("BEGIN");
+    const ownerMonthlyCapCents = ownerMonthlyCostCapCents(env);
+    await client.query(
+      `INSERT INTO market_agent_owner_cost_controls
+        (control_key, monthly_cap_cents, created_at, updated_at)
+       VALUES ('global', $1, NOW(), NOW())
+       ON CONFLICT (control_key) DO UPDATE SET
+         monthly_cap_cents = EXCLUDED.monthly_cap_cents,
+         updated_at = NOW()`,
+      [ownerMonthlyCapCents],
+    );
+    await client.query(
+      "SELECT monthly_cap_cents FROM market_agent_owner_cost_controls WHERE control_key = 'global' FOR UPDATE",
+    );
+    const ownerSpend = await client.query(
+      `SELECT COALESCE(SUM(estimated_cost_cents), 0)::int AS estimated_cents
+         FROM market_agent_ai_usage_events
+        WHERE created_at >= date_trunc('month', NOW())`,
+    );
+    const estimatedThisMonthCents = Number(ownerSpend.rows[0]?.estimated_cents || 0);
+    if (estimatedThisMonthCents + estimatedCostCents > ownerMonthlyCapCents) {
+      throw billingError("Market Agent's managed monthly capacity has been reached. Connect your own APIs to continue without using the platform budget.", 402);
+    }
     const counts = await client.query(
       `SELECT
          COUNT(*) FILTER (WHERE created_at >= date_trunc('day', NOW()))::int AS daily,
@@ -225,9 +257,10 @@ export async function consumeAiUsage(userId, purpose, accessEnv, env = process.e
         : "The daily managed-plan limit for this feature has been reached. Try again tomorrow.", 429);
     }
     await client.query(
-      `INSERT INTO market_agent_ai_usage_events (user_id, access_mode, purpose, created_at)
-       VALUES ($1, $2, $3, NOW())`,
-      [userId, mode, purpose],
+      `INSERT INTO market_agent_ai_usage_events
+        (user_id, access_mode, purpose, estimated_cost_cents, created_at)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [userId, mode, purpose, estimatedCostCents],
     );
     await client.query("COMMIT");
   } catch (error) {
@@ -236,6 +269,19 @@ export async function consumeAiUsage(userId, purpose, accessEnv, env = process.e
   } finally {
     client.release();
   }
+}
+
+export function ownerMonthlyCostCapCents(env = process.env) {
+  const value = Number(env.OWNER_MONTHLY_COST_CAP_CENTS || DEFAULT_OWNER_MONTHLY_COST_CAP_CENTS);
+  return Number.isInteger(value) && value >= 0 ? value : DEFAULT_OWNER_MONTHLY_COST_CAP_CENTS;
+}
+
+export function ownerCostEstimateCents(purpose, env = process.env) {
+  const normalizedPurpose = String(purpose || "").trim().toLowerCase();
+  const defaultValue = DEFAULT_OWNER_COST_ESTIMATES_CENTS[normalizedPurpose] || DEFAULT_OWNER_COST_ESTIMATES_CENTS.agent;
+  const key = `OWNER_${normalizedPurpose.toUpperCase()}_COST_ESTIMATE_CENTS`;
+  const value = Number(env[key] || defaultValue);
+  return Number.isInteger(value) && value >= 0 ? value : defaultValue;
 }
 
 export function connectorAllowedForAccess(accessEnv, provider) {
@@ -302,7 +348,16 @@ async function ensureBillingTables(env) {
       user_id TEXT NOT NULL,
       access_mode TEXT NOT NULL,
       purpose TEXT NOT NULL,
+      estimated_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_cents >= 0),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    ALTER TABLE market_agent_ai_usage_events
+      ADD COLUMN IF NOT EXISTS estimated_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_cents >= 0);
+    CREATE TABLE IF NOT EXISTS market_agent_owner_cost_controls (
+      control_key TEXT PRIMARY KEY,
+      monthly_cap_cents INTEGER NOT NULL CHECK (monthly_cap_cents >= 0),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS market_agent_ai_usage_user_day_idx
       ON market_agent_ai_usage_events (user_id, access_mode, purpose, created_at DESC);
