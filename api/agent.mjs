@@ -23,10 +23,12 @@ export default async function handler(req, res) {
     const performanceContext = await getAgentPerformanceContext(userId, projectId).catch(() => "");
     const libraryMedia = await listReadyCampaignAssets(userId, projectId).catch(() => []);
     const suppliedMedia = Array.isArray(req.body?.workspace?.sourceMedia) ? req.body.workspace.sourceMedia : [];
+    const suppliedLibrary = Array.isArray(req.body?.workspace?.contentLibraryAssets) ? req.body.workspace.contentLibraryAssets : [];
     const workspace = {
       ...(req.body?.workspace || {}),
       performanceContext,
       sourceMedia: [...libraryMedia, ...suppliedMedia.filter((item) => !libraryMedia.some((asset) => asset.id === item?.id))],
+      contentLibraryAssets: [...libraryMedia, ...suppliedLibrary.filter((item) => !libraryMedia.some((asset) => asset.id === item?.id))],
     };
     const result = await runMarketingAgent({ ...req.body, workspace, connections }, userApiEnv);
     const run = createRunRecord(result, req.body?.action || "chat", req.body?.prompt || "", projectId);

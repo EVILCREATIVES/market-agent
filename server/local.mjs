@@ -2,7 +2,7 @@ import http from "node:http";
 import { Readable } from "node:stream";
 import { handleUpload } from "@vercel/blob/client";
 import { buildProductBrain, createRunRecord, readConnectedSourceMetadata, refineProductBrain, runMarketingAgent, runProjectConversation } from "./agent.mjs";
-import { approveAssetProposal, cancelAssetProposal, deleteProjectAsset, getProjectAssetPreviewUrl, listProjectAssets, registerLinkedAsset, registerUploadedAsset, serveProjectFile } from "./assets.mjs";
+import { approveAssetProposal, cancelAssetProposal, deleteProjectAsset, getProjectAssetPreviewUrl, listProjectAssets, listReadyCampaignAssets, registerLinkedAsset, registerUploadedAsset, serveProjectFile } from "./assets.mjs";
 import { requireUser } from "./auth.mjs";
 import { appendRunForUser, enforceRunBudget, loadStateForUser, saveStateForUser } from "./db.mjs";
 import { approveMediaJob, cancelMediaJob, listMediaJobs, prepareMediaJob } from "./media.mjs";
@@ -139,11 +139,20 @@ const server = http.createServer(async (req, res) => {
       await enforceRunBudget(userId, mode);
       await consumeAiUsage(userId, mode === "panel" ? "panel" : "agent", userApiEnv);
       const projectId = payload.projectId || "project-default";
-      const [connections, performanceContext] = await Promise.all([
+      const [connections, performanceContext, libraryMedia] = await Promise.all([
         getConnectionStatus(userId, projectId),
         getAgentPerformanceContext(userId, projectId).catch(() => ""),
+        listReadyCampaignAssets(userId, projectId).catch(() => []),
       ]);
-      const result = await runMarketingAgent({ ...payload, workspace: { ...(payload.workspace || {}), performanceContext }, connections }, userApiEnv);
+      const suppliedMedia = Array.isArray(payload.workspace?.sourceMedia) ? payload.workspace.sourceMedia : [];
+      const suppliedLibrary = Array.isArray(payload.workspace?.contentLibraryAssets) ? payload.workspace.contentLibraryAssets : [];
+      const workspace = {
+        ...(payload.workspace || {}),
+        performanceContext,
+        sourceMedia: [...libraryMedia, ...suppliedMedia.filter((item) => !libraryMedia.some((asset) => asset.id === item?.id))],
+        contentLibraryAssets: [...libraryMedia, ...suppliedLibrary.filter((item) => !libraryMedia.some((asset) => asset.id === item?.id))],
+      };
+      const result = await runMarketingAgent({ ...payload, workspace, connections }, userApiEnv);
       const run = createRunRecord(result, payload.action || "chat", payload.prompt || "", payload.projectId || "project-default");
       await appendRunForUser(userId, run);
       return json(res, 200, { ...result, run });
