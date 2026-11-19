@@ -116,6 +116,14 @@ test("LinkedIn research keeps only direct verified member-profile URLs", () => {
   assert.equal(result.rowValues[0].value, "[Jane Example](https://www.linkedin.com/in/jane-example/); John Example — Not found");
 });
 
+test("LinkedIn research preserves a professional mononym instead of dropping the person", () => {
+  const result = formatLinkedInProfileResearch([
+    { rowIndex: 0, people: "Demna, artistic director; Francesca Bellettini, leadership" },
+  ], { rows: [{ rowIndex: 0, matches: [{ name: "Francesca Bellettini", status: "not_found", url: "", verification: "" }] }] });
+  assert.equal(result.peopleNotFound, 2);
+  assert.equal(result.rowValues[0].value, "Demna — Not found; Francesca Bellettini — Not found");
+});
+
 test("the assistant can edit the selected campaign from its visible detail screen", () => {
   assert.equal(editableCampaignRunId("run-1", { page: "campaigns", campaignSection: "overview", selectedRunId: "run-1" }), "run-1");
   assert.equal(editableCampaignRunId("run-1", { page: "agent", selectedRunId: "run-1" }), "run-1");

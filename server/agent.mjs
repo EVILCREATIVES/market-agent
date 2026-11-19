@@ -2986,7 +2986,10 @@ function extractFallbackPeople(value) {
   const source = String(value || "");
   const bold = [...source.matchAll(/\*\*([^*]+)\*\*/g)].map((match) => plainResearchText(match[1])).filter(Boolean);
   if (bold.length) return bold;
-  return source.split(/\s*;\s*/).map((part) => plainResearchText(part).split(/\s*,\s*/)[0]).filter((name) => name && name.split(/\s+/).length >= 2).slice(0, 12);
+  return source.split(/\s*;\s*/).map((part) => ({ name: plainResearchText(part).split(/\s*,\s*/)[0], hasRole: part.includes(",") }))
+    .filter((person) => person.name && (person.hasRole || person.name.split(/\s+/).length >= 2))
+    .map((person) => person.name)
+    .slice(0, 12);
 }
 
 function normalizeLinkedInProfileUrl(value) {
