@@ -37,11 +37,24 @@ export function defaultState() {
   };
 }
 
+export function authoritativeRuns(legacyRuns, normalizedRows, normalizedTableAvailable = true) {
+  const source = normalizedTableAvailable
+    ? normalizedRows.map((row) => row?.data)
+    : legacyRuns;
+  const runs = new Map();
+  for (const run of source || []) if (run?.id) runs.set(run.id, run);
+  return Array.from(runs.values())
+    .sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")))
+    .slice(0, 250);
+}
+
 export async function loadStateForUser(userId, env = process.env) {
   const database = getPool(env);
   const [result, runRows, scheduleRows, messageRows] = await Promise.all([
     database.query("SELECT state, revision FROM market_agent_states WHERE user_id = $1", [userId]),
-    database.query("SELECT data FROM market_agent_runs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 250", [userId]).catch(() => ({ rows: [] })),
+    database.query("SELECT data FROM market_agent_runs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 250", [userId])
+      .then((value) => ({ rows: value.rows, available: true }))
+      .catch(() => ({ rows: [], available: false })),
     database.query("SELECT project_id, data FROM market_agent_schedules WHERE user_id = $1", [userId]).catch(() => ({ rows: [] })),
     database.query(
       `SELECT project_id,data,created_at FROM (
@@ -54,9 +67,11 @@ export async function loadStateForUser(userId, env = process.env) {
   ]);
   if (!result.rows[0]) return { state: defaultState(), isEmpty: true, revision: 0 };
   const state = normalizeState(result.rows[0].state);
-  const runs = new Map(state.runs.map((run) => [run.id, run]));
-  for (const row of runRows.rows) if (row.data?.id) runs.set(row.data.id, row.data);
-  state.runs = Array.from(runs.values()).sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || ""))).slice(0, 250);
+  // Once the normalized campaign table exists, it is the source of truth.
+  // Falling back to the JSON state is only for installations that have not
+  // run the normalization migration yet. Unioning the two sources would let
+  // stale JSON restore a campaign after its normalized row was deleted.
+  state.runs = authoritativeRuns(state.runs, runRows.rows, runRows.available);
   for (const row of scheduleRows.rows) state.schedules[row.project_id] = { ...defaultSchedule(), ...(row.data || {}) };
   const messages = new Map();
   for (const row of messageRows.rows) {

@@ -82,8 +82,6 @@ export function mergeCloudState(local: AppState, remote: AppState): AppState {
       projects.set(project.id, preserveSavedLogo(localIsNewer ? project : current, localIsNewer ? current : project));
     }
   }
-  const runs = new Map(remote.runs.map((run) => [run.id, run]));
-  for (const run of local.runs) runs.set(run.id, run);
   const schedules = { ...remote.schedules, ...local.schedules };
   for (const [projectId, schedule] of Object.entries(schedules)) {
     const remoteRun = remote.schedules[projectId]?.lastRunAt || "";
@@ -93,7 +91,10 @@ export function mergeCloudState(local: AppState, remote: AppState): AppState {
   return normalizeState({
     projects: Array.from(projects.values()),
     activeProjectId: local.activeProjectId || remote.activeProjectId,
-    runs: Array.from(runs.values()).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 250),
+    // Campaigns are created, updated, and deleted on the server. Treat the
+    // cloud list as authoritative so a stale browser tab cannot resurrect a
+    // campaign that another tab already deleted.
+    runs: remote.runs.slice(),
     schedules,
   });
 }

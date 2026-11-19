@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isPanelRun } from "../server/db.mjs";
+import { authoritativeRuns, isPanelRun } from "../server/db.mjs";
 import { isBrandSourceRefreshRequest, isPrivateAddress } from "../server/agent.mjs";
 import { applyInvitationTracking, campaignPublicationTarget, createInvitationTrackingUrl, explicitApprovedYouTubeFallback, personalizeInvitationTemplate, renderInvitationEmailHtml, resolveInvitationDestination, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
 import { canonicalAnalyticsPath, prepareAnalyticsLandingRows, prepareAnalyticsPageRows } from "../server/analytics.mjs";
@@ -48,6 +48,23 @@ test("balanced review runs count against the panel budget", () => {
   assert.equal(isPanelRun({ model: "Three-way strategy review" }), true);
   assert.equal(isPanelRun({ model: "Collaborative review" }), true);
   assert.equal(isPanelRun({ executionMode: "single", model: "Standard analysis" }), false);
+});
+
+test("normalized campaign rows prevent deleted campaigns from returning after reload", () => {
+  const deleted = { id: "deleted-campaign", createdAt: "2026-11-18T12:00:00.000Z" };
+  const current = { id: "current-campaign", createdAt: "2026-11-19T12:00:00.000Z" };
+  assert.deepEqual(
+    authoritativeRuns([deleted, current], [{ data: current }], true).map((run) => run.id),
+    ["current-campaign"],
+  );
+  assert.deepEqual(
+    authoritativeRuns([deleted], [], true),
+    [],
+  );
+  assert.deepEqual(
+    authoritativeRuns([deleted], [], false).map((run) => run.id),
+    ["deleted-campaign"],
+  );
 });
 
 test("draft copy mentioning future updates from a site does not trigger a Brand refresh", () => {
