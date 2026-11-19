@@ -46,6 +46,69 @@ export async function updateCampaignText(userId, projectId, runId, findText, rep
   return { run: updated, replaced, revision };
 }
 
+export function appendMarkdownTableColumn(markdown, columnName, defaultValue = "Unknown", tableHint = "") {
+  const lines = String(markdown || "").split("\n");
+  const requestedName = String(columnName || "").replace(/[|\r\n]+/g, " ").trim().slice(0, 120);
+  const requestedValue = String(defaultValue || "Unknown").replace(/[|\r\n]+/g, " ").trim().slice(0, 500) || "Unknown";
+  const hint = String(tableHint || "").trim().toLowerCase();
+  if (!requestedName) return { text: String(markdown || ""), changed: false, alreadyPresent: false, rowCount: 0 };
+
+  const tables = [];
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    if (!isMarkdownTableLine(lines[index]) || !isMarkdownSeparatorLine(lines[index + 1])) continue;
+    let end = index + 2;
+    while (end < lines.length && isMarkdownTableLine(lines[end])) end += 1;
+    const context = lines.slice(Math.max(0, index - 8), end).join(" ").toLowerCase();
+    tables.push({ start: index, end, context });
+    index = end - 1;
+  }
+  if (!tables.length) return { text: String(markdown || ""), changed: false, alreadyPresent: false, rowCount: 0 };
+  const table = hint ? tables.find((candidate) => candidate.context.includes(hint)) || tables[0] : tables[0];
+  const headers = markdownCells(lines[table.start]);
+  if (headers.some((header) => header.toLowerCase() === requestedName.toLowerCase())) {
+    return { text: String(markdown || ""), changed: false, alreadyPresent: true, rowCount: Math.max(0, table.end - table.start - 2) };
+  }
+
+  lines[table.start] = appendMarkdownCell(lines[table.start], requestedName);
+  lines[table.start + 1] = appendMarkdownCell(lines[table.start + 1], "---");
+  for (let index = table.start + 2; index < table.end; index += 1) lines[index] = appendMarkdownCell(lines[index], requestedValue);
+  return { text: lines.join("\n"), changed: true, alreadyPresent: false, rowCount: Math.max(0, table.end - table.start - 2) };
+}
+
+export async function addCampaignTableColumn(userId, projectId, runId, columnName, defaultValue = "Unknown", tableHint = "", env = process.env) {
+  if (!runId) throw campaignEditError("There is no active campaign table to edit.", 400);
+  const result = await getPool(env).query(
+    "SELECT data FROM market_agent_runs WHERE user_id = $1 AND project_id = $2 AND id = $3 LIMIT 1",
+    [userId, projectId, runId],
+  );
+  const run = result.rows[0]?.data;
+  if (!run) throw campaignEditError("The campaign could not be found.", 404);
+  const update = appendMarkdownTableColumn(run.output, columnName, defaultValue, tableHint);
+  if (!update.changed) return { run, revision: 0, columnName: String(columnName || "").trim(), rowsUpdated: update.rowCount, alreadyPresent: update.alreadyPresent, tableFound: update.alreadyPresent };
+  const updated = { ...run, output: update.text };
+  const revision = await persistCampaignRun(userId, projectId, runId, updated, env);
+  return { run: updated, revision, columnName: String(columnName || "").trim(), rowsUpdated: update.rowCount, alreadyPresent: false, tableFound: true };
+}
+
+function isMarkdownTableLine(line) {
+  const value = String(line || "").trim();
+  return value.startsWith("|") && value.endsWith("|") && value.slice(1, -1).includes("|");
+}
+
+function isMarkdownSeparatorLine(line) {
+  const cells = markdownCells(line);
+  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
+}
+
+function markdownCells(line) {
+  return String(line || "").trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+}
+
+function appendMarkdownCell(line, value) {
+  const text = String(line || "").trimEnd();
+  return text.endsWith("|") ? `${text.slice(0, -1).trimEnd()} | ${value} |` : `${text} | ${value}`;
+}
+
 export async function updateCampaignLink(userId, projectId, runId, targetUrl, env = process.env) {
   if (!runId) return null;
   const result = await getPool(env).query(

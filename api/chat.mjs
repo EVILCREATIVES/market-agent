@@ -6,7 +6,7 @@ import { getConnectionStatus } from "../server/connections.mjs";
 import { findProjectAssetForInstruction, listProjectAssets, updateProjectAsset } from "../server/assets.mjs";
 import { replaceDeliveryMediaFromAsset } from "../server/delivery.mjs";
 import { createNewsletterDraft, getNewsletterActionContext, updateLatestNewsletterLink, updateLatestNewsletterLogo, updateNewsletterDraft, updateOptinCampaign } from "../server/newsletters.mjs";
-import { getCampaignActionContext, updateCampaignLink, updateCampaignPlanItem, updateCampaignText } from "../server/campaign-edits.mjs";
+import { addCampaignTableColumn, getCampaignActionContext, updateCampaignLink, updateCampaignPlanItem, updateCampaignText } from "../server/campaign-edits.mjs";
 import { archiveProjectConversationDays, getProjectConversationMemory } from "../server/conversation-memory.mjs";
 import { waitUntil } from "@vercel/functions";
 
@@ -30,6 +30,10 @@ export default async function handler(req, res) {
     let newsletterAction = null;
     let newsletterLogoAction = null;
     let campaignAction = null;
+    const requestedTableColumn = campaignTableColumnRequest(message);
+    if (runId && req.body?.uiContext?.page === "campaigns" && requestedTableColumn) {
+      campaignAction = await addCampaignTableColumn(userId, projectId, runId, requestedTableColumn.columnName, requestedTableColumn.defaultValue, requestedTableColumn.tableHint);
+    }
     if (runId && isCampaignAssetReplacement(message)) {
       const asset = await findProjectAssetForInstruction(userId, projectId, message, userApiEnv);
       if (asset) assetAction = await replaceDeliveryMediaFromAsset(userId, projectId, runId, asset, userApiEnv);
@@ -54,10 +58,11 @@ export default async function handler(req, res) {
       newsletterAction ? `The primary link in newsletter draft “${newsletterAction.draft.content.subject}” was changed to ${newsletterAction.requestedUrl}. Campaign tracking was added automatically. The saved draft and its preview were regenerated. Nothing was sent or scheduled.` : "",
       newsletterLogoAction ? `Newsletter draft “${newsletterLogoAction.draft.content.subject}” now uses the saved Brand logo “${newsletterLogoAction.logo.name}” (${newsletterLogoAction.logo.usage}). The saved draft and preview were regenerated. Nothing was sent or scheduled.` : "",
       campaignAction?.replaced ? `${campaignAction.replaced} saved link ${campaignAction.replaced === 1 ? "reference was" : "references were"} changed in the active campaign to ${campaignAction.targetUrl}.` : "",
+      requestedTableColumn && campaignAction?.tableFound ? campaignAction.alreadyPresent ? `The active campaign already has a “${campaignAction.columnName}” column.` : `A “${campaignAction.columnName}” column was added to ${campaignAction.rowsUpdated} rows in the active campaign.` : "",
     ].filter(Boolean);
     const completedContext = completedActions.length ? `${message}\n\nCOMPLETED APP ACTION\n${completedActions.join("\n")} Tell the user the action is complete. Never say that you cannot save it or that the user must edit the campaign manually.` : message;
-    if ((newsletterAction || newsletterLogoAction || campaignAction?.replaced) && !assetAction) {
-      const changed = [campaignAction?.replaced ? "the active campaign" : "", newsletterAction ? "the newsletter link and preview" : "", newsletterLogoAction ? `the newsletter logo to “${newsletterLogoAction.logo.name}”` : ""].filter(Boolean).join(" and ");
+    if ((newsletterAction || newsletterLogoAction || campaignAction?.replaced || (requestedTableColumn && campaignAction?.tableFound)) && !assetAction) {
+      const changed = [campaignAction?.replaced ? "the active campaign" : "", requestedTableColumn && campaignAction?.tableFound ? campaignAction.alreadyPresent ? `the existing “${campaignAction.columnName}” campaign column` : `the campaign table with a “${campaignAction.columnName}” column` : "", newsletterAction ? "the newsletter link and preview" : "", newsletterLogoAction ? `the newsletter logo to “${newsletterLogoAction.logo.name}”` : ""].filter(Boolean).join(" and ");
       return res.status(200).json({
         reply: `Updated ${changed}.${campaignAction?.targetUrl || newsletterAction?.requestedUrl ? ` The primary link is ${campaignAction?.targetUrl || newsletterAction?.requestedUrl}.` : ""} Nothing was sent or scheduled.`,
         createdAt: new Date().toISOString(),
@@ -206,6 +211,16 @@ async function executeInterfaceActions({ userId, projectId, runId, workspace, pl
         if (!Object.keys(changes).length) throw new Error("The instruction did not contain a concrete post change.");
         campaignAction = await updateCampaignPlanItem(userId, projectId, targetId, action.itemIndex, changes);
         results.push({ type: action.type, status: "completed", detail: `Updated campaign item ${Number(action.itemIndex) + 1}; its visual preview and publishing payload now match.` });
+        continue;
+      }
+      if (action.type === "add_campaign_table_column") {
+        const targetId = String(action.targetId || runId || "");
+        if (!targetId) throw new Error("There is no active campaign table to edit.");
+        const columnName = String(action.name || "").trim();
+        if (!columnName) throw new Error("Choose a name for the campaign table column.");
+        campaignAction = await addCampaignTableColumn(userId, projectId, targetId, columnName, action.value || "Unknown", action.reason || "");
+        if (!campaignAction.tableFound) throw new Error("No editable table was found in the active campaign.");
+        results.push({ type: action.type, status: "completed", detail: campaignAction.alreadyPresent ? `The campaign already has a “${columnName}” column.` : `Added “${columnName}” to ${campaignAction.rowsUpdated} campaign rows.` });
       }
     } catch (error) {
       results.push({ type: action.type, status: "failed", detail: String(error?.message || "The change could not be saved.") });
@@ -265,10 +280,20 @@ function friendlyField(field) {
 
 function mayRequestInterfaceAction(value) {
   const message = String(value || "").toLowerCase();
-  const subject = /\b(email|e-mail|newsletter|invitation|message|messaggio|campaign|campagna|copy|caption|subject|body|link|url|logo|brand|profile|positioning|manifesto|audience|sender|address|asset|video|image|name|description|segmentation|voice|guardrails?|notes?|issues?|colors?|palette|typography|photography|goal|conversion|analytics|website|demo|headline|preview|signature|cta|button)\b/i.test(message);
+  const subject = /\b(email|e-mail|newsletter|invitation|message|messaggio|campaign|campagna|copy|caption|subject|body|link|url|logo|brand|profile|positioning|manifesto|audience|sender|address|asset|video|image|name|description|segmentation|voice|guardrails?|notes?|issues?|colors?|palette|typography|photography|goal|conversion|analytics|website|demo|headline|preview|signature|cta|button|table|column|row|people|prospects?|leads?|contacts?|linkedin)\b/i.test(message);
   const instruction = /\b(update|change|replace|rewrite|revise|fix|correct|edit|add|remove|use|save|create|make|set|move|swap|improve|redo|apply|start)\b/i.test(message);
   const rejection = /\b(wrong|awful|bad|terrible|shit|bullshit|useless|stupid|confusing|nothing happens|does not work|doesn't work|did not|didn't|don['’]t like|do not like|cazzo|merda|schifo)\b/i.test(message);
   return subject && (instruction || rejection);
+}
+
+export function campaignTableColumnRequest(value) {
+  const message = String(value || "").toLowerCase();
+  const addColumn = /\b(add|create|insert|include|make)\b/i.test(message) && /\bcolumn\b/i.test(message);
+  const people = /\b(people|person|prospects?|leads?|contacts?)\b/i.test(message);
+  if (addColumn && people && /\blinkedin\b/i.test(message)) {
+    return { columnName: "LinkedIn connection", defaultValue: "Unknown", tableHint: "people" };
+  }
+  return null;
 }
 
 function isInvitationEditRequest(value) {

@@ -10,6 +10,7 @@ import { projectLogoVariants, safeMailchimpSignupUrl, selectNewsletterLogoVarian
 import { createBrandLogoAccessUrl } from "../server/brand-logos.mjs";
 import { linkedinCommunityApprovalStatus, socialConnectorConfigured } from "../server/social-connections.mjs";
 import { ownerCostEstimateCents, ownerMonthlyCostCapCents } from "../server/billing.mjs";
+import { appendMarkdownTableColumn } from "../server/campaign-edits.mjs";
 
 test("owner-paid analysis has a conservative global monthly cost ceiling", () => {
   assert.equal(ownerMonthlyCostCapCents({}), 5_000);
@@ -65,6 +66,18 @@ test("normalized campaign rows prevent deleted campaigns from returning after re
     authoritativeRuns([deleted], [], false).map((run) => run.id),
     ["deleted-campaign"],
   );
+});
+
+test("the assistant can add a real column to a saved campaign people table", () => {
+  const markdown = `## Launch-ready queue\n\n| Brand | People to approach | Collaboration angle |\n| --- | --- | --- |\n| ASOS | Nick Goodchild | Fashion film |\n| Mango | Sara Donninelli | Collection world |`;
+  const update = appendMarkdownTableColumn(markdown, "LinkedIn connection", "Unknown", "people");
+  assert.equal(update.changed, true);
+  assert.equal(update.rowCount, 2);
+  assert.match(update.text, /\| Brand \| People to approach \| Collaboration angle \| LinkedIn connection \|/);
+  assert.match(update.text, /\| ASOS \| Nick Goodchild \| Fashion film \| Unknown \|/);
+  const repeated = appendMarkdownTableColumn(update.text, "LinkedIn connection", "Unknown", "people");
+  assert.equal(repeated.changed, false);
+  assert.equal(repeated.alreadyPresent, true);
 });
 
 test("draft copy mentioning future updates from a site does not trigger a Brand refresh", () => {
