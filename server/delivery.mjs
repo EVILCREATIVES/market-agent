@@ -371,7 +371,11 @@ export async function prepareDeliveryJobs(userId, projectId, runId, userApiEnv, 
   const plan = run.campaignPlan?.items?.length
     ? run.campaignPlan
     : await generateDeliveryPlan({ run, workspace: deliveryWorkspace, channels, channelContexts }, userApiEnv);
-  const safeItems = normalizeDeliveryItems(plan?.items, channels, deliveryWorkspace, run);
+  let safeItems = normalizeDeliveryItems(plan?.items, channels, deliveryWorkspace, run);
+  if (!safeItems.length) {
+    const fallback = explicitApprovedYouTubeFallback(run, deliveryWorkspace, channels);
+    if (fallback) safeItems = normalizeDeliveryItems([fallback], channels, deliveryWorkspace, run);
+  }
   if (!safeItems.length && channels.includes("instagram")) {
     const hasMedia = campaignMedia(deliveryWorkspace).some((item) => ["image", "video"].includes(item.kind));
     throw deliveryError(hasMedia
@@ -772,6 +776,47 @@ function requestedDeliveryScope(run, availableChannels) {
   return { channels: availableChannels.filter((channel) => requested.includes(channel)), explicit: true };
 }
 
+export function explicitApprovedYouTubeFallback(run, workspace, channels) {
+  if (!Array.isArray(channels) || channels.length !== 1 || channels[0] !== "youtube") return null;
+  const approvedText = `${String(run?.prompt || "")}\n${String(run?.output || "")}`;
+  if (!/\byou\s*tube\b/i.test(approvedText) || !/\b(?:private|unlisted)\b/i.test(approvedText) || !/\b(?:upload|video|short)\b/i.test(approvedText)) return null;
+  const videos = campaignMedia(workspace).filter((item) => item.kind === "video");
+  const normalizedApprovedText = approvedText.toLowerCase();
+  const exactMatches = videos.filter((item) => {
+    const name = String(item.name || "").trim().toLowerCase();
+    return name.length >= 3 && normalizedApprovedText.includes(name);
+  });
+  const selected = exactMatches.length === 1
+    ? exactMatches[0]
+    : videos.length === 1 && /\b(?:exactly one|use only this asset|this video)\b/i.test(approvedText)
+      ? videos[0]
+      : null;
+  if (!selected) return null;
+  const title = labeledApprovedValue(approvedText, "Title", 100);
+  const description = labeledApprovedValue(approvedText, "Description", 5000);
+  if (!title || !description) return null;
+  return {
+    channel: "youtube",
+    recipient: "",
+    subject: title,
+    text: description,
+    mediaUrl: selected.url,
+    sourceAssetId: String(selected.sourceAssetId || selected.id || ""),
+    mediaKind: "video",
+    privacyLevel: /\bunlisted\b/i.test(approvedText) ? "unlisted" : "private",
+    aiGenerated: false,
+    scheduledAt: "",
+    rationale: `Prepared deterministically from the approved YouTube instruction using “${String(selected.name || "approved video").slice(0, 120)}”.`,
+  };
+}
+
+function labeledApprovedValue(text, label, limit) {
+  const quoted = String(text || "").match(new RegExp(`\\b${label}:\\s*[“\"]([^”\"\\n]+)[”\"]`, "i"));
+  if (quoted?.[1]) return quoted[1].replace(/\s+/g, " ").trim().slice(0, limit);
+  const plain = String(text || "").match(new RegExp(`\\b${label}:\\s*([^\\n]+?)(?=\\s+\\b(?:Title|Description|Visibility|Asset):|$)`, "i"));
+  return plain?.[1] ? plain[1].replace(/\s+/g, " ").trim().replace(/[.\s]+$/, "").slice(0, limit) : "";
+}
+
 function channelAllowedForAccess(channel, accessEnv) {
   const mode = String(accessEnv?.MARKET_AGENT_ACCESS_MODE || "expired");
   if (channel === "x") return mode === "managed";
@@ -837,7 +882,7 @@ function normalizeDeliveryItems(values, channels, workspace, run = {}) {
       mediaUrl,
       sourceAssetId: mediaUrl ? String(selectedMedia?.sourceAssetId || selectedMedia?.id || "") : "",
       mediaKind: mediaUrl ? requestedMediaKind : "",
-      privacyLevel: channel === "tiktok" ? "" : channel === "youtube" ? "private" : "",
+      privacyLevel: channel === "tiktok" ? "" : channel === "youtube" && ["private", "unlisted"].includes(String(value?.privacyLevel || "")) ? String(value.privacyLevel) : channel === "youtube" ? "private" : "",
       aiGenerated: Boolean(value?.aiGenerated),
       madeForKids: false,
       disableComment: channel === "tiktok",
@@ -882,6 +927,7 @@ function normalizeDeliveryItems(values, channels, workspace, run = {}) {
 }
 
 function applyCampaignTracking(text, workspace, run, channel, index) {
+  if (/\boauth verification test\b/i.test(`${String(run?.prompt || "")}\n${String(run?.output || "")}`)) return { text, tracking: null };
   const website = validExternalMediaUrl(workspace?.website);
   const clickable = ["gmail", "linkedin", "x", "discord", "reddit", "youtube"].includes(channel);
   if (!website || !clickable) return { text, tracking: null };

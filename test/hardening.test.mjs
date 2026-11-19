@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { isPanelRun } from "../server/db.mjs";
 import { isBrandSourceRefreshRequest, isPrivateAddress } from "../server/agent.mjs";
-import { applyInvitationTracking, campaignPublicationTarget, createInvitationTrackingUrl, personalizeInvitationTemplate, renderInvitationEmailHtml, resolveInvitationDestination, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
+import { applyInvitationTracking, campaignPublicationTarget, createInvitationTrackingUrl, explicitApprovedYouTubeFallback, personalizeInvitationTemplate, renderInvitationEmailHtml, resolveInvitationDestination, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
 import { canonicalAnalyticsPath, prepareAnalyticsLandingRows, prepareAnalyticsPageRows } from "../server/analytics.mjs";
 import { scoreMarketingOutput } from "../server/evaluation.mjs";
 import { handleSchedule } from "../server/schedule-handler.mjs";
@@ -60,6 +60,34 @@ test("direct delivery accepts one reviewed recipient and rejects additions", () 
   assert.equal(validApprovedRecipient("alex@example.com", run), "alex@example.com");
   assert.equal(validApprovedRecipient("alex@example.com, other@example.com", run), "");
   assert.equal(validApprovedRecipient("invented@example.com", run), "");
+});
+
+test("an exact approved private YouTube upload survives an empty model delivery plan", () => {
+  const media = {
+    id: "asset-1",
+    sourceAssetId: "asset-1",
+    kind: "video",
+    name: "market-agent-oauth-verification-test.mp4",
+    url: "https://marketagent.shop/api/project-asset?id=asset-1",
+  };
+  const item = explicitApprovedYouTubeFallback({
+    prompt: "Prepare exactly one private YouTube test upload using the Content Library asset “market-agent-oauth-verification-test.mp4”. Title: “Market Agent OAuth Verification Test”. Description: “Private OAuth verification test for Market Agent. No customer data.” Use only this asset and YouTube.",
+    output: "PREPARED — NOT UPLOADED.",
+  }, { sourceMedia: [media] }, ["youtube"]);
+  assert.equal(item?.channel, "youtube");
+  assert.equal(item?.sourceAssetId, "asset-1");
+  assert.equal(item?.subject, "Market Agent OAuth Verification Test");
+  assert.equal(item?.text, "Private OAuth verification test for Market Agent. No customer data.");
+  assert.equal(item?.privacyLevel, "private");
+});
+
+test("the YouTube fallback refuses ambiguous assets", () => {
+  const prompt = "Prepare exactly one private YouTube upload. Title: “Test”. Description: “Private test.”";
+  const workspace = { sourceMedia: [
+    { id: "a", kind: "video", name: "one.mp4", url: "https://assets.example.com/one.mp4" },
+    { id: "b", kind: "video", name: "two.mp4", url: "https://assets.example.com/two.mp4" },
+  ] };
+  assert.equal(explicitApprovedYouTubeFallback({ prompt, output: "" }, workspace, ["youtube"]), null);
 });
 
 test("invitation templates personalize one recipient and keep the approved project destination", () => {
