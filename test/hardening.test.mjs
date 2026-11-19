@@ -10,7 +10,7 @@ import { projectLogoVariants, safeMailchimpSignupUrl, selectNewsletterLogoVarian
 import { createBrandLogoAccessUrl } from "../server/brand-logos.mjs";
 import { linkedinCommunityApprovalStatus, socialConnectorConfigured } from "../server/social-connections.mjs";
 import { ownerCostEstimateCents, ownerMonthlyCostCapCents } from "../server/billing.mjs";
-import { appendMarkdownTableColumn } from "../server/campaign-edits.mjs";
+import { appendMarkdownTableColumn, editableCampaignRunId } from "../server/campaign-edits.mjs";
 
 test("owner-paid analysis has a conservative global monthly cost ceiling", () => {
   assert.equal(ownerMonthlyCostCapCents({}), 5_000);
@@ -78,6 +78,13 @@ test("the assistant can add a real column to a saved campaign people table", () 
   const repeated = appendMarkdownTableColumn(update.text, "LinkedIn connection", "Unknown", "people");
   assert.equal(repeated.changed, false);
   assert.equal(repeated.alreadyPresent, true);
+});
+
+test("the assistant can edit the selected campaign from its visible detail screen", () => {
+  assert.equal(editableCampaignRunId("run-1", { page: "campaigns", campaignSection: "overview", selectedRunId: "run-1" }), "run-1");
+  assert.equal(editableCampaignRunId("run-1", { page: "agent", selectedRunId: "run-1" }), "run-1");
+  assert.equal(editableCampaignRunId("run-1", { page: "agent", selectedRunId: "run-2" }), "");
+  assert.equal(editableCampaignRunId("run-1", { page: "campaigns", campaignSection: "newsletter", selectedRunId: "run-1" }), "");
 });
 
 test("draft copy mentioning future updates from a site does not trigger a Brand refresh", () => {

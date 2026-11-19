@@ -6,7 +6,7 @@ import { getConnectionStatus } from "../server/connections.mjs";
 import { findProjectAssetForInstruction, listProjectAssets, updateProjectAsset } from "../server/assets.mjs";
 import { replaceDeliveryMediaFromAsset } from "../server/delivery.mjs";
 import { createNewsletterDraft, getNewsletterActionContext, updateLatestNewsletterLink, updateLatestNewsletterLogo, updateNewsletterDraft, updateOptinCampaign } from "../server/newsletters.mjs";
-import { addCampaignTableColumn, getCampaignActionContext, updateCampaignLink, updateCampaignPlanItem, updateCampaignText } from "../server/campaign-edits.mjs";
+import { addCampaignTableColumn, editableCampaignRunId, getCampaignActionContext, updateCampaignLink, updateCampaignPlanItem, updateCampaignText } from "../server/campaign-edits.mjs";
 import { archiveProjectConversationDays, getProjectConversationMemory } from "../server/conversation-memory.mjs";
 import { waitUntil } from "@vercel/functions";
 
@@ -30,9 +30,11 @@ export default async function handler(req, res) {
     let newsletterAction = null;
     let newsletterLogoAction = null;
     let campaignAction = null;
+    const uiContext = req.body?.uiContext && typeof req.body.uiContext === "object" ? req.body.uiContext : {};
+    const editableRunId = editableCampaignRunId(runId, uiContext);
     const requestedTableColumn = campaignTableColumnRequest(message);
-    if (runId && req.body?.uiContext?.page === "campaigns" && requestedTableColumn) {
-      campaignAction = await addCampaignTableColumn(userId, projectId, runId, requestedTableColumn.columnName, requestedTableColumn.defaultValue, requestedTableColumn.tableHint);
+    if (editableRunId && requestedTableColumn) {
+      campaignAction = await addCampaignTableColumn(userId, projectId, editableRunId, requestedTableColumn.columnName, requestedTableColumn.defaultValue, requestedTableColumn.tableHint);
     }
     if (runId && isCampaignAssetReplacement(message)) {
       const asset = await findProjectAssetForInstruction(userId, projectId, message, userApiEnv);
@@ -74,8 +76,7 @@ export default async function handler(req, res) {
     }
     await consumeAiUsage(userId, "chat", userApiEnv);
     if (mayRequestInterfaceAction(message) || isInvitationEditRequest(message)) {
-      const uiContext = req.body?.uiContext && typeof req.body.uiContext === "object" ? req.body.uiContext : {};
-      const campaignRunIdForContext = uiContext.page === "campaigns" && uiContext.campaignSection !== "newsletter" ? runId : "";
+      const campaignRunIdForContext = editableRunId;
       const [newsletterContext, campaignContext] = await Promise.all([
         getNewsletterActionContext(userId, projectId, { newsletterId: uiContext.selectedNewsletterId }).catch(() => ({ newsletter: null, invitation: null })),
         getCampaignActionContext(userId, projectId, campaignRunIdForContext).catch(() => null),

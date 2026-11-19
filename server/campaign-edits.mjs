@@ -1,6 +1,16 @@
 import { getPool } from "./db.mjs";
 import { replaceCampaignLinks } from "./email-content.mjs";
 
+export function editableCampaignRunId(runId, uiContext = {}) {
+  const id = String(runId || "").trim().slice(0, 200);
+  if (!id) return "";
+  const page = String(uiContext?.page || "");
+  const section = String(uiContext?.campaignSection || "");
+  const selectedRunId = String(uiContext?.selectedRunId || "").trim().slice(0, 200);
+  if (page === "campaigns") return section === "newsletter" ? "" : id;
+  return selectedRunId === id ? id : "";
+}
+
 export async function getCampaignActionContext(userId, projectId, runId, env = process.env) {
   if (!runId) return null;
   const result = await getPool(env).query(
