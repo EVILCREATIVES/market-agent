@@ -4079,7 +4079,7 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
         <aside>
           <div className="op-review-card"><strong>Review control</strong><p>Approval saves your decision. It does not send or publish anything.</p>{editing ? <><button onClick={saveEdit}><Save size={14} /> Save changes</button><button className="secondary" onClick={() => { setOutput(run.output); setEditing(false); }}>Cancel</button></> : <button className="secondary" onClick={() => setEditing(true)}>Edit output</button>}{run.status === "Draft" ? <button onClick={() => { onStatus(run.id, "Approved"); notify("Approved and saved. Nothing was published."); }}><Check size={14} /> Mark approved</button> : <button className="secondary" onClick={() => onStatus(run.id, "Draft")}>Return to draft</button>}</div>
           {run.sources.length > 0 && <RunSources sources={run.sources} />}
-          <div className="op-run-meta"><span>Analysis</span><strong>{String(run.model || "").toLowerCase().includes("panel") ? "Balanced review" : "Standard review"}</strong>{run.intensity && <><span>Campaign style</span><strong>{run.intensity[0].toUpperCase() + run.intensity.slice(1)}</strong></>}<span>Record</span><code>{run.remoteId || "Cloud record"}</code></div>
+          <div className="op-run-meta"><span>Analysis</span><strong>{String(run.model || "").toLowerCase().includes("panel") ? "Balanced review" : "Standard review"}</strong>{run.intensity && <><span>Campaign style</span><strong>{run.intensity[0].toUpperCase() + run.intensity.slice(1)}</strong></>}</div>
         </aside>
       </div>
     </section>
