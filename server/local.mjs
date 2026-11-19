@@ -146,11 +146,12 @@ const server = http.createServer(async (req, res) => {
       ]);
       const suppliedMedia = Array.isArray(payload.workspace?.sourceMedia) ? payload.workspace.sourceMedia : [];
       const suppliedLibrary = Array.isArray(payload.workspace?.contentLibraryAssets) ? payload.workspace.contentLibraryAssets : [];
+      const availableMedia = [...libraryMedia, ...suppliedMedia.filter((item) => !libraryMedia.some((asset) => asset.id === item?.id))];
       const workspace = {
         ...(payload.workspace || {}),
         performanceContext,
-        sourceMedia: [...libraryMedia, ...suppliedMedia.filter((item) => !libraryMedia.some((asset) => asset.id === item?.id))],
-        contentLibraryAssets: [...libraryMedia, ...suppliedLibrary.filter((item) => !libraryMedia.some((asset) => asset.id === item?.id))],
+        sourceMedia: availableMedia,
+        contentLibraryAssets: [...availableMedia, ...suppliedLibrary.filter((item) => !availableMedia.some((asset) => asset.id === item?.id))],
       };
       const result = await runMarketingAgent({ ...payload, workspace, connections }, userApiEnv);
       const run = createRunRecord(result, payload.action || "chat", payload.prompt || "", payload.projectId || "project-default");
