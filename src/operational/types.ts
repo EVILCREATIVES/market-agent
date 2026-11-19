@@ -264,6 +264,21 @@ export interface BillingStatus {
   currency: string;
   mediaIncluded: boolean;
   collaborationReady: boolean;
+  utilityMeasurement: {
+    status: "scheduled" | "active" | "complete" | "unavailable";
+    startsAt: string;
+    endsAt: string;
+    calls: number;
+    utilityCalls: number;
+    failedUtilityCalls: number;
+    fallbackCalls: number;
+    measuredCostCalls: number;
+    inputTokens: number;
+    outputTokens: number;
+    estimatedCostUsd: number;
+    baselineCostUsd: number;
+    estimatedSavingsUsd: number;
+  };
   trial: {
     active: boolean;
     daysRemaining: number;
@@ -471,7 +486,9 @@ export interface NewsletterDashboard {
     clickRate: number;
     unsubscribed: number;
     bounces: number;
+    locations?: GeographyLocation[];
   }>;
+  geography: GeographyReport;
   drafts: NewsletterDraft[];
   contactImports: ContactImport[];
   conversionCampaigns: ProspectConversionCampaign[];
@@ -657,7 +674,26 @@ export interface AnalyticsReport {
   outboundLinks: Array<Record<string, string | number>>;
   videos: Array<Record<string, string | number>>;
   transitions: Array<Record<string, string | number>>;
+  geography: GeographyReport;
   fetchedAt: string;
+}
+
+export interface GeographyLocation {
+  countryCode: string;
+  country: string;
+  region: string;
+  city: string;
+  value: number;
+  secondaryValue: number;
+  conversions: number;
+}
+
+export interface GeographyReport {
+  availability: "live" | "insufficient_data" | "not_provided" | "not_connected";
+  metric: string;
+  metricLabel: string;
+  note: string;
+  locations: GeographyLocation[];
 }
 
 export interface SocialAnalyticsReport {
@@ -686,6 +722,7 @@ export interface SocialAnalyticsReport {
     url: string;
     metrics: Record<string, number>;
   }>;
+  geography: GeographyReport;
   fetchedAt: string;
 }
 

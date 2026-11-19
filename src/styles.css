@@ -1464,6 +1464,35 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-analytics-source > div { display: flex; flex-direction: column; gap: 2px; }
 .op-analytics-source strong { font-size: 10px; }
 .op-analytics-source span, .op-analytics-source small { color: #858179; font-size: 8px; }
+.op-geography { padding: 20px; border: 1px solid #dfded7; border-radius: 14px; background: #fbfbf8; box-shadow: var(--shadow); }
+.op-geography > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.op-geography > header small { color: #7258ce; font-size: 9px; font-weight: 850; letter-spacing: .11em; }
+.op-geography > header h2 { margin: 5px 0 4px; font-size: 18px; }
+.op-geography > header p { max-width: 760px; margin: 0; color: #77736c; font-size: 12px; line-height: 1.5; }
+.op-geography > header > span { color: #68635d; font-size: 11px; font-weight: 750; white-space: nowrap; }
+.op-geography__layout { display: grid; grid-template-columns: minmax(0,1.65fr) minmax(270px,.75fr); gap: 18px; margin-top: 18px; }
+.op-geography__map { position: relative; min-height: 350px; overflow: hidden; border: 1px solid #dfdcd4; border-radius: 12px; background: radial-gradient(circle at 48% 40%,#faf9ff,#f1f0ec 72%); }
+.op-geography__map > svg { position: absolute; inset: 4%; width: 92%; height: 92%; }
+.op-geography__map > svg path { fill: #d9d7d0; stroke: #c8c5bc; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.op-geography__map > button { position: absolute; z-index: 2; border: 2px solid rgba(255,255,255,.92); border-radius: 50%; background: rgba(105,76,205,.82); box-shadow: 0 3px 12px rgba(72,50,145,.32); transform: translate(-50%,-50%); cursor: crosshair; }
+.op-geography__map > button:hover, .op-geography__map > button:focus-visible { z-index: 5; background: #4f36ae; outline: 3px solid rgba(110,80,215,.22); }
+.op-geography__map > button::after { content: attr(data-tooltip); position: absolute; left: 50%; bottom: calc(100% + 8px); width: max-content; max-width: 230px; padding: 7px 9px; border-radius: 7px; background: #292631; color: white; font-size: 11px; font-weight: 750; white-space: nowrap; opacity: 0; pointer-events: none; transform: translate(-50%,4px); transition: .12s ease; }
+.op-geography__map > button:hover::after, .op-geography__map > button:focus-visible::after { opacity: 1; transform: translate(-50%,0); }
+.op-geography__unavailable { position: absolute; inset: 0; z-index: 2; padding: 30px; background: rgba(251,251,248,.82); display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+.op-geography__unavailable svg { color: #7258ce; }
+.op-geography__unavailable strong { margin-top: 10px; font-size: 15px; }
+.op-geography__unavailable span { max-width: 390px; margin-top: 5px; color: #77736c; font-size: 12px; line-height: 1.45; }
+.op-geography__ranking { min-width: 0; }
+.op-geography__ranking > div { padding: 0 0 9px; border-bottom: 1px solid #ddd9d0; display: flex; justify-content: space-between; gap: 10px; }
+.op-geography__ranking > div strong { font-size: 13px; }
+.op-geography__ranking > div span { color: #858179; font-size: 11px; }
+.op-geography__ranking article { padding: 10px 0; border-bottom: 1px solid #e6e3dc; display: grid; grid-template-columns: 24px minmax(0,1fr) auto; align-items: center; gap: 8px; }
+.op-geography__ranking article i { width: 22px; height: 22px; border-radius: 7px; background: #eee9ff; color: #674bc8; display: grid; place-items: center; font-size: 9px; font-style: normal; font-weight: 800; }
+.op-geography__ranking article span { min-width: 0; }
+.op-geography__ranking article strong { display: block; overflow: hidden; color: #34312e; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.op-geography__ranking article small { display: block; margin-top: 2px; overflow: hidden; color: #8b867e; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.op-geography__ranking article b { color: #4e3d99; font-size: 12px; }
+.op-geography__ranking > p { margin: 14px 0 0; color: #858179; font-size: 11px; line-height: 1.5; }
 .op-growth-goal { padding: 17px 18px; border: 1px solid #d9d0f2; border-radius: 14px; background: linear-gradient(135deg,#f5f1ff,#fbfbf8); box-shadow: var(--shadow); display: grid; grid-template-columns: 42px minmax(0,1fr) auto; align-items: center; gap: 13px; }
 .op-growth-goal__icon { width: 42px; height: 42px; border-radius: 12px; background: #e7dfff; color: #6449c3; display: grid; place-items: center; }
 .op-growth-goal small, .op-growth-funnel header small, .op-growth-actions header small, .op-growth-channels header small, .op-growth-campaigns header small { color: #6a50c7; font-size: 8px; font-weight: 850; letter-spacing: .1em; }
@@ -2501,6 +2530,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .op-channel-status { align-items: stretch; flex-direction: column; }
   .op-channel-status aside { justify-content: space-between; }
   .op-analytics-source { align-items: flex-start; flex-direction: column; }
+  .op-geography > header { flex-direction: column; }
+  .op-geography__layout { grid-template-columns: 1fr; }
+  .op-geography__map { min-height: 270px; }
   .op-newsletter-metrics { grid-template-columns: 1fr 1fr; }
   .op-subscriber-registry__counts { grid-template-columns: 1fr 1fr; }
   .op-subscriber-registry__filters { grid-template-columns: auto 1fr; }

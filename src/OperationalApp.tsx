@@ -70,7 +70,7 @@ import { prepareLogo, prepareMaterial, type PreparedMaterial } from "./operation
 import { upload } from "@vercel/blob/client";
 import { apiFetch, getAccessToken } from "./auth";
 import BrandLogo from "./BrandLogo";
-import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, BillingStatus, BrandLogoVariant, ConnectionStatus, ContactImport, DeliveryJob, GrowthObjective, GrowthReport, HealthState, MediaBudgetSummary, MediaJob, NewsletterDashboard, NewsletterDraft, NewsletterSubscriber, PrimaryConversion, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, ProspectConversionCampaign, RunAssetReference, RunStatus, SocialAnalyticsReport, SourceMediaAsset, TikTokPublishingOptions, YouTubePublishingOptions } from "./operational/types";
+import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, BillingStatus, BrandLogoVariant, ConnectionStatus, ContactImport, DeliveryJob, GeographyReport, GrowthObjective, GrowthReport, HealthState, MediaBudgetSummary, MediaJob, NewsletterDashboard, NewsletterDraft, NewsletterSubscriber, PrimaryConversion, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, ProspectConversionCampaign, RunAssetReference, RunStatus, SocialAnalyticsReport, SourceMediaAsset, TikTokPublishingOptions, YouTubePublishingOptions } from "./operational/types";
 
 type Page = "agent" | "brain" | "issues" | "research" | "campaigns" | "calendar" | "content" | "analytics" | "integrations";
 type CampaignIntensity = "careful" | "assertive" | "aggressive";
@@ -177,6 +177,21 @@ const emptyBilling = (): BillingStatus => ({
   currency: "USD",
   mediaIncluded: false,
   collaborationReady: false,
+  utilityMeasurement: {
+    status: "unavailable",
+    startsAt: "",
+    endsAt: "",
+    calls: 0,
+    utilityCalls: 0,
+    failedUtilityCalls: 0,
+    fallbackCalls: 0,
+    measuredCostCalls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    estimatedCostUsd: 0,
+    baselineCostUsd: 0,
+    estimatedSavingsUsd: 0,
+  },
   trial: { active: false, daysRemaining: 0, endsAt: "" },
 });
 
@@ -2829,11 +2844,12 @@ function money(cents: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(cents / 100);
 }
 
-type AnalyticsTab = "overview" | "website" | SocialAnalyticsReport["provider"];
+type AnalyticsTab = "overview" | "website" | "newsletter" | SocialAnalyticsReport["provider"];
 
 const analyticsTabs: Array<{ id: AnalyticsTab; label: string }> = [
   { id: "overview", label: "Growth overview" },
   { id: "website", label: "Website" },
+  { id: "newsletter", label: "Newsletter" },
   { id: "linkedin", label: "LinkedIn" },
   { id: "instagram", label: "Instagram" },
   { id: "tiktok", label: "TikTok" },
@@ -2851,17 +2867,19 @@ function AnalyticsDashboard({ workspace, connections, onSave, onConnect }: { wor
     if (workspace.growth?.objective && workspace.growth?.primaryConversion) return;
     onSave({ ...workspace, growth: inferredGrowth, updatedAt: new Date().toISOString() });
   }, [inferredGrowth, onSave, workspace]);
-  const anyConnection = connections.analytics.canRead || (["linkedin", "instagram", "tiktok", "youtube", "x", "discord", "reddit"] as const).some((provider) => connections[provider].connected);
+  const anyConnection = connections.analytics.canRead || connections.mailchimp.canManage || (["linkedin", "instagram", "tiktok", "youtube", "x", "discord", "reddit"] as const).some((provider) => connections[provider].connected);
   return <div className="op-stack">
     <div className="op-analytics-heading"><div className="op-heading"><div className="op-eyebrow">Growth and measurable outcomes</div><h1>Growth</h1><p>See whether visibility is building an audience, sending people to the website, and producing the project’s primary business outcome.</p></div><label><span>REPORTING WINDOW</span><select value={range} onChange={(event) => setRange(event.target.value)}><option value="7daysAgo">Last 7 days</option><option value="28daysAgo">Last 28 days</option><option value="30daysAgo">Last 30 days</option><option value="60daysAgo">Last 60 days</option><option value="90daysAgo">Last 90 days</option></select></label></div>
     <nav className="op-analytics-tabs" aria-label="Growth and analytics views">{analyticsTabs.map((item) => {
-      const connected = item.id === "overview" ? anyConnection : item.id === "website" ? connections.analytics.canRead : connections[item.id].connected;
+      const connected = item.id === "overview" ? anyConnection : item.id === "website" ? connections.analytics.canRead : item.id === "newsletter" ? connections.mailchimp.canManage : connections[item.id].connected;
       return <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}><i className={connected ? "connected" : ""} />{item.label}</button>;
     })}</nav>
     {tab === "overview"
       ? <GrowthOverviewPanel workspace={workspace} suggestedGoal={inferredGrowth} range={range} onSave={onSave} onConnect={onConnect} />
       : tab === "website"
         ? <WebsiteAnalyticsPanel projectId={workspace.id} connection={connections.analytics} range={range} onConnect={onConnect} />
+        : tab === "newsletter"
+          ? <NewsletterAnalyticsPanel projectId={workspace.id} connection={connections.mailchimp} range={range} onConnect={onConnect} />
         : <SocialAnalyticsPanel projectId={workspace.id} provider={tab} connection={connections[tab]} range={range} onConnect={onConnect} />}
   </div>;
 }
@@ -2993,6 +3011,7 @@ function WebsiteAnalyticsPanel({ projectId, connection, range, onConnect }: { pr
     {loading && !report ? <div className="op-analytics-loading"><LoaderCircle className="spin" size={22} /> Reading the live property…</div> : report && <>
       <section className="op-analytics-metrics op-analytics-metrics--journey">{metrics.map((metric) => { const change = report.changes?.[metric.key]; return <article key={metric.key}><small>{metric.label}</small><strong>{formatWebsiteMetric(totals[metric.key], metric.format)}</strong><GrowthDelta change={change?.absolute ?? null} percent={change?.percent ?? null} /></article>; })}</section>
       <section className="op-analytics-chart"><header><div><small>DAILY TRAFFIC</small><h2>Sessions over time</h2></div><span>{loading ? "Refreshing…" : `Updated ${new Date(report.fetchedAt).toLocaleString()}`}</span></header><div className="op-analytics-chart__bars">{report.timeline.map((row, index) => { const label = analyticsDate(String(row.date || "")); const value = Number(row.sessions || 0); return <button type="button" key={`${row.date}-${index}`} style={{ height: `${Math.max(3, (value / maxSessions) * 100)}%` }} aria-label={`${label}: ${formatMetric(value)} sessions`} data-tooltip={`${label} · ${formatMetric(value)} sessions`} />; })}</div><footer><span>{analyticsDate(String(report.timeline[0]?.date || ""))}</span><span>{analyticsDate(String(report.timeline.at(-1)?.date || ""))}</span></footer></section>
+      <GeographyMap geography={report.geography} title="Where website visitors are" />
       <section className="op-analytics-table op-analytics-table--source"><header><div><small>HOW PEOPLE ARRIVED</small><h2>Traffic sources and campaigns</h2><p>Shows the source that initiated each visit—not a generic channel total.</p></div></header><div className="op-analytics-table__head"><span>Source / medium</span><span>Channel</span><span>Visits</span><span>Engaged</span><span>Average visit</span><span>Key actions</span></div>{report.acquisition?.length ? report.acquisition.map((row, index) => <div key={`${row.sessionSourceMedium}-${row.sessionManualCampaignName}-${index}`}><strong>{cleanAnalyticsLabel(row.sessionSourceMedium, "Direct / none")}<small>{meaningfulAnalyticsLabel(row.sessionManualCampaignName) ? String(row.sessionManualCampaignName) : "No campaign name"}</small></strong><span>{cleanAnalyticsLabel(row.sessionPrimaryChannelGroup, "Unassigned")}</span><span>{formatMetric(row.sessions)}</span><span>{formatMetric(row.engagedSessions)} · {formatPercent(Number(row.engagementRate || 0))}</span><span>{formatDuration(Number(row.averageSessionDuration || 0))}</span><span>{formatMetric(row.keyEvents)}</span></div>) : <p>No source details were returned for this period.</p>}</section>
       <section className="op-analytics-table op-analytics-table--landing"><header><div><small>WHERE THE VISIT STARTED</small><h2>Landing pages</h2><p>The first real page visitors saw. Internal admin activity, obvious 404 probes, and query-string duplicates are cleaned automatically.</p></div></header><div className="op-analytics-table__head"><span>Landing page</span><span>Visits</span><span>Engaged</span><span>Engagement</span><span>Average visit</span><span>Key actions</span></div>{report.landingPages?.length ? report.landingPages.map((row, index) => <div key={`${row.landingPagePlusQueryString}-${index}`}><strong>{cleanAnalyticsPath(row.landingPagePlusQueryString)}</strong><span>{formatMetric(row.sessions)}</span><span>{formatMetric(row.engagedSessions)}</span><span>{formatPercent(Number(row.engagementRate || 0))}</span><span>{formatDuration(Number(row.averageSessionDuration || 0))}</span><span>{formatMetric(row.keyEvents)}</span></div>) : <p>No meaningful landing-page activity was returned for this period.</p>}</section>
       <section className="op-analytics-table op-analytics-table--pages"><header><div><small>WHAT PEOPLE VIEWED</small><h2>Pages and attention</h2><p>Meaningful content views only. Missing pages and private admin routes are excluded; URL variants are combined.</p></div></header><div className="op-analytics-table__head"><span>Page</span><span>Views</span><span>Visitors</span><span>Avg. attention</span><span>90% scrolls</span><span>Key actions</span></div>{report.pages?.length ? report.pages.map((row, index) => <div key={`${row.pagePathPlusQueryString}-${index}`}><strong>{cleanAnalyticsPath(row.pagePathPlusQueryString)}<small>{cleanAnalyticsLabel(row.pageTitle, "Untitled page")}</small></strong><span>{formatMetric(row.screenPageViews)}</span><span>{formatMetric(row.activeUsers)}</span><span>{formatDuration(Number(row.userEngagementDuration || 0) / Math.max(1, Number(row.activeUsers || 0)))}</span><span>{formatMetric(row.scrolledUsers)}</span><span>{formatMetric(row.keyEvents)}</span></div>) : <p>No meaningful page-level engagement was returned for this period.</p>}</section>
@@ -3048,6 +3067,37 @@ function analyticsUrlPath(value: unknown) {
   } catch { return cleanAnalyticsPath(value); }
 }
 
+function NewsletterAnalyticsPanel({ projectId, connection, range, onConnect }: { projectId: string; connection: ConnectionStatus["mailchimp"]; range: string; onConnect: () => void }) {
+  const [dashboard, setDashboard] = useState<NewsletterDashboard | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!connection.canManage) { setDashboard(null); return; }
+    let active = true;
+    setLoading(true);
+    setError("");
+    apiFetch(`/api/newsletters?projectId=${encodeURIComponent(projectId)}`)
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Newsletter analytics could not be read.");
+        if (active) setDashboard(data as NewsletterDashboard);
+      })
+      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "Newsletter analytics could not be read."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [connection.canManage, projectId]);
+  const geography = useMemo(() => newsletterGeographyForRange(dashboard, range), [dashboard, range]);
+  if (!connection.canManage) return <div className="op-analytics-empty"><span><Globe2 size={24} /></span><h2>Connect newsletter delivery</h2><p>Authorize the project’s newsletter audience to read verified opens and opening locations.</p><button onClick={onConnect}>Open Integrations <ArrowRight size={14} /></button></div>;
+  return <>
+    <div className="op-analytics-source"><div><strong>{connection.audienceName || connection.accountLabel || "Newsletter audience"}</strong><span>Newsletter delivery and opening locations</span></div>{dashboard && <small>Updated {new Date(dashboard.fetchedAt).toLocaleString()}</small>}</div>
+    {error && <div className="op-analytics-error"><CircleAlert size={17} />{error}<button onClick={onConnect}>Manage connection</button></div>}
+    {loading && !dashboard ? <div className="op-analytics-loading"><LoaderCircle className="spin" size={22} /> Reading newsletter locations…</div> : dashboard && <>
+      <section className="op-analytics-metrics"><article><small>Subscribers</small><strong>{formatMetric(dashboard.audience.memberCount)}</strong></article><article><small>Average opens</small><strong>{formatPercent(dashboard.audience.openRate)}</strong></article><article><small>Average clicks</small><strong>{formatPercent(dashboard.audience.clickRate)}</strong></article><article><small>Sent campaigns</small><strong>{formatMetric(dashboard.campaigns.filter((campaign) => campaign.status === "sent").length)}</strong></article></section>
+      <GeographyMap geography={geography} title="Where newsletter opens came from" />
+    </>}
+  </>;
+}
+
 function SocialAnalyticsPanel({ projectId, provider, connection, range, onConnect }: { projectId: string; provider: SocialAnalyticsReport["provider"]; connection: ConnectionStatus[SocialAnalyticsReport["provider"]]; range: string; onConnect: () => void }) {
   const [report, setReport] = useState<SocialAnalyticsReport | null>(null);
   const [loading, setLoading] = useState(false);
@@ -3078,9 +3128,70 @@ function SocialAnalyticsPanel({ projectId, provider, connection, range, onConnec
     <section className={`op-channel-status op-channel-status--${report.availability}`}><div><span>{report.availability === "live" ? <Check size={16} /> : <CircleAlert size={16} />}</span><div><strong>{report.accountLabel || report.label}</strong><p>{report.note}</p></div></div><aside><small>{loading ? "Refreshing…" : `Updated ${new Date(report.fetchedAt).toLocaleString()}`}</small>{report.requiredAction && <button onClick={onConnect}>Open Integrations</button>}</aside></section>
     <section className="op-analytics-metrics op-analytics-metrics--social">{metricCards.map((metric) => <article key={metric.key}><small>{metric.label}</small><strong>{formatMetric(report.totals[metric.key])}</strong></article>)}</section>
     {chartMetric && chartPosts.length > 0 && <section className="op-analytics-chart op-analytics-chart--social"><header><div><small>LIVE PROVIDER DATA</small><h2>{chartMetric.label} by publication</h2></div><span>Hover a column for the exact value</span></header><div className="op-analytics-chart__bars">{chartPosts.map((post) => { const value = Number(post.metrics[chartMetric.key]); const date = new Date(post.publishedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }); return <button type="button" key={post.id} style={{ height: `${Math.max(3, (value / chartMax) * 100)}%` }} aria-label={`${date}: ${formatMetric(value)} ${chartMetric.label.toLowerCase()}`} data-tooltip={`${date} · ${formatMetric(value)} ${chartMetric.label.toLowerCase()}`} />; })}</div><footer><span>{new Date(chartPosts[0].publishedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span><span>{new Date(chartPosts.at(-1)!.publishedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span></footer></section>}
+    <GeographyMap geography={report.geography} title={`Where ${report.label} activity came from`} />
     {accountEntries.length > 0 && <section className="op-channel-account"><header><div><small>ACCOUNT SNAPSHOT</small><h2>{report.label}</h2></div>{report.comparison && <span>{report.comparison.label}</span>}</header><div>{accountEntries.map(([key, value]) => { const change = report.comparison?.metrics?.[key]; return <article key={key}><small>{humanizeMetric(key)}</small><strong>{typeof value === "number" ? formatMetric(value) : String(value)}</strong>{typeof value === "number" && <GrowthDelta change={change?.absolute ?? null} percent={change?.percent ?? null} />}</article>; })}</div></section>}
     <section className="op-channel-posts"><header><div><small>{provider === "instagram" && report.availability === "live" ? "LIVE INSTAGRAM CONTENT" : "PUBLISHED CONTENT"}</small><h2>Content performance</h2></div><span>{report.posts.length} in this period</span></header>{report.posts.length ? <div className="op-channel-posts__scroll"><table><thead><tr><th>Content</th><th>Published</th><th>Source</th>{report.metrics.map((metric) => <th key={metric.key}>{metric.label}</th>)}</tr></thead><tbody>{report.posts.map((post) => <tr key={post.id}><td>{post.url ? <a href={post.url} target="_blank" rel="noreferrer">{post.title}</a> : <strong>{post.title}</strong>}</td><td>{new Date(post.publishedAt).toLocaleDateString()}</td><td><span className={`status status--${post.status}`}>{analyticsStatusLabel(post.status)}</span></td>{report.metrics.map((metric) => <td key={metric.key}>{formatMetric(post.metrics?.[metric.key])}</td>)}</tr>)}</tbody></table></div> : <div className="op-analytics-empty op-analytics-empty--inline"><span><ChartColumn size={22} /></span><h2>No {report.label} publication in this period</h2><p>{report.connected ? `The connected ${report.label} account returned no content for this reporting window.` : `Connect ${report.label} to read provider data.`}</p>{!report.connected && <button onClick={onConnect}>Connect {report.label}</button>}</div>}</section>
   </>;
+}
+
+function newsletterGeographyForRange(dashboard: NewsletterDashboard | null, range: string): GeographyReport {
+  if (!dashboard) return { availability: "insufficient_data", metric: "opens", metricLabel: "Verified opens", note: "Newsletter location data has not loaded yet.", locations: [] };
+  const days = Number(String(range).match(/^\d+/)?.[0] || 28);
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  const totals = new Map<string, NonNullable<NewsletterDashboard["campaigns"][number]["locations"]>[number]>();
+  for (const campaign of dashboard.campaigns) {
+    if (!campaign.sendTime || new Date(campaign.sendTime).getTime() < cutoff) continue;
+    for (const location of campaign.locations || []) {
+      const key = `${location.countryCode}|${location.region}|${location.city}`;
+      const current = totals.get(key) || { ...location, value: 0, secondaryValue: 0, conversions: 0 };
+      current.value += Number(location.value || 0);
+      current.secondaryValue += Number(location.secondaryValue || 0);
+      totals.set(key, current);
+    }
+  }
+  const locations = [...totals.values()].sort((left, right) => right.value - left.value);
+  return {
+    availability: locations.length ? "live" : "insufficient_data",
+    metric: "opens",
+    metricLabel: "Verified opens",
+    note: locations.length ? `Top opening locations from newsletters sent in the last ${days} days. Privacy protection and proxy activity can limit precision.` : `No reportable newsletter opening locations were returned for the last ${days} days.`,
+    locations,
+  };
+}
+
+const countryCentroids: Record<string, [number, number]> = {
+  AR: [-38, -64], AU: [-25, 134], AT: [47.5, 14.5], BE: [50.8, 4.6], BR: [-10, -55], BG: [42.7, 25.5], CA: [56, -106], CL: [-33, -71], CN: [35, 103], CO: [4, -72], HR: [45.1, 15.2], CY: [35, 33], CZ: [49.8, 15.5], DK: [56, 10], EG: [27, 30], EE: [59, 26], FI: [64, 26], FR: [46.5, 2], DE: [51, 10], GR: [39, 22], HK: [22.3, 114.2], HU: [47, 19.5], IS: [65, -19], IN: [22, 79], ID: [-2, 118], IE: [53, -8], IL: [31.5, 34.8], IT: [42.5, 12.5], JP: [36, 138], KE: [0, 37], KR: [36, 128], LV: [57, 25], LT: [55, 24], LU: [49.8, 6.1], MY: [4, 102], MX: [23, -102], MA: [32, -6], NL: [52.2, 5.3], NZ: [-41, 174], NG: [9, 8], NO: [62, 10], PK: [30, 70], PE: [-10, -76], PH: [13, 122], PL: [52, 20], PT: [39.5, -8], RO: [46, 25], SA: [24, 45], SG: [1.3, 103.8], SK: [48.7, 19.7], SI: [46.1, 14.8], ZA: [-30, 25], ES: [40, -4], SE: [62, 15], CH: [47, 8], TW: [23.7, 121], TH: [15, 101], TR: [39, 35], UA: [49, 32], AE: [24, 54], GB: [54, -2], US: [38, -97], UY: [-33, -56], VN: [16, 108], ZZ: [0, 0],
+};
+
+function GeographyMap({ geography, title }: { geography: GeographyReport; title: string }) {
+  const report = geography || { availability: "insufficient_data", metric: "activity", metricLabel: "Activity", note: "No location data is available.", locations: [] };
+  const countryTotals = new Map<string, { countryCode: string; country: string; value: number }>();
+  for (const location of report.locations || []) {
+    const key = String(location.countryCode || location.country || "unknown").toUpperCase();
+    const current = countryTotals.get(key) || { countryCode: String(location.countryCode || "").toUpperCase(), country: String(location.country || key), value: 0 };
+    current.value += Number(location.value || 0);
+    countryTotals.set(key, current);
+  }
+  const rankedCountries = [...countryTotals.values()].sort((left, right) => right.value - left.value);
+  const max = Math.max(1, ...rankedCountries.map((item) => item.value));
+  const points = rankedCountries.flatMap((item) => {
+    const coordinate = countryCentroids[item.countryCode];
+    if (!coordinate) return [];
+    const [latitude, longitude] = coordinate;
+    return [{ ...item, left: ((longitude + 180) / 360) * 100, top: ((90 - latitude) / 180) * 100, size: 10 + Math.sqrt(item.value / max) * 18 }];
+  }).slice(0, 30);
+  const live = report.availability === "live" && rankedCountries.length > 0;
+  return <section className={`op-geography op-geography--${report.availability}`}>
+    <header><div><small>AUDIENCE GEOGRAPHY</small><h2>{title}</h2><p>{report.note}</p></div><span>{live ? `${formatMetric(rankedCountries.reduce((sum, item) => sum + item.value, 0))} ${report.metricLabel.toLowerCase()}` : "No reportable locations"}</span></header>
+    <div className="op-geography__layout">
+      <div className="op-geography__map" aria-label={`${title} map`}>
+        <svg viewBox="0 0 1000 500" role="img" aria-hidden="true"><path d="M62 105L116 58l106 7 67 43-8 55-60 21-24 55-62 7-46-42-37-29z" /><path d="M246 262l57 27 31 76-30 103-40-39-27-91z" /><path d="M429 91l69-29 68 17 36 50-38 27-57-11-35 31-59-21z" /><path d="M477 175l86-12 48 43-11 100-54 90-47-31-19-86-38-48z" /><path d="M592 96l95-45 142 25 89 55-34 71-109-4-49 45-83-13-60-58z" /><path d="M760 247l56-28 65 24 17 61-56 32-65-24z" /><path d="M835 367l75-29 48 36-31 65-80 8-35-39z" /></svg>
+        {live && points.map((point) => <button type="button" key={point.countryCode || point.country} style={{ left: `${point.left}%`, top: `${point.top}%`, width: point.size, height: point.size } as CSSProperties} aria-label={`${point.country}: ${formatMetric(point.value)} ${report.metricLabel}`} data-tooltip={`${point.country} · ${formatMetric(point.value)} ${report.metricLabel.toLowerCase()}`} />)}
+        {!live && <div className="op-geography__unavailable"><Globe2 size={28} /><strong>Location data unavailable</strong><span>{report.availability === "not_provided" ? "This channel’s approved API does not expose audience geography." : report.availability === "not_connected" ? "Connect the channel to check location reporting." : "More activity may be required before locations can be reported."}</span></div>}
+      </div>
+      <div className="op-geography__ranking"><div><strong>Top locations</strong><span>{report.metricLabel}</span></div>{live ? (report.locations || []).slice(0, 10).map((location, index) => <article key={`${location.countryCode}-${location.region}-${location.city}-${index}`}><i>{index + 1}</i><span><strong>{[location.city, location.region, location.country].filter(Boolean).join(", ")}</strong><small>{location.countryCode}</small></span><b>{formatMetric(location.value)}</b></article>) : <p>No location rows were returned for this reporting window.</p>}</div>
+    </div>
+  </section>;
 }
 
 function humanizeMetric(value: string) {

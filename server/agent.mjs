@@ -7,6 +7,7 @@ import { inflateSync } from "fflate";
 import { decompress as decompressZstd } from "fzstd";
 import { compileSchema, decodeBinarySchema } from "kiwi-schema";
 import { Agent as UndiciAgent, fetch as pinnedFetch } from "undici";
+import { modelUsageFromGoogle, modelUsageFromOpenAI, recordModelUsage, utilityModelConfiguration } from "./model-usage.mjs";
 
 const actionInstructions = {
   research: `Research the live market for this product now, but do not produce a generic news digest. Keep only signals that create a credible marketing opportunity for this specific brand. For every useful signal, define why it matters, the campaign idea it supports, an exact message, the assets required, the best channels and timing, the primary conversion, and how success will be measured. Deliver the sourced findings and usable implications yourself; do not tell the user to assign a researcher or conduct the research later. Distinguish sourced facts from your analysis.`,
@@ -494,7 +495,22 @@ Never infer a Brand-source refresh merely because draft copy contains words such
     system: `${operatorSystem} You convert explicit user instructions into verified, low-risk edits to saved app drafts.`,
     prompt,
     schema: projectInterfaceActionsSchema(),
+    tier: shouldUseUtilityInterfacePlanner(message) ? "utility" : "advanced",
+    usageContext: {
+      userId: payload?.userId,
+      projectId: payload?.projectId,
+      accessMode: payload?.accessMode,
+      task: "interface_action_planning",
+    },
   });
+}
+
+export function shouldUseUtilityInterfacePlanner(message) {
+  const value = String(message || "").trim().toLowerCase();
+  if (!value) return false;
+  const publicOrHighJudgmentWork = /\b(rewrite|write|draft|copy|caption|subject|headline|newsletter|invitation|email|campaign|post|message|script|strategy|positioning|manifesto|brand voice|legal|compliance|claim|publish|schedule|send|spend|budget)\b/i.test(value);
+  const lowRiskInterfaceWork = /\b(rename|name|link|url|column|field|tag|note|metadata|asset|source|preference|label|status|correct|change|replace|set|update|add)\b/i.test(value);
+  return lowRiskInterfaceWork && !publicOrHighJudgmentWork;
 }
 
 export async function rewriteProspectInvitation(payload, env = process.env) {
@@ -2805,28 +2821,105 @@ async function generateGoogleGroundedResearch({ env, system, prompt }) {
   return { text, sources };
 }
 
-async function generateStructuredObject({ env, name, system, prompt, images = [], schema }) {
+async function generateStructuredObject({ env, name, system, prompt, images = [], schema, tier = "advanced", usageContext = {} }) {
   const supportedImages = images.filter(isSupportedAnalysisImage);
+  if (tier === "utility") {
+    const configuration = utilityModelConfiguration(env);
+    if (configuration) {
+      try {
+        const result = await requestStructuredObject({
+          env,
+          provider: configuration.provider,
+          model: configuration.model,
+          name,
+          system,
+          prompt,
+          images: supportedImages,
+          schema,
+        });
+        await recordStructuredUsage({
+          ...usageContext,
+          provider: configuration.provider,
+          model: configuration.model,
+          tier: "utility",
+          usage: result.usage,
+          pricing: configuration.pricing,
+          baselinePricing: configuration.baseline?.pricing,
+          fallback: false,
+          succeeded: true,
+        }, env);
+        return result.value;
+      } catch (utilityError) {
+        await recordStructuredUsage({
+          ...usageContext,
+          provider: configuration.provider,
+          model: configuration.model,
+          tier: "utility",
+          usage: { inputTokens: 0, outputTokens: 0 },
+          pricing: configuration.pricing,
+          baselinePricing: configuration.baseline?.pricing,
+          fallback: false,
+          succeeded: false,
+        }, env);
+        const fallback = await requestAdvancedStructuredObject({ env, name, system, prompt, images: supportedImages, schema });
+        await recordStructuredUsage({
+          ...usageContext,
+          provider: fallback.provider,
+          model: fallback.model,
+          tier: "advanced_fallback",
+          usage: fallback.usage,
+          pricing: configuration.baseline?.pricing,
+          baselinePricing: configuration.baseline?.pricing,
+          fallback: true,
+          succeeded: true,
+        }, env);
+        return fallback.value;
+      }
+    }
+  }
+  return (await requestAdvancedStructuredObject({ env, name, system, prompt, images: supportedImages, schema })).value;
+}
+
+async function generateGoogleStructured({ env, system, prompt, images = [], schema = productBrainSchema() }) {
+  return (await requestStructuredObject({
+    env,
+    provider: "google",
+    model: env.GOOGLE_MODEL || "gemini-3.8-flash",
+    name: "structured_response",
+    system,
+    prompt,
+    images,
+    schema,
+  })).value;
+}
+
+async function requestAdvancedStructuredObject({ env, name, system, prompt, images, schema }) {
   if (env.OPENAI_API_KEY) {
+    const model = env.OPENAI_MODEL || env.AI_MODEL || "gpt-6.1-terra";
+    return requestStructuredObject({ env, provider: "openai", model, name, system, prompt, images, schema });
+  }
+  const model = env.GOOGLE_MODEL || "gemini-3.8-flash";
+  return requestStructuredObject({ env, provider: "google", model, name, system, prompt, images, schema });
+}
+
+async function requestStructuredObject({ env, provider, model, name, system, prompt, images = [], schema }) {
+  if (provider === "openai") {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: env.OPENAI_MODEL || env.AI_MODEL || "gpt-6.1-terra",
+        model,
         instructions: system,
-        input: [{ role: "user", content: [{ type: "input_text", text: prompt }, ...supportedImages.map((imageUrl) => ({ type: "input_image", image_url: imageUrl, detail: "high" }))] }],
+        input: [{ role: "user", content: [{ type: "input_text", text: prompt }, ...images.map((imageUrl) => ({ type: "input_image", image_url: imageUrl, detail: "high" }))] }],
         max_output_tokens: 6000,
         text: { format: { type: "json_schema", name, strict: true, schema } },
       }),
     });
+    const data = await response.json().catch(() => ({}));
     if (!response.ok) throw providerRequestError(response.status);
-    return JSON.parse(responseText(await response.json()));
+    return { value: JSON.parse(responseText(data)), usage: modelUsageFromOpenAI(data), provider, model };
   }
-  return generateGoogleStructured({ env, system, prompt, images: supportedImages, schema });
-}
 
-async function generateGoogleStructured({ env, system, prompt, images = [], schema = productBrainSchema() }) {
-  const model = env.GOOGLE_MODEL || "gemini-3.8-flash";
   const imageParts = images.map(dataUrlToGooglePart).filter(Boolean);
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
     method: "POST",
@@ -2845,7 +2938,11 @@ async function generateGoogleStructured({ env, system, prompt, images = [], sche
   if (!response.ok) throw providerRequestError(response.status);
   const text = (data.candidates || []).flatMap((candidate) => candidate.content?.parts || []).map((part) => part.text || "").join("\n").trim();
   if (!text) throw new Error("No structured response was returned.");
-  return JSON.parse(text.replace(/^```json\s*|\s*```$/g, ""));
+  return { value: JSON.parse(text.replace(/^```json\s*|\s*```$/g, "")), usage: modelUsageFromGoogle(data), provider, model };
+}
+
+async function recordStructuredUsage(event, env) {
+  await recordModelUsage(event, env).catch(() => undefined);
 }
 
 function dataUrlToGooglePart(value) {

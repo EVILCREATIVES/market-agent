@@ -7,6 +7,7 @@ import { requireUser } from "./auth.mjs";
 import { appendRunForUser, enforceRunBudget, loadStateForUser, saveStateForUser, updateRunStatusForUser } from "./db.mjs";
 import { approveMediaJob, cancelMediaJob, listMediaJobs, prepareMediaJob } from "./media.mjs";
 import { cancelManagedSubscription, consumeAiUsage, createManagedSubscription, getManagedSubscriptionStatus } from "./billing.mjs";
+import { getModelUsageMeasurement } from "./model-usage.mjs";
 import {
   deleteUserApiCredential,
   getUserApiCredentialStatus,
@@ -89,7 +90,13 @@ const server = http.createServer(async (req, res) => {
   if (["GET", "POST"].includes(req.method) && req.url === "/api/billing") {
     try {
       const { userId } = await requireUser(req);
-      if (req.method === "GET") return json(res, 200, await getManagedSubscriptionStatus(userId));
+      if (req.method === "GET") {
+        const [status, utilityMeasurement] = await Promise.all([
+          getManagedSubscriptionStatus(userId),
+          getModelUsageMeasurement(userId),
+        ]);
+        return json(res, 200, { ...status, utilityMeasurement });
+      }
       const payload = await readJson(req);
       if (payload.action === "cancel") return json(res, 200, await cancelManagedSubscription(userId));
       return json(res, 200, await createManagedSubscription(userId, `http://127.0.0.1:${port}`));

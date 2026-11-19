@@ -176,12 +176,16 @@ export async function getNewsletterDashboard(userId, projectId, env = process.en
     await syncSubscriberRegistry(userId, projectId, members.members || [], env);
     audienceSignupUrl = await resolveMailchimpSignupUrl(credentials, audienceId, audience, false);
     try { await ensureMailchimpWebhook(userId, projectId, credentials, audienceId, env); } catch { /* A manual refresh still keeps subscriber states synchronized. */ }
-    remoteCampaigns = await Promise.all((campaigns.campaigns || []).slice(0, 25).map(async (campaign) => {
+    remoteCampaigns = await Promise.all((campaigns.campaigns || []).slice(0, 25).map(async (campaign, index) => {
       let report = null;
+      let locationReport = null;
       if (campaign.status === "sent") {
         try { report = await mailchimpRequest(credentials, `/reports/${encodeURIComponent(campaign.id)}`); } catch { report = null; }
+        if (index < 10) {
+          try { locationReport = await mailchimpRequest(credentials, `/reports/${encodeURIComponent(campaign.id)}/locations`); } catch { locationReport = null; }
+        }
       }
-      return serializeRemoteCampaign(campaign, report);
+      return serializeRemoteCampaign(campaign, report, locationReport);
     }));
   } catch {
     // Campaign planning, contact staging, and newsletter creation remain available
@@ -224,6 +228,7 @@ export async function getNewsletterDashboard(userId, projectId, env = process.en
     },
     members: (members.members || []).map(serializeMember),
     campaigns: remoteCampaigns,
+    geography: newsletterGeography(remoteCampaigns),
     drafts: hydratedDrafts,
     contactImports: contactImports.rows.map(serializeContactImport),
     conversionCampaigns: optinCampaigns.rows.map((row) => serializeOptinCampaign(row, env, workspace)),
@@ -1469,7 +1474,7 @@ function serializeMember(member) {
   };
 }
 
-function serializeRemoteCampaign(campaign, report) {
+function serializeRemoteCampaign(campaign, report, locationReport = null) {
   return {
     id: String(campaign.id || ""),
     title: String(campaign.settings?.title || campaign.settings?.subject_line || "Newsletter"),
@@ -1484,7 +1489,44 @@ function serializeRemoteCampaign(campaign, report) {
     clickRate: Number(report?.clicks?.click_rate || campaign.report_summary?.click_rate || 0),
     unsubscribed: Number(report?.unsubscribed || 0),
     bounces: Number((report?.bounces?.hard_bounces || 0) + (report?.bounces?.soft_bounces || 0)),
+    locations: (locationReport?.locations || []).map((location) => ({
+      countryCode: String(location.country_code || "").toUpperCase(),
+      country: countryName(location.country_code),
+      region: String(location.region_name || location.region || ""),
+      city: "",
+      value: Number(location.proxy_excluded_opens ?? location.opens ?? 0),
+      secondaryValue: Number(location.opens || 0),
+      conversions: 0,
+    })).filter((location) => location.countryCode && location.value > 0),
   };
+}
+
+export function newsletterGeography(campaigns) {
+  const totals = new Map();
+  for (const campaign of campaigns || []) for (const location of campaign.locations || []) {
+    const key = `${location.countryCode}|${location.region}`;
+    const current = totals.get(key) || { ...location, value: 0, secondaryValue: 0, conversions: 0 };
+    current.value += Number(location.value || 0);
+    current.secondaryValue += Number(location.secondaryValue || 0);
+    totals.set(key, current);
+  }
+  const locations = [...totals.values()].sort((left, right) => right.value - left.value);
+  return {
+    availability: locations.length ? "live" : "insufficient_data",
+    metric: "opens",
+    metricLabel: "Verified opens",
+    note: locations.length
+      ? "Top opening locations returned by the connected newsletter delivery account. Privacy protection and proxy activity can limit precision."
+      : "Location appears after a sent newsletter has enough opening activity for the delivery service to report it.",
+    locations,
+  };
+}
+
+function countryName(code) {
+  const normalized = String(code || "").toUpperCase();
+  if (!normalized) return "";
+  try { return new Intl.DisplayNames(["en"], { type: "region" }).of(normalized) || normalized; }
+  catch { return normalized; }
 }
 
 function requireAudience(credentials) {

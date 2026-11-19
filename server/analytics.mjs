@@ -198,7 +198,7 @@ export async function getAnalyticsReport(userId, projectId, range = "28daysAgo",
     optionalRequest({ dateRanges: [previousRange], dimensions: campaignEventDimensions, metrics: [{ name: "keyEvents" }], orderBys: [{ metric: { metricName: "keyEvents" }, desc: true }], limit: "500" }),
     optionalRequest({ dateRanges: [currentRange], dimensions: [{ name: "eventName" }], metrics: [{ name: "keyEvents" }], orderBys: [{ metric: { metricName: "keyEvents" }, desc: true }], limit: "100" }),
   ]);
-  const [acquisition, landingPages, pages, downloads, outboundLinks, videos, transitions] = await Promise.all([
+  const [acquisition, landingPages, pages, downloads, outboundLinks, videos, transitions, locations] = await Promise.all([
     optionalRequest({
       dateRanges: [currentRange],
       dimensions: [{ name: "sessionSourceMedium" }, { name: "sessionPrimaryChannelGroup" }, { name: "sessionManualCampaignName" }],
@@ -233,6 +233,12 @@ export async function getAnalyticsReport(userId, projectId, range = "28daysAgo",
       dateRanges: [currentRange], dimensions: [{ name: "pageReferrer" }, { name: "pageLocation" }], metrics: [{ name: "screenPageViews" }, { name: "activeUsers" }],
       dimensionFilter: exactDimension("eventName", "page_view"), orderBys: [{ metric: { metricName: "screenPageViews" }, desc: true }], limit: "250",
     }),
+    optionalRequest({
+      dateRanges: [currentRange],
+      dimensions: [{ name: "countryId" }, { name: "country" }, { name: "region" }, { name: "city" }],
+      metrics: [{ name: "activeUsers" }, { name: "sessions" }, { name: "keyEvents" }],
+      orderBys: [{ metric: { metricName: "activeUsers" }, desc: true }], limit: "250",
+    }),
   ]);
   const totals = reportRows(summary)[0] || {};
   const previousTotals = reportRows(previousSummary)[0] || {};
@@ -259,6 +265,21 @@ export async function getAnalyticsReport(userId, projectId, range = "28daysAgo",
     outboundLinks: reportRows(outboundLinks).filter(hasMeaningfulLink),
     videos: reportRows(videos).filter((row) => meaningfulValue(row.videoTitle) || meaningfulValue(row.videoUrl)),
     transitions: reportRows(transitions).filter(isInternalTransition).slice(0, 100),
+    geography: {
+      availability: reportRows(locations).some((row) => meaningfulValue(row.country)) ? "live" : "insufficient_data",
+      metric: "activeUsers",
+      metricLabel: "Visitors",
+      note: "Location is reported by the connected website analytics property and may be withheld when volume is too low.",
+      locations: reportRows(locations).filter((row) => meaningfulValue(row.country)).map((row) => ({
+        countryCode: String(row.countryId || "").toUpperCase(),
+        country: String(row.country || ""),
+        region: meaningfulValue(row.region) ? String(row.region) : "",
+        city: meaningfulValue(row.city) ? String(row.city) : "",
+        value: Number(row.activeUsers || 0),
+        secondaryValue: Number(row.sessions || 0),
+        conversions: Number(row.keyEvents || 0),
+      })),
+    },
     fetchedAt: new Date().toISOString(),
   };
 }

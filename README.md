@@ -57,7 +57,10 @@ The deployment's three AI keys fund only the limited demo and active managed sub
 - `NEON_AUTH_BASE_URL` and `VITE_NEON_AUTH_URL` — injected by Neon Auth
 - `CRON_SECRET` — protects the Vercel Cron endpoints for scheduled delivery, autonomous work, and conversation archiving
 - `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, and `ANTHROPIC_API_KEY` — platform-funded demo and managed text access; never a fallback for BYOK users
-- `OPENAI_MODEL`, `GOOGLE_MODEL`, and `ANTHROPIC_MODEL` — optional model overrides
+- `OPENAI_MODEL`, `GOOGLE_MODEL`, and `ANTHROPIC_MODEL` — optional advanced-model overrides
+- `OPENAI_UTILITY_MODEL` — inexpensive model used only for eligible low-risk interface edits; failures automatically retry on the advanced model
+- `OPENAI_UTILITY_*_USD_PER_MILLION` and `OPENAI_BASELINE_*_USD_PER_MILLION` — configurable prices used by the private 30-day token/cost/savings measurement
+- `OWNER_MONTHLY_COST_CAP_CENTS` — global managed/demo owner-cost shutdown; defaults to `5000` ($50)
 - `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `CONNECTION_ENCRYPTION_KEY` — Gmail and Google Analytics OAuth plus encrypted token storage
 - `GMAIL_MONITORING_ACCESS_STATUS` — keep `pending` while Google reviews the restricted `gmail.metadata` permission; set `approved` only after approval, then users reconnect Gmail to enable bounce and reply monitoring without reading message bodies
 - `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` — the existing OpenID/member-posting app; personal publishing stays optional

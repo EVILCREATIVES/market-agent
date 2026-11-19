@@ -56,6 +56,15 @@ export async function getChannelAnalytics(userId, projectId, provider, range = "
     account: {},
     metrics: [],
     posts,
+    geography: {
+      availability: access ? "not_provided" : "not_connected",
+      metric: "views",
+      metricLabel: "Views",
+      locations: [],
+      note: access
+        ? `${CHANNEL_LABELS[provider] || provider} does not provide usable audience-location data through the currently approved connection.`
+        : `Connect ${CHANNEL_LABELS[provider] || provider} to check whether location reporting is available.`,
+    },
     fetchedAt: new Date().toISOString(),
   };
   if (!access) return base;
@@ -63,7 +72,7 @@ export async function getChannelAnalytics(userId, projectId, provider, range = "
     const live = provider === "instagram"
       ? await readInstagram(access, posts, env, { cutoff, days })
       : provider === "youtube"
-        ? await readYouTube(access, posts)
+        ? await readYouTube(access, posts, { cutoff })
         : provider === "tiktok"
           ? await readTikTok(access, posts)
           : provider === "x"
@@ -88,6 +97,7 @@ export async function getChannelAnalytics(userId, projectId, provider, range = "
       account: live.account || {},
       metrics: metricKeys.map((key) => ({ key, label: METRIC_LABELS[key] || titleCase(key) })),
       posts: measuredPosts,
+      geography: live.geography || base.geography,
     };
     await persistDeliveryPerformance(userId, projectId, provider, measuredPosts, env);
     report.comparison = await recordAndCompareChannelSnapshot(userId, projectId, provider, report, cutoff, env);
@@ -322,7 +332,7 @@ function instagramMediaLabel(media) {
   return "Post";
 }
 
-async function readYouTube(access, posts) {
+async function readYouTube(access, posts, { cutoff }) {
   const ids = posts.map((post) => post.providerId).filter(Boolean).slice(0, 50);
   const channelUrl = new URL("https://www.googleapis.com/youtube/v3/channels");
   channelUrl.search = new URLSearchParams({ part: "snippet,statistics", id: access.accountId }).toString();
@@ -343,6 +353,40 @@ async function readYouTube(access, posts) {
       },
     };
   }
+  const geographyUrl = new URL("https://youtubeanalytics.googleapis.com/v2/reports");
+  geographyUrl.search = new URLSearchParams({
+    ids: "channel==MINE",
+    startDate: new Date(cutoff).toISOString().slice(0, 10),
+    endDate: new Date().toISOString().slice(0, 10),
+    metrics: "views,estimatedMinutesWatched",
+    dimensions: "country",
+    sort: "-views",
+    maxResults: "200",
+  }).toString();
+  let geography = { availability: "insufficient_data", metric: "views", metricLabel: "Views", locations: [], note: "YouTube has not returned enough location data for this period." };
+  try {
+    const data = await providerJson(geographyUrl, { headers: bearer(access.accessToken) }, "YouTube audience locations are unavailable.");
+    const headers = (data.columnHeaders || []).map((header) => String(header.name || ""));
+    const rows = (data.rows || []).map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index]])));
+    const locations = rows.map((row) => ({
+      countryCode: String(row.country || "").toUpperCase(),
+      country: countryName(row.country),
+      region: "",
+      city: "",
+      value: numberValue(row.views),
+      secondaryValue: numberValue(row.estimatedMinutesWatched),
+      conversions: 0,
+    })).filter((location) => location.countryCode && location.value > 0);
+    geography = {
+      availability: locations.length ? "live" : "insufficient_data",
+      metric: "views",
+      metricLabel: "Views",
+      locations,
+      note: locations.length ? "Viewer countries reported by the connected YouTube channel." : geography.note,
+    };
+  } catch {
+    // Channel and publication metrics remain valid when geography is thresholded or unavailable.
+  }
   return {
     availability: "live",
     account: {
@@ -353,6 +397,7 @@ async function readYouTube(access, posts) {
     },
     metricKeys: ["views", "likes", "comments"],
     postsById,
+    geography,
     note: "Live channel and video statistics from YouTube.",
   };
 }
@@ -532,6 +577,13 @@ function knownMetricTotal(posts, key) {
 
 function titleCase(value) {
   return String(value || "").replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function countryName(code) {
+  const normalized = String(code || "").toUpperCase();
+  if (!normalized) return "";
+  try { return new Intl.DisplayNames(["en"], { type: "region" }).of(normalized) || normalized; }
+  catch { return normalized; }
 }
 
 function safeProviderMessage(error, fallback) {

@@ -99,7 +99,9 @@ export default async function handler(req, res) {
         };
       } else {
         plan = await planProjectInterfaceActions({
+          userId,
           projectId,
+          accessMode: userApiEnv.MARKET_AGENT_ACCESS_MODE,
           message,
           workspace: actionWorkspace,
           uiContext,
