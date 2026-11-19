@@ -12,9 +12,9 @@ import { linkedinCommunityApprovalStatus, socialConnectorConfigured } from "../s
 import { ownerCostEstimateCents, ownerMonthlyCostCapCents } from "../server/billing.mjs";
 
 test("owner-paid analysis has a conservative global monthly cost ceiling", () => {
-  assert.equal(ownerMonthlyCostCapCents({}), 15_000);
+  assert.equal(ownerMonthlyCostCapCents({}), 5_000);
   assert.equal(ownerMonthlyCostCapCents({ OWNER_MONTHLY_COST_CAP_CENTS: "10000" }), 10_000);
-  assert.equal(ownerMonthlyCostCapCents({ OWNER_MONTHLY_COST_CAP_CENTS: "not-a-number" }), 15_000);
+  assert.equal(ownerMonthlyCostCapCents({ OWNER_MONTHLY_COST_CAP_CENTS: "not-a-number" }), 5_000);
   assert.equal(ownerCostEstimateCents("chat", {}), 25);
   assert.equal(ownerCostEstimateCents("panel", {}), 400);
   assert.equal(ownerCostEstimateCents("panel", { OWNER_PANEL_COST_ESTIMATE_CENTS: "250" }), 250);

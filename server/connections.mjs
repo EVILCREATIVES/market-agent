@@ -227,8 +227,8 @@ export function googleConnectorConfigured(env = process.env) {
 }
 
 export function gmailMonitoringApprovalStatus(env = process.env) {
-  const status = String(env.GMAIL_MONITORING_ACCESS_STATUS || "pending").trim().toLowerCase();
-  return ["approved", "disabled"].includes(status) ? status : "pending";
+  const status = String(env.GMAIL_MONITORING_ACCESS_STATUS || "disabled").trim().toLowerCase();
+  return ["approved", "disabled"].includes(status) ? status : "disabled";
 }
 
 export async function getGmailMonitoringAccess(userId, projectId = "project-default", env = process.env) {

@@ -4,7 +4,7 @@ import { getPool } from "./db.mjs";
 const TRIAL_DAYS = 10;
 const MANAGED_PRICE = "29.99";
 const MANAGED_CURRENCY = "USD";
-const DEFAULT_OWNER_MONTHLY_COST_CAP_CENTS = 15_000;
+const DEFAULT_OWNER_MONTHLY_COST_CAP_CENTS = 5_000;
 const DEFAULT_OWNER_COST_ESTIMATES_CENTS = Object.freeze({
   chat: 25,
   agent: 100,

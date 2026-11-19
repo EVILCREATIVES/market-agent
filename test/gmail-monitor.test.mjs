@@ -24,8 +24,8 @@ test("classifies automatic and human replies without reading a message body", ()
 });
 
 test("Gmail monitoring stays gated until the owner marks Google approval complete", () => {
-  assert.equal(gmailMonitoringApprovalStatus({}), "pending");
+  assert.equal(gmailMonitoringApprovalStatus({}), "disabled");
   assert.equal(gmailMonitoringApprovalStatus({ GMAIL_MONITORING_ACCESS_STATUS: "approved" }), "approved");
   assert.equal(gmailMonitoringApprovalStatus({ GMAIL_MONITORING_ACCESS_STATUS: "disabled" }), "disabled");
-  assert.equal(gmailMonitoringApprovalStatus({ GMAIL_MONITORING_ACCESS_STATUS: "unexpected" }), "pending");
+  assert.equal(gmailMonitoringApprovalStatus({ GMAIL_MONITORING_ACCESS_STATUS: "unexpected" }), "disabled");
 });
