@@ -2943,6 +2943,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-invitation-history span { padding: 12px 14px; border-radius: 9px; background: #f0eee8; display: grid; gap: 3px; }
 .op-invitation-history small { color: #77736c; font-size: 9px; }
 .op-invitation-history strong { font-size: 18px; }
+.op-invitation-responses { margin-top: 12px; padding: 12px 14px; border: 1px solid #e1dbea; border-radius: 9px; background: #fff; display: grid; gap: 0; }
+.op-invitation-responses > strong { margin-bottom: 5px; font-size: 11px; }
+.op-invitation-responses > div { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 9px 0; border-top: 1px solid #eeeaf3; }
+.op-invitation-responses > div:first-of-type { border-top: 0; }
+.op-invitation-responses span { min-width: 0; display: grid; gap: 2px; }
+.op-invitation-responses b { overflow: hidden; text-overflow: ellipsis; font-size: 10px; }
+.op-invitation-responses small { overflow: hidden; text-overflow: ellipsis; color: #77716b; font-size: 9px; white-space: nowrap; }
+.op-invitation-responses em { flex: 0 0 auto; padding: 5px 8px; border-radius: 999px; background: #eeeae4; color: #665f59; font-size: 9px; font-style: normal; font-weight: 750; }
+.op-invitation-responses em.bounce { background: #fae5e3; color: #9c3d36; }
+.op-invitation-responses em.auto_reply { background: #fff1cc; color: #7c5c09; }
+.op-invitation-responses em.human_reply { background: #ddf3e9; color: #246b52; }
 
 .optin-public-page { min-height: 100vh; display: grid; place-items: center; padding: 32px; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 .optin-public-page > section { width: min(720px, 100%); padding: clamp(34px, 7vw, 72px); border: 1px solid; border-radius: 24px; background: rgba(255,255,255,.88); box-shadow: 0 28px 80px rgba(28,24,20,.11); text-align: center; backdrop-filter: blur(16px); }

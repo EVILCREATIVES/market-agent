@@ -10,6 +10,7 @@ import { createShopifyDraft } from "./shopify.mjs";
 import { createPublicProjectAssetUrl, listReadyCampaignAssets } from "./assets.mjs";
 import { loadUserApiEnv } from "./user-api-credentials.mjs";
 import { unresolvedEmailPlaceholders } from "./email-content.mjs";
+import { listGmailResponseEvents } from "./gmail-monitor.mjs";
 
 let deliveryTableReady = false;
 
@@ -183,7 +184,7 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
   try {
     await client.query("BEGIN");
     const suppressionResult = await client.query(
-      "SELECT email FROM market_agent_email_suppressions WHERE user_id = $1 AND project_id = $2",
+      "SELECT email FROM market_agent_email_suppressions WHERE user_id = $1 AND project_id = $2 AND (hold_until IS NULL OR hold_until > NOW())",
       [userId, projectId],
     );
     const suppressed = new Set(suppressionResult.rows.map((row) => String(row.email || "").toLowerCase()));
@@ -268,6 +269,7 @@ export async function getProspectInvitationStats(userId, projectId, campaignId, 
     [userId, projectId, runId],
   );
   const row = result.rows[0] || {};
+  const responses = await listGmailResponseEvents(userId, projectId, runId, env);
   return {
     total: Number(row.total || 0),
     scheduled: Number(row.scheduled || 0),
@@ -280,6 +282,7 @@ export async function getProspectInvitationStats(userId, projectId, campaignId, 
     lastClickedAt: row.last_clicked_at ? new Date(row.last_clicked_at).toISOString() : null,
     startsAt: row.starts_at ? new Date(row.starts_at).toISOString() : null,
     endsAt: row.ends_at ? new Date(row.ends_at).toISOString() : null,
+    responses,
   };
 }
 
@@ -568,8 +571,8 @@ async function completeDeliveryExecution(row, userId, env) {
     let payload = row.payload?.sourceAssetId ? { ...row.payload, mediaUrl: createPublicProjectAssetUrl(row.payload.sourceAssetId, env) } : (row.payload || {});
     if (row.channel === "tiktok") payload = prepareTikTokPayload(row.id, payload, env);
     if (row.channel === "gmail") {
-      const suppressed = await getPool(env).query("SELECT 1 FROM market_agent_email_suppressions WHERE user_id = $1 AND project_id = $2 AND email = $3 LIMIT 1", [userId, row.project_id, String(payload.recipient || "").toLowerCase()]);
-      if (suppressed.rows[0]) throw deliveryError("This recipient previously opted out and is suppressed.", 409);
+      const suppressed = await getPool(env).query("SELECT 1 FROM market_agent_email_suppressions WHERE user_id = $1 AND project_id = $2 AND email = $3 AND (hold_until IS NULL OR hold_until > NOW()) LIMIT 1", [userId, row.project_id, String(payload.recipient || "").toLowerCase()]);
+      if (suppressed.rows[0]) throw deliveryError("This recipient is paused or suppressed, so the email was not sent.", 409);
       const optOutUrl = createEmailOptOutUrl(row.id, env);
       if (payload.campaignType === "prospect_invitation" && resolveInvitationDestination(payload.invitationUrl)) {
         payload = applyInvitationTracking(payload, createInvitationTrackingUrl(row.id, env));
@@ -672,8 +675,10 @@ export async function recordEmailOptOut(token, env = process.env) {
   const row = result.rows[0];
   if (!row?.email) throw deliveryError("This opt-out link is no longer available.", 404);
   await getPool(env).query(
-    `INSERT INTO market_agent_email_suppressions (user_id, project_id, email, reason)
-      VALUES ($1,$2,$3,'recipient opt-out') ON CONFLICT (user_id, project_id, email) DO NOTHING`,
+    `INSERT INTO market_agent_email_suppressions (user_id, project_id, email, reason, status, hold_until, updated_at)
+      VALUES ($1,$2,$3,'recipient opt-out','unsubscribed',NULL,NOW())
+      ON CONFLICT (user_id, project_id, email) DO UPDATE SET
+        reason = 'recipient opt-out', status = 'unsubscribed', hold_until = NULL, updated_at = NOW()`,
     [row.user_id, row.project_id, String(row.email).toLowerCase()],
   );
   return { ok: true };
@@ -1079,6 +1084,17 @@ async function ensureDeliveryTable(env) {
     ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS click_count INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS first_clicked_at TIMESTAMPTZ;
     ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS last_clicked_at TIMESTAMPTZ;
+    CREATE TABLE IF NOT EXISTS market_agent_email_suppressions (
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL, email TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT 'unsubscribed', status TEXT NOT NULL DEFAULT 'suppressed',
+      hold_until TIMESTAMPTZ, source_message_id TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, project_id, email)
+    );
+    ALTER TABLE market_agent_email_suppressions ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'suppressed';
+    ALTER TABLE market_agent_email_suppressions ADD COLUMN IF NOT EXISTS hold_until TIMESTAMPTZ;
+    ALTER TABLE market_agent_email_suppressions ADD COLUMN IF NOT EXISTS source_message_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE market_agent_email_suppressions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
     CREATE UNIQUE INDEX IF NOT EXISTS market_agent_delivery_jobs_idempotency_uidx ON market_agent_delivery_jobs (user_id, idempotency_key) WHERE idempotency_key <> '';
     DO $$ BEGIN
       IF EXISTS (

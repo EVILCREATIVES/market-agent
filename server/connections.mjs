@@ -11,6 +11,7 @@ const GOOGLE_SCOPES = [
   "email",
   "https://www.googleapis.com/auth/gmail.send",
 ];
+const GMAIL_MONITORING_SCOPE = "https://www.googleapis.com/auth/gmail.metadata";
 
 let connectionsTableReady = false;
 
@@ -22,7 +23,7 @@ export async function getConnectionStatus(userId, projectId = "project-default",
     getMailchimpConnectionStatus(userId, projectId, env),
     getShopifyConnectionStatus(userId, projectId, env),
   ]);
-  if (!env.DATABASE_URL) return { ...emptyStatus(configured), analytics, mailchimp, shopify, ...social };
+  if (!env.DATABASE_URL) return { ...emptyStatus(configured, env), analytics, mailchimp, shopify, ...social };
   await ensureConnectionsTable(env);
   const result = await getPool(env).query(
     `SELECT account_email, scopes, status, connected_at, updated_at
@@ -32,7 +33,7 @@ export async function getConnectionStatus(userId, projectId = "project-default",
     [userId, projectId],
   );
   const row = result.rows[0];
-  if (!row || row.status !== "connected") return { ...emptyStatus(configured), analytics, mailchimp, shopify, ...social };
+  if (!row || row.status !== "connected") return { ...emptyStatus(configured, env), analytics, mailchimp, shopify, ...social };
   return {
     gmail: {
       configured,
@@ -41,6 +42,8 @@ export async function getConnectionStatus(userId, projectId = "project-default",
       scopes: Array.isArray(row.scopes) ? row.scopes : [],
       connectedAt: row.connected_at || row.updated_at || null,
       canSend: Array.isArray(row.scopes) && row.scopes.includes("https://www.googleapis.com/auth/gmail.send"),
+      canMonitor: gmailMonitoringApprovalStatus(env) === "approved" && Array.isArray(row.scopes) && row.scopes.includes(GMAIL_MONITORING_SCOPE),
+      monitoringApprovalStatus: gmailMonitoringApprovalStatus(env),
     },
     analytics,
     mailchimp,
@@ -69,7 +72,7 @@ export async function createGoogleAuthorizationUrl({ userId, projectId, appEmail
     client_id: env.GOOGLE_OAUTH_CLIENT_ID,
     redirect_uri: redirectUri,
     response_type: "code",
-    scope: GOOGLE_SCOPES.join(" "),
+    scope: googleScopes(env).join(" "),
     access_type: "offline",
     include_granted_scopes: "true",
     prompt: "consent select_account",
@@ -223,6 +226,24 @@ export function googleConnectorConfigured(env = process.env) {
   return Boolean(env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET && env.CONNECTION_ENCRYPTION_KEY);
 }
 
+export function gmailMonitoringApprovalStatus(env = process.env) {
+  const status = String(env.GMAIL_MONITORING_ACCESS_STATUS || "pending").trim().toLowerCase();
+  return ["approved", "disabled"].includes(status) ? status : "pending";
+}
+
+export async function getGmailMonitoringAccess(userId, projectId = "project-default", env = process.env) {
+  if (gmailMonitoringApprovalStatus(env) !== "approved") return null;
+  const row = await readGoogleConnection(userId, projectId, env);
+  if (!row || row.status !== "connected" || !Array.isArray(row.scopes) || !row.scopes.includes(GMAIL_MONITORING_SCOPE)) return null;
+  const credentials = decryptCredentials(row.encrypted_credentials, env);
+  const accessToken = await validGoogleAccessToken(userId, projectId, credentials, env);
+  return {
+    accessToken,
+    accountEmail: String(row.account_email || "").toLowerCase(),
+    scopes: row.scopes,
+  };
+}
+
 async function ensureConnectionsTable(env) {
   if (connectionsTableReady) return;
   await getPool(env).query(`
@@ -346,8 +367,12 @@ function normalizeOrigin(value) {
   return url.origin;
 }
 
-function emptyStatus(configured) {
-  return { gmail: { configured, connected: false, accountEmail: "", scopes: [], connectedAt: null, canSend: false } };
+function emptyStatus(configured, env = process.env) {
+  return { gmail: { configured, connected: false, accountEmail: "", scopes: [], connectedAt: null, canSend: false, canMonitor: false, monitoringApprovalStatus: gmailMonitoringApprovalStatus(env) } };
+}
+
+function googleScopes(env) {
+  return gmailMonitoringApprovalStatus(env) === "approved" ? [...GOOGLE_SCOPES, GMAIL_MONITORING_SCOPE] : GOOGLE_SCOPES;
 }
 
 function connectionError(message, statusCode) {

@@ -333,6 +333,8 @@ export interface ConnectionStatus {
     scopes: string[];
     connectedAt: string | null;
     canSend: boolean;
+    canMonitor: boolean;
+    monitoringApprovalStatus: "pending" | "approved" | "disabled";
   };
   linkedin: SocialConnectionStatus;
   instagram: SocialConnectionStatus;
@@ -494,6 +496,13 @@ export interface ProspectConversionCampaign {
     lastClickedAt: string | null;
     startsAt: string | null;
     endsAt: string | null;
+    responses: Array<{
+      email: string;
+      kind: "bounce" | "auto_reply" | "human_reply";
+      subject: string;
+      occurredAt: string;
+      holdUntil: string | null;
+    }>;
   };
   views: number;
   ctaClicks: number;

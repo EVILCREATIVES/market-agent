@@ -59,6 +59,7 @@ The deployment's three AI keys fund only the limited demo and active managed sub
 - `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, and `ANTHROPIC_API_KEY` — platform-funded demo and managed text access; never a fallback for BYOK users
 - `OPENAI_MODEL`, `GOOGLE_MODEL`, and `ANTHROPIC_MODEL` — optional model overrides
 - `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `CONNECTION_ENCRYPTION_KEY` — Gmail and Google Analytics OAuth plus encrypted token storage
+- `GMAIL_MONITORING_ACCESS_STATUS` — keep `pending` while Google reviews the restricted `gmail.metadata` permission; set `approved` only after approval, then users reconnect Gmail to enable bounce and reply monitoring without reading message bodies
 - `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` — the existing OpenID/member-posting app; personal publishing stays optional
 - `LINKEDIN_COMMUNITY_CLIENT_ID` and `LINKEDIN_COMMUNITY_CLIENT_SECRET` — the dedicated Page-only Community Management app
 - `LINKEDIN_COMMUNITY_ACCESS_STATUS=pending|approved|unavailable` — leave `pending` during review, then switch to `approved` after LinkedIn grants access
