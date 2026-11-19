@@ -1,12 +1,12 @@
 import { requireUser } from "../server/auth.mjs";
-import { planProjectInterfaceActions, rewriteProspectInvitation, runProjectConversation } from "../server/agent.mjs";
+import { planProjectInterfaceActions, researchPublicLinkedInProfiles, rewriteProspectInvitation, runProjectConversation } from "../server/agent.mjs";
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 import { consumeAiUsage } from "../server/billing.mjs";
 import { getConnectionStatus } from "../server/connections.mjs";
 import { findProjectAssetForInstruction, listProjectAssets, updateProjectAsset } from "../server/assets.mjs";
 import { replaceDeliveryMediaFromAsset } from "../server/delivery.mjs";
 import { createNewsletterDraft, getNewsletterActionContext, updateLatestNewsletterLink, updateLatestNewsletterLogo, updateNewsletterDraft, updateOptinCampaign } from "../server/newsletters.mjs";
-import { addCampaignTableColumn, editableCampaignRunId, getCampaignActionContext, updateCampaignLink, updateCampaignPlanItem, updateCampaignText } from "../server/campaign-edits.mjs";
+import { addCampaignTableColumn, editableCampaignRunId, getCampaignActionContext, getCampaignPeopleTable, setCampaignTableColumnValues, updateCampaignLink, updateCampaignPlanItem, updateCampaignText } from "../server/campaign-edits.mjs";
 import { archiveProjectConversationDays, getProjectConversationMemory } from "../server/conversation-memory.mjs";
 import { waitUntil } from "@vercel/functions";
 
@@ -31,10 +31,16 @@ export default async function handler(req, res) {
     let newsletterAction = null;
     let newsletterLogoAction = null;
     let campaignAction = null;
+    let aiUsageConsumed = false;
     const uiContext = req.body?.uiContext && typeof req.body.uiContext === "object" ? req.body.uiContext : {};
     const editableRunId = editableCampaignRunId(runId, uiContext);
     const requestedTableColumn = campaignTableColumnRequest(message);
-    if (editableRunId && requestedTableColumn) {
+    const requestedLinkedInEnrichment = linkedInEnrichmentRequest(message) || Boolean(requestedTableColumn?.enrich);
+    if (editableRunId && requestedLinkedInEnrichment) {
+      await consumeAiUsage(userId, "chat", userApiEnv);
+      aiUsageConsumed = true;
+      campaignAction = await enrichCampaignLinkedInTable(userId, projectId, editableRunId, userApiEnv);
+    } else if (editableRunId && requestedTableColumn) {
       campaignAction = await addCampaignTableColumn(userId, projectId, editableRunId, requestedTableColumn.columnName, requestedTableColumn.defaultValue, requestedTableColumn.tableHint);
     }
     if (campaignRunId && isCampaignAssetReplacement(message)) {
@@ -61,13 +67,14 @@ export default async function handler(req, res) {
       newsletterAction ? `The primary link in newsletter draft “${newsletterAction.draft.content.subject}” was changed to ${newsletterAction.requestedUrl}. Campaign tracking was added automatically. The saved draft and its preview were regenerated. Nothing was sent or scheduled.` : "",
       newsletterLogoAction ? `Newsletter draft “${newsletterLogoAction.draft.content.subject}” now uses the saved Brand logo “${newsletterLogoAction.logo.name}” (${newsletterLogoAction.logo.usage}). The saved draft and preview were regenerated. Nothing was sent or scheduled.` : "",
       campaignAction?.replaced ? `${campaignAction.replaced} saved link ${campaignAction.replaced === 1 ? "reference was" : "references were"} changed in the active campaign to ${campaignAction.targetUrl}.` : "",
+      campaignAction?.enrichment ? `Public profile research verified ${campaignAction.profilesVerified} LinkedIn ${campaignAction.profilesVerified === 1 ? "profile" : "profiles"}; ${campaignAction.peopleNotFound} could not be verified and ${campaignAction.peopleAmbiguous} need review. The links were saved in the visible People table.` : "",
       requestedTableColumn && campaignAction?.tableFound ? campaignAction.alreadyPresent ? `The active campaign already has a “${campaignAction.columnName}” column.` : `A “${campaignAction.columnName}” column was added to ${campaignAction.rowsUpdated} rows in the active campaign.` : "",
     ].filter(Boolean);
     const completedContext = completedActions.length ? `${message}\n\nCOMPLETED APP ACTION\n${completedActions.join("\n")} Tell the user the action is complete. Never say that you cannot save it or that the user must edit the campaign manually.` : message;
-    if ((newsletterAction || newsletterLogoAction || campaignAction?.replaced || (requestedTableColumn && campaignAction?.tableFound)) && !assetAction) {
-      const changed = [campaignAction?.replaced ? "the active campaign" : "", requestedTableColumn && campaignAction?.tableFound ? campaignAction.alreadyPresent ? `the existing “${campaignAction.columnName}” campaign column` : `the campaign table with a “${campaignAction.columnName}” column` : "", newsletterAction ? "the newsletter link and preview" : "", newsletterLogoAction ? `the newsletter logo to “${newsletterLogoAction.logo.name}”` : ""].filter(Boolean).join(" and ");
+    if ((newsletterAction || newsletterLogoAction || campaignAction?.replaced || campaignAction?.enrichment || (requestedTableColumn && campaignAction?.tableFound)) && !assetAction) {
+      const changed = [campaignAction?.replaced ? "the active campaign" : "", campaignAction?.enrichment ? `the People table with ${campaignAction.profilesVerified} verified LinkedIn ${campaignAction.profilesVerified === 1 ? "profile" : "profiles"}` : "", requestedTableColumn && campaignAction?.tableFound && !campaignAction?.enrichment ? campaignAction.alreadyPresent ? `the existing “${campaignAction.columnName}” campaign column` : `the campaign table with a “${campaignAction.columnName}” column` : "", newsletterAction ? "the newsletter link and preview" : "", newsletterLogoAction ? `the newsletter logo to “${newsletterLogoAction.logo.name}”` : ""].filter(Boolean).join(" and ");
       return res.status(200).json({
-        reply: `Updated ${changed}.${campaignAction?.targetUrl || newsletterAction?.requestedUrl ? ` The primary link is ${campaignAction?.targetUrl || newsletterAction?.requestedUrl}.` : ""} Nothing was sent or scheduled.`,
+        reply: `Updated ${changed}.${campaignAction?.enrichment ? ` ${campaignAction.peopleNotFound} ${campaignAction.peopleNotFound === 1 ? "person was" : "people were"} marked Not found; ${campaignAction.peopleAmbiguous} need review.` : ""}${campaignAction?.targetUrl || newsletterAction?.requestedUrl ? ` The primary link is ${campaignAction?.targetUrl || newsletterAction?.requestedUrl}.` : ""} Nothing was sent or scheduled.`,
         createdAt: new Date().toISOString(),
         newsletterAction,
         newsletterLogoAction,
@@ -75,7 +82,7 @@ export default async function handler(req, res) {
         assetAction: null,
       });
     }
-    await consumeAiUsage(userId, "chat", userApiEnv);
+    if (!aiUsageConsumed) await consumeAiUsage(userId, "chat", userApiEnv);
     if (mayRequestInterfaceAction(message) || isInvitationEditRequest(message)) {
       const campaignRunIdForContext = editableRunId;
       const [newsletterContext, campaignContext] = await Promise.all([
@@ -223,6 +230,13 @@ async function executeInterfaceActions({ userId, projectId, runId, workspace, pl
         campaignAction = await addCampaignTableColumn(userId, projectId, targetId, columnName, action.value || "Unknown", action.reason || "");
         if (!campaignAction.tableFound) throw new Error("No editable table was found in the active campaign.");
         results.push({ type: action.type, status: "completed", detail: campaignAction.alreadyPresent ? `The campaign already has a “${columnName}” column.` : `Added “${columnName}” to ${campaignAction.rowsUpdated} campaign rows.` });
+        continue;
+      }
+      if (action.type === "enrich_linkedin_profiles") {
+        const targetId = String(action.targetId || runId || "");
+        if (!targetId) throw new Error("There is no active People table to enrich.");
+        campaignAction = await enrichCampaignLinkedInTable(userId, projectId, targetId, userApiEnv);
+        results.push({ type: action.type, status: "completed", detail: `Researched the People table and saved ${campaignAction.profilesVerified} verified LinkedIn ${campaignAction.profilesVerified === 1 ? "profile" : "profiles"}; ${campaignAction.peopleNotFound} were not found and ${campaignAction.peopleAmbiguous} need review.` });
       }
     } catch (error) {
       results.push({ type: action.type, status: "failed", detail: String(error?.message || "The change could not be saved.") });
@@ -293,9 +307,30 @@ export function campaignTableColumnRequest(value) {
   const addColumn = /\b(add|create|insert|include|make)\b/i.test(message) && /\bcolumn\b/i.test(message);
   const people = /\b(people|person|prospects?|leads?|contacts?)\b/i.test(message);
   if (addColumn && people && /\blinkedin\b/i.test(message)) {
-    return { columnName: "LinkedIn connection", defaultValue: "Unknown", tableHint: "people" };
+    return { columnName: "LinkedIn connection", defaultValue: "Not found", tableHint: "people", enrich: true };
   }
   return null;
+}
+
+export function linkedInEnrichmentRequest(value) {
+  const message = String(value || "").toLowerCase();
+  const discovery = /\b(search|find|look\s*up|research|verify|enrich|populate|fill|empty|add)\b/i.test(message);
+  const people = /\b(people|person|prospects?|leads?|contacts?|profiles?|list|links?)\b/i.test(message);
+  const online = /\b(linkedin|online|profile|links?)\b/i.test(message);
+  return discovery && people && online;
+}
+
+async function enrichCampaignLinkedInTable(userId, projectId, runId, env) {
+  const table = await getCampaignPeopleTable(userId, projectId, runId, "people", env);
+  const research = await researchPublicLinkedInProfiles({ rows: table.rows }, env);
+  const saved = await setCampaignTableColumnValues(userId, projectId, runId, "LinkedIn connection", research.rowValues, "people", research.sources, env);
+  return {
+    ...saved,
+    enrichment: true,
+    profilesVerified: research.profilesVerified,
+    peopleNotFound: research.peopleNotFound,
+    peopleAmbiguous: research.peopleAmbiguous,
+  };
 }
 
 function isInvitationEditRequest(value) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { authoritativeRuns, isPanelRun } from "../server/db.mjs";
-import { isBrandSourceRefreshRequest, isPrivateAddress } from "../server/agent.mjs";
+import { formatLinkedInProfileResearch, isBrandSourceRefreshRequest, isPrivateAddress } from "../server/agent.mjs";
 import { applyInvitationTracking, campaignPublicationTarget, createInvitationTrackingUrl, explicitApprovedYouTubeFallback, personalizeInvitationTemplate, renderInvitationEmailHtml, resolveInvitationDestination, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
 import { canonicalAnalyticsPath, prepareAnalyticsLandingRows, prepareAnalyticsPageRows } from "../server/analytics.mjs";
 import { scoreMarketingOutput } from "../server/evaluation.mjs";
@@ -10,7 +10,7 @@ import { projectLogoVariants, safeMailchimpSignupUrl, selectNewsletterLogoVarian
 import { createBrandLogoAccessUrl } from "../server/brand-logos.mjs";
 import { linkedinCommunityApprovalStatus, socialConnectorConfigured } from "../server/social-connections.mjs";
 import { ownerCostEstimateCents, ownerMonthlyCostCapCents } from "../server/billing.mjs";
-import { appendMarkdownTableColumn, editableCampaignRunId } from "../server/campaign-edits.mjs";
+import { appendMarkdownTableColumn, editableCampaignRunId, extractMarkdownTableRows, setMarkdownTableColumnValues } from "../server/campaign-edits.mjs";
 
 test("owner-paid analysis has a conservative global monthly cost ceiling", () => {
   assert.equal(ownerMonthlyCostCapCents({}), 5_000);
@@ -78,6 +78,42 @@ test("the assistant can add a real column to a saved campaign people table", () 
   const repeated = appendMarkdownTableColumn(update.text, "LinkedIn connection", "Unknown", "people");
   assert.equal(repeated.changed, false);
   assert.equal(repeated.alreadyPresent, true);
+});
+
+test("people tables can be read and populated with row-specific verified links", () => {
+  const markdown = `## Launch-ready queue\n\n| Brand | People to approach | Collaboration angle |\n| --- | --- | --- |\n| ASOS | **Nick Goodchild**, director; **Vanessa Spence**, leader | Fashion film |\n| Mango | **Sara Donnelli**, brand leader | Collection world |`;
+  const table = extractMarkdownTableRows(markdown, "people");
+  assert.equal(table.found, true);
+  assert.equal(table.rows.length, 2);
+  assert.equal(table.rows[0].values.Brand, "ASOS");
+  const update = setMarkdownTableColumnValues(markdown, "LinkedIn connection", [
+    { rowIndex: 0, value: "[Nick Goodchild](https://www.linkedin.com/in/nick-goodchild/); Vanessa Spence — Not found" },
+    { rowIndex: 1, value: "Sara Donnelli — Needs review" },
+  ], "people");
+  assert.equal(update.tableFound, true);
+  assert.match(update.text, /\| LinkedIn connection \|/);
+  assert.match(update.text, /\[Nick Goodchild\]\(https:\/\/www\.linkedin\.com\/in\/nick-goodchild\/\)/);
+  assert.match(update.text, /Sara Donnelli — Needs review/);
+  const refreshed = setMarkdownTableColumnValues(update.text, "LinkedIn connection", [
+    { rowIndex: 0, value: "Nick Goodchild — Not found; Vanessa Spence — Not found" },
+    { rowIndex: 1, value: "[Sara Donnelli](https://www.linkedin.com/in/sara-donnelli/)" },
+  ], "people");
+  assert.match(refreshed.text, /\[Sara Donnelli\]\(https:\/\/www\.linkedin\.com\/in\/sara-donnelli\/\)/);
+  assert.doesNotMatch(refreshed.text, /Sara Donnelli — Needs review/);
+});
+
+test("LinkedIn research keeps only direct verified member-profile URLs", () => {
+  const result = formatLinkedInProfileResearch([
+    { rowIndex: 0, people: "**Jane Example**, creative director; **John Example**, producer" },
+  ], {
+    rows: [{ rowIndex: 0, matches: [
+      { name: "Jane Example", status: "verified", url: "https://uk.linkedin.com/in/jane-example/?trk=search", verification: "Name and employer match" },
+      { name: "John Example", status: "verified", url: "https://www.linkedin.com/company/example", verification: "Wrong URL kind" },
+    ] }],
+  });
+  assert.equal(result.profilesVerified, 1);
+  assert.equal(result.peopleNotFound, 1);
+  assert.equal(result.rowValues[0].value, "[Jane Example](https://www.linkedin.com/in/jane-example/); John Example — Not found");
 });
 
 test("the assistant can edit the selected campaign from its visible detail screen", () => {

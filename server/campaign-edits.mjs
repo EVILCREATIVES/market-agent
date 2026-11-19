@@ -63,17 +63,8 @@ export function appendMarkdownTableColumn(markdown, columnName, defaultValue = "
   const hint = String(tableHint || "").trim().toLowerCase();
   if (!requestedName) return { text: String(markdown || ""), changed: false, alreadyPresent: false, rowCount: 0 };
 
-  const tables = [];
-  for (let index = 0; index < lines.length - 1; index += 1) {
-    if (!isMarkdownTableLine(lines[index]) || !isMarkdownSeparatorLine(lines[index + 1])) continue;
-    let end = index + 2;
-    while (end < lines.length && isMarkdownTableLine(lines[end])) end += 1;
-    const context = lines.slice(Math.max(0, index - 8), end).join(" ").toLowerCase();
-    tables.push({ start: index, end, context });
-    index = end - 1;
-  }
-  if (!tables.length) return { text: String(markdown || ""), changed: false, alreadyPresent: false, rowCount: 0 };
-  const table = hint ? tables.find((candidate) => candidate.context.includes(hint)) || tables[0] : tables[0];
+  const table = findMarkdownTable(lines, hint);
+  if (!table) return { text: String(markdown || ""), changed: false, alreadyPresent: false, rowCount: 0 };
   const headers = markdownCells(lines[table.start]);
   if (headers.some((header) => header.toLowerCase() === requestedName.toLowerCase())) {
     return { text: String(markdown || ""), changed: false, alreadyPresent: true, rowCount: Math.max(0, table.end - table.start - 2) };
@@ -83,6 +74,88 @@ export function appendMarkdownTableColumn(markdown, columnName, defaultValue = "
   lines[table.start + 1] = appendMarkdownCell(lines[table.start + 1], "---");
   for (let index = table.start + 2; index < table.end; index += 1) lines[index] = appendMarkdownCell(lines[index], requestedValue);
   return { text: lines.join("\n"), changed: true, alreadyPresent: false, rowCount: Math.max(0, table.end - table.start - 2) };
+}
+
+export function extractMarkdownTableRows(markdown, tableHint = "people") {
+  const lines = String(markdown || "").split("\n");
+  const table = findMarkdownTable(lines, String(tableHint || "").trim().toLowerCase());
+  if (!table) return { found: false, headers: [], rows: [] };
+  const headers = markdownCells(lines[table.start]);
+  const rows = lines.slice(table.start + 2, table.end).map((line, rowIndex) => {
+    const cells = markdownCells(line);
+    const values = Object.fromEntries(headers.map((header, index) => [header, cells[index] || ""]));
+    return { rowIndex, cells, values };
+  });
+  return { found: true, headers, rows };
+}
+
+export function setMarkdownTableColumnValues(markdown, columnName, rowValues = [], tableHint = "people") {
+  const original = String(markdown || "");
+  const lines = original.split("\n");
+  const requestedName = String(columnName || "").replace(/[|\r\n]+/g, " ").trim().slice(0, 120);
+  const hint = String(tableHint || "").trim().toLowerCase();
+  const table = findMarkdownTable(lines, hint);
+  if (!requestedName || !table) return { text: original, changed: false, tableFound: false, rowCount: 0 };
+  const headers = markdownCells(lines[table.start]);
+  let columnIndex = headers.findIndex((header) => header.toLowerCase() === requestedName.toLowerCase());
+  if (columnIndex < 0) {
+    columnIndex = headers.length;
+    lines[table.start] = appendMarkdownCell(lines[table.start], requestedName);
+    lines[table.start + 1] = appendMarkdownCell(lines[table.start + 1], "---");
+  }
+  const valueMap = new Map((Array.isArray(rowValues) ? rowValues : []).map((entry, index) => [Number.isInteger(entry?.rowIndex) ? entry.rowIndex : index, sanitizeMarkdownCell(entry?.value)]));
+  for (let lineIndex = table.start + 2; lineIndex < table.end; lineIndex += 1) {
+    const rowIndex = lineIndex - table.start - 2;
+    const cells = markdownCells(lines[lineIndex]);
+    while (cells.length <= columnIndex) cells.push("");
+    cells[columnIndex] = valueMap.get(rowIndex) || "Not found";
+    lines[lineIndex] = `| ${cells.join(" | ")} |`;
+  }
+  const text = lines.join("\n");
+  return { text, changed: text !== original, tableFound: true, rowCount: Math.max(0, table.end - table.start - 2) };
+}
+
+export async function getCampaignPeopleTable(userId, projectId, runId, tableHint = "people", env = process.env) {
+  if (!runId) throw campaignEditError("There is no active people table to enrich.", 400);
+  const result = await getPool(env).query(
+    "SELECT data FROM market_agent_runs WHERE user_id = $1 AND project_id = $2 AND id = $3 LIMIT 1",
+    [userId, projectId, runId],
+  );
+  const run = result.rows[0]?.data;
+  if (!run) throw campaignEditError("The campaign could not be found.", 404);
+  const table = extractMarkdownTableRows(run.output, tableHint);
+  if (!table.found) throw campaignEditError("No People table was found in the visible record.", 400);
+  const peopleHeader = table.headers.find((header) => /\b(people|person|prospects?|contacts?|leads?)\b/i.test(header));
+  if (!peopleHeader) throw campaignEditError("The visible table does not contain a People column.", 400);
+  const organizationHeader = table.headers.find((header) => /\b(brand|company|organization|account|venue)\b/i.test(header));
+  return {
+    run,
+    headers: table.headers,
+    rows: table.rows.map((row) => ({
+      rowIndex: row.rowIndex,
+      organization: organizationHeader ? row.values[organizationHeader] : "",
+      people: row.values[peopleHeader] || "",
+      context: Object.entries(row.values).filter(([header]) => header !== peopleHeader).map(([header, value]) => `${header}: ${value}`).join("; "),
+    })),
+  };
+}
+
+export async function setCampaignTableColumnValues(userId, projectId, runId, columnName, rowValues, tableHint = "people", sources = [], env = process.env) {
+  const result = await getPool(env).query(
+    "SELECT data FROM market_agent_runs WHERE user_id = $1 AND project_id = $2 AND id = $3 LIMIT 1",
+    [userId, projectId, runId],
+  );
+  const run = result.rows[0]?.data;
+  if (!run) throw campaignEditError("The campaign could not be found.", 404);
+  const update = setMarkdownTableColumnValues(run.output, columnName, rowValues, tableHint);
+  if (!update.tableFound) throw campaignEditError("No editable People table was found in the visible record.", 400);
+  if (!update.changed) return { run, revision: 0, columnName, rowsUpdated: update.rowCount, tableFound: true };
+  const mergedSources = [...(Array.isArray(run.sources) ? run.sources : []), ...(Array.isArray(sources) ? sources : [])]
+    .filter((source, index, all) => source?.url && all.findIndex((candidate) => candidate?.url === source.url) === index)
+    .slice(0, 100);
+  const updated = { ...run, output: update.text, sources: mergedSources };
+  const revision = await persistCampaignRun(userId, projectId, runId, updated, env);
+  return { run: updated, revision, columnName, rowsUpdated: update.rowCount, tableFound: true };
 }
 
 export async function addCampaignTableColumn(userId, projectId, runId, columnName, defaultValue = "Unknown", tableHint = "", env = process.env) {
@@ -117,6 +190,24 @@ function markdownCells(line) {
 function appendMarkdownCell(line, value) {
   const text = String(line || "").trimEnd();
   return text.endsWith("|") ? `${text.slice(0, -1).trimEnd()} | ${value} |` : `${text} | ${value}`;
+}
+
+function findMarkdownTable(lines, hint = "") {
+  const tables = [];
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    if (!isMarkdownTableLine(lines[index]) || !isMarkdownSeparatorLine(lines[index + 1])) continue;
+    let end = index + 2;
+    while (end < lines.length && isMarkdownTableLine(lines[end])) end += 1;
+    const context = lines.slice(Math.max(0, index - 8), end).join(" ").toLowerCase();
+    tables.push({ start: index, end, context });
+    index = end - 1;
+  }
+  if (!tables.length) return null;
+  return hint ? tables.find((candidate) => candidate.context.includes(hint)) || tables[0] : tables[0];
+}
+
+function sanitizeMarkdownCell(value) {
+  return String(value || "Not found").replace(/[|\r\n]+/g, " ").trim().slice(0, 2_000) || "Not found";
 }
 
 export async function updateCampaignLink(userId, projectId, runId, targetUrl, env = process.env) {
