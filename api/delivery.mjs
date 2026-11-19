@@ -2,6 +2,7 @@ import { requireUser } from "../server/auth.mjs";
 import { approveDeliveryCampaign, cancelDeliveryJob, executeDeliveryJob, getDeliveryPublishingOptions, listDeliveryJobs, pauseDeliveryCampaign, prepareDeliveryJobs, retryDeliveryJob } from "../server/delivery.mjs";
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 import { consumeAiUsage } from "../server/billing.mjs";
+import { updateCampaignPlanItem } from "../server/campaign-edits.mjs";
 
 export const config = { maxDuration: 300 };
 
@@ -23,6 +24,10 @@ export default async function handler(req, res) {
     if (action === "pause-campaign") {
       if (!runId) return res.status(400).json({ error: "Choose a scheduled campaign first." });
       return res.status(200).json(await pauseDeliveryCampaign(userId, projectId, runId));
+    }
+    if (action === "update-plan-item") {
+      if (!runId) return res.status(400).json({ error: "Choose a campaign first." });
+      return res.status(200).json(await updateCampaignPlanItem(userId, projectId, runId, req.body?.itemIndex, req.body?.changes || {}));
     }
     if (action === "retry") return res.status(200).json(await retryDeliveryJob(userId, String(req.body?.id || "").slice(0, 100)));
     if (action === "cancel") return res.status(200).json(await cancelDeliveryJob(userId, String(req.body?.id || "").slice(0, 100)));

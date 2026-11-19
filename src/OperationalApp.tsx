@@ -410,6 +410,10 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
   };
   const updateRunStatus = (id: string, status: RunStatus) => setState((current) => ({ ...current, runs: current.runs.map((run) => run.id === id ? { ...run, status } : run) }));
   const updateRunOutput = (id: string, output: string) => setState((current) => ({ ...current, runs: current.runs.map((run) => run.id === id ? { ...run, output } : run) }));
+  const applyCampaignUpdate = (run: AgentRun, revision = 0) => {
+    if (revision) cloudRevisionRef.current = Math.max(cloudRevisionRef.current, revision);
+    setState((current) => ({ ...current, runs: current.runs.map((item) => item.id === run.id ? run : item) }));
+  };
   const deleteRun = async (id: string) => {
     try {
       const response = await apiFetch(`/api/state?runId=${encodeURIComponent(id)}`, { method: "DELETE" });
@@ -510,11 +514,11 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
         <header className="op-topbar"><button className="op-mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={20} /></button><div className="op-product-state"><span className={completeness >= 60 ? "good" : ""}>{completeness}%</span><div><strong>Brand</strong><small>{completeness >= 60 ? "Ready for grounded work" : "Needs brand context"}</small></div></div><div className="op-topbar__right"><span className={`op-status ${runtimeReady ? "op-status--ready" : ""}`}><i />{runtimeReady ? accessMode === "trial" ? "Demo active" : "Live agent" : "Choose access"}</span><span className="op-cloud-state"><Cloud size={14} />{cloudSaving ? "Saving…" : cloudError ? "Save issue" : "Saved"}</span><button className="op-user-button" title={userEmail} onClick={() => void onSignOut()}><LogOut size={15} /> Sign out</button></div></header>
 
         <div className="op-page">
-          {selectedRunId ? <RunDetail run={state.runs.find((run) => run.id === selectedRunId)!} workspace={activeProject} connections={connections} onBack={() => setSelectedRunId(null)} onConnect={() => navigate("integrations")} onStatus={updateRunStatus} onOutput={updateRunOutput} onDelete={deleteRun} notify={notify} /> : <>
+          {selectedRunId ? <RunDetail run={state.runs.find((run) => run.id === selectedRunId)!} workspace={activeProject} connections={connections} onBack={() => setSelectedRunId(null)} onConnect={() => navigate("integrations")} onStatus={updateRunStatus} onOutput={updateRunOutput} onCampaignUpdate={applyCampaignUpdate} onDelete={deleteRun} notify={notify} /> : <>
             {page === "agent" && <AgentHome workspace={activeProject} runs={projectRuns} health={{ ...health, agentConfigured: runtimeReady }} connections={connections} schedule={activeSchedule} automationReady={automationReady} onSchedule={updateSchedule} onRun={addRun} onIssuesFound={addProactiveIssues} onOpen={setSelectedRunId} onNavigate={navigate} notify={notify} />}
             {page === "brain" && <ProductBrain key={activeProject.id} userId={userId} workspace={activeProject} onSave={updateWorkspace} onOpenContentLibrary={() => navigate("content")} notify={notify} />}
             {page === "issues" && <IssuesCenter workspace={activeProject} onSave={updateWorkspace} onOpenBrand={() => navigate("brain")} notify={notify} />}
-            {page === "research" && <RunLibrary title="Research" description={`Live market and audience work grounded in ${activeProject.name || "this project"}'s Brand.`} empty="No research has been run for this project yet." runs={projectRuns.filter((run) => ["research", "audience"].includes(run.action))} onOpen={setSelectedRunId} onStart={() => navigate("agent")} />}
+            {page === "research" && <ResearchWorkspace workspace={activeProject} runs={projectRuns.filter((run) => ["research", "audience"].includes(run.action))} onRun={addRun} onOpen={setSelectedRunId} notify={notify} />}
             {page === "campaigns" && <CampaignWorkspace workspace={activeProject} runs={campaignRuns} connections={connections} onSaveWorkspace={updateWorkspace} onOpen={setSelectedRunId} onStart={() => navigate("agent")} onConnect={() => navigate("integrations")} onGrowth={() => navigate("analytics")} notify={notify} />}
             {page === "calendar" && <CalendarWorkspace workspace={activeProject} runs={campaignRuns} onOpen={setSelectedRunId} onOpenNewsletter={() => { window.sessionStorage.setItem(`market-agent:campaign-section:${activeProject.id}`, "newsletter"); navigate("campaigns"); }} />}
             {page === "content" && <ContentLibrary userId={userId} workspace={activeProject} runs={projectRuns.filter((run) => run.action === "social")} mediaConfigured={apiCredentials.mediaReady} videoConfigured={apiCredentials.videoReady} onSave={updateWorkspace} onIssuesFound={addProactiveIssues} onOpen={setSelectedRunId} onStart={() => navigate("agent")} notify={notify} />}
@@ -524,7 +528,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
         </div>
       </main>
       {mobileOpen && <button className="op-scrim" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
-      <ProjectChat userId={userId} workspace={activeProject} currentPage={page} activeCampaignRunId={selectedRunId && campaignRuns.some((run) => run.id === selectedRunId) ? selectedRunId : page === "campaigns" ? campaignRuns[0]?.id || "" : ""} open={projectChatOpen} onOpen={() => setProjectChatOpen(true)} onClose={() => page === "integrations" ? deferConnectionGuide() : setProjectChatOpen(false)} onSave={updateWorkspace} onCampaignUpdated={(run, revision) => { if (revision) cloudRevisionRef.current = Math.max(cloudRevisionRef.current, revision); setState((current) => ({ ...current, runs: current.runs.map((item) => item.id === run.id ? run : item) })); }} onAttachToCampaign={attachAssetToCampaign} onIssuesFound={addProactiveIssues} guide={page === "integrations" ? connectionGuide : null} onGuideHelp={guideConnections} onGuideLater={deferConnectionGuide} notify={notify} />
+      <ProjectChat userId={userId} workspace={activeProject} currentPage={page} activeCampaignRunId={selectedRunId && campaignRuns.some((run) => run.id === selectedRunId) ? selectedRunId : page === "campaigns" ? campaignRuns[0]?.id || "" : ""} open={projectChatOpen} onOpen={() => setProjectChatOpen(true)} onClose={() => page === "integrations" ? deferConnectionGuide() : setProjectChatOpen(false)} onSave={updateWorkspace} onCampaignUpdated={applyCampaignUpdate} onAttachToCampaign={attachAssetToCampaign} onIssuesFound={addProactiveIssues} guide={page === "integrations" ? connectionGuide : null} onGuideHelp={guideConnections} onGuideLater={deferConnectionGuide} notify={notify} />
       {accessChoiceOpen && <AccessChoice billing={billing} busy={billingBusy} onDemo={() => rememberAccessChoice("trial")} onApis={() => { rememberAccessChoice("byok"); navigate("integrations"); }} onSubscribe={() => { rememberAccessChoice("managed"); void startManagedSubscription(); }} onClose={() => setAccessChoiceOpen(false)} />}
       {toast && <div className="op-toast"><Sparkles size={15} />{toast}<button onClick={() => setToast(null)}><X size={14} /></button></div>}
     </div>
@@ -3627,11 +3631,57 @@ function RunLibrary({ title, description, empty, runs, onOpen, onStart }: { titl
   return <div className="op-stack"><div className="op-heading"><div className="op-eyebrow">Saved workspace records</div><h1>{title}</h1><p>{description}</p></div>{runs.length ? <div className="op-run-list">{runs.map((run) => <RunRow key={run.id} run={run} onOpen={onOpen} />)}</div> : <div className="op-empty"><span><FileText size={23} /></span><h2>{empty}</h2><p>Run the agent to create the first real record.</p><button onClick={onStart}><Sparkles size={15} /> Open agent</button></div>}</div>;
 }
 
+function ResearchWorkspace({ workspace, runs, onRun, onOpen, notify }: { workspace: ProductWorkspace; runs: AgentRun[]; onRun: (run: AgentRun) => void; onOpen: (id: string) => void; notify: (message: string) => void }) {
+  const [working, setWorking] = useState("");
+  const planned = runs.filter((run) => run.researchPlan?.opportunities?.length);
+  const previous = runs.filter((run) => !run.researchPlan?.opportunities?.length);
+  const createRun = async (action: "research" | "campaign", prompt: string, key: string) => {
+    setWorking(key);
+    try {
+      const response = await apiFetch("/api/agent", { method: "POST", body: JSON.stringify({ action, prompt, workspace, projectId: workspace.id, useWeb: true, mode: "single", intensity: "assertive" }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || (action === "research" ? "Research could not be completed." : "The campaign draft could not be created."));
+      onRun(data.run as AgentRun);
+      notify(action === "research" ? "Research completed as campaign opportunities." : "Campaign draft created from this opportunity. Nothing was published.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The work could not be completed.");
+    } finally {
+      setWorking("");
+    }
+  };
+  const refresh = () => createRun("research", "Find the three strongest current campaign opportunities for this brand. Exclude generic news. For each opportunity provide the exact message, required or reusable assets, audience, channel, timing, primary conversion, and measurement plan.", "research");
+  const buildCampaign = (run: AgentRun, index: number) => {
+    const opportunity = run.researchPlan?.opportunities?.[index];
+    if (!opportunity) return;
+    const prompt = `Build an executable campaign from this approved research opportunity. Preserve the core message and measurement goal, select or specify the exact assets, and create visual editable channel previews and a dated schedule.\n\nOPPORTUNITY\n${JSON.stringify(opportunity, null, 2)}`;
+    void createRun("campaign", prompt, `${run.id}-${index}`);
+  };
+  return <div className="op-stack op-research-workspace">
+    <div className="op-heading op-research-heading"><div><div className="op-eyebrow">Campaign intelligence</div><h1>Research that creates action</h1><p>Only signals that matter to {workspace.name || "this brand"}. Every opportunity includes the message, assets, channels, timing, and tracking needed to turn it into a campaign.</p></div><button onClick={() => void refresh()} disabled={Boolean(working)}>{working === "research" ? <LoaderCircle className="spin" size={15} /> : <Search size={15} />}{working === "research" ? "Researching…" : "Find new opportunities"}</button></div>
+    {planned.length ? <div className="op-research-runs">{planned.map((run) => <section className="op-research-run" key={run.id}>
+      <header><div><small>{new Date(run.createdAt).toLocaleString()}</small><h2>{run.researchPlan?.summary || run.title}</h2></div><button className="secondary" onClick={() => onOpen(run.id)}>Open full evidence <ArrowRight size={13} /></button></header>
+      <div className="op-opportunity-grid">{run.researchPlan?.opportunities.map((opportunity, index) => <article className="op-opportunity-card" key={`${run.id}-${index}`}>
+        <header><div><small>CAMPAIGN OPPORTUNITY {index + 1}</small><h3>{opportunity.title}</h3></div><em className={`confidence-${opportunity.confidence}`}>{opportunity.confidence}</em></header>
+        <div className="op-opportunity-signal"><strong>Signal</strong><p>{opportunity.signal}</p><span>{opportunity.whyItMatters}</span></div>
+        <dl><div><dt>Audience</dt><dd>{opportunity.audience}</dd></div><div><dt>Campaign</dt><dd>{opportunity.campaignIdea}</dd></div><div><dt>Timing</dt><dd>{opportunity.timing}</dd></div></dl>
+        <section className="op-opportunity-message"><small>EXACT MESSAGE</small><p>{opportunity.exactMessage}</p></section>
+        <div className="op-opportunity-build"><section><strong>Assets</strong><ul>{opportunity.assets.map((asset) => <li key={asset}><ImageIcon size={13} />{asset}</li>)}</ul></section><section><strong>Channels</strong><div>{opportunity.channels.map((channel) => <span key={channel}>{channel}</span>)}</div></section></div>
+        <section className="op-opportunity-tracking"><header><strong>Tracking</strong><span>Primary conversion · {opportunity.primaryConversion}</span></header><div>{opportunity.tracking.map((item) => <div key={`${item.metric}-${item.source}`}><strong>{item.metric}</strong><span>{item.source}</span><em>{item.target}</em></div>)}</div></section>
+        {opportunity.evidence.length > 0 && <details className="op-opportunity-evidence"><summary>{opportunity.evidence.length} supporting {opportunity.evidence.length === 1 ? "source" : "sources"}</summary>{opportunity.evidence.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.title || source.url}<ArrowRight size={11} /></a>)}</details>}
+        <button className="op-opportunity-action" disabled={Boolean(working)} onClick={() => buildCampaign(run, index)}>{working === `${run.id}-${index}` ? <LoaderCircle className="spin" size={14} /> : <Rocket size={14} />}{working === `${run.id}-${index}` ? "Building campaign…" : "Build this campaign"}</button>
+      </article>)}</div>
+    </section>)}</div> : <div className="op-empty"><span><Search size={23} /></span><h2>No actionable opportunity yet</h2><p>Run research and Market Agent will discard irrelevant news, then return campaign-ready opportunities with exact copy, assets, and measurement.</p><button onClick={() => void refresh()} disabled={Boolean(working)}><Sparkles size={15} /> Find opportunities</button></div>}
+    {previous.length > 0 && <section className="op-legacy-research"><div className="op-section-head"><div><span>Earlier format</span><h2>Previous research reports</h2></div><small>{previous.length}</small></div><p>These older records were saved as reports. Open them for evidence, or run new research to get actionable campaign briefs.</p><div className="op-run-list">{previous.map((run) => <RunRow key={run.id} run={run} onOpen={onOpen} />)}</div></section>}
+  </div>;
+}
+
 function RunRow({ run, onOpen }: { run: AgentRun; onOpen: (id: string) => void }) {
   return <button className="op-run-row" onClick={() => onOpen(run.id)}><span className={`op-run-icon op-run-icon--${run.action}`}>{run.action === "research" ? <Globe2 size={17} /> : run.action === "audience" ? <UsersRound size={17} /> : run.action === "campaign" ? <Rocket size={17} /> : run.action === "social" ? <MessageSquareText size={17} /> : <Bot size={17} />}</span><div><strong>{run.title}</strong><p>{run.prompt || actionMeta[run.action].description}</p><small>{new Date(run.createdAt).toLocaleString()}</small></div><em className={run.status === "Approved" ? "approved" : ""}>{run.status}</em><ArrowRight size={16} /></button>;
 }
 
 type CampaignCreative = {
+  planIndex: number;
+  channel: DeliveryJob["channel"];
   day: string;
   format: "carousel" | "reel" | "post" | "story";
   title: string;
@@ -3639,6 +3689,8 @@ type CampaignCreative = {
   caption: string;
   mediaUrl: string;
   mediaKind: "" | "image" | "video";
+  scheduledAt: string;
+  subject: string;
 };
 
 function cleanCreativeText(value: string) {
@@ -3653,7 +3705,8 @@ function extractCampaignCreatives(run: AgentRun): CampaignCreative[] {
   const output = String(run.output || "").replace(/\r/g, "");
   const heading = /^###\s+(Day\s+\d+)\s+[—–-]\s+(Carousel|Reel|Post|Static|Story)\s*(?::\s*(.*))?$/gim;
   const matches = [...output.matchAll(heading)];
-  const instagramItems = (run.campaignPlan?.items || []).filter((item) => item.channel === "instagram");
+  const planItems = (run.campaignPlan?.items || []).map((item, planIndex) => ({ ...item, planIndex }));
+  const instagramItems = planItems.filter((item) => item.channel === "instagram");
   const creatives = matches.map((match, index) => {
     const start = Number(match.index || 0) + match[0].length;
     const end = Number(matches[index + 1]?.index ?? output.length);
@@ -3668,22 +3721,29 @@ function extractCampaignCreatives(run: AgentRun): CampaignCreative[] {
     const fallback = [...visual.matchAll(/^\s*-\s+(.+)$/gm)].map((item, frameIndex) => ({ label: `Frame ${frameIndex + 1}`, text: cleanCreativeText(item[1]) }));
     const planItem = instagramItems[index];
     const mediaKind: CampaignCreative["mediaKind"] = planItem?.mediaKind === "video" ? "video" : planItem?.mediaKind === "image" ? "image" : "";
+    const frames = numbered.length ? numbered : timed.length ? timed : fallback.length ? fallback : [{ label: format === "reel" ? "Video concept" : "Post concept", text: cleanCreativeText(visual || caption || match[3] || match[2]).slice(0, 280) }];
     return {
+      planIndex: planItem?.planIndex ?? -1,
+      channel: planItem?.channel || "instagram",
       day: cleanCreativeText(match[1]),
       format,
       title: cleanCreativeText(match[3] || match[2]),
-      frames: numbered.length ? numbered : timed.length ? timed : fallback,
+      frames,
       caption,
       mediaUrl: String(planItem?.mediaUrl || ""),
       mediaKind,
+      scheduledAt: String(planItem?.scheduledAt || ""),
+      subject: String(planItem?.subject || ""),
     };
-  }).filter((creative) => creative.frames.length > 0);
+  });
   const storiesSection = output.match(/^###\s+Stories\s*$([\s\S]*?)(?=^###\s+|^\*\*Inbound|(?![\s\S]))/im)?.[1] || "";
   const storyItems = [...storiesSection.matchAll(/^\s*-\s+\*\*(Day\s+\d+):\*\*\s+(.+)$/gim)];
   storyItems.forEach((item, storyIndex) => {
     const planItem = instagramItems[creatives.length + storyIndex];
     const mediaKind: CampaignCreative["mediaKind"] = planItem?.mediaKind === "video" ? "video" : planItem?.mediaKind === "image" ? "image" : "";
     creatives.push({
+      planIndex: planItem?.planIndex ?? -1,
+      channel: planItem?.channel || "instagram",
       day: cleanCreativeText(item[1]),
       format: "story",
       title: "Instagram Story",
@@ -3691,8 +3751,60 @@ function extractCampaignCreatives(run: AgentRun): CampaignCreative[] {
       caption: "",
       mediaUrl: String(planItem?.mediaUrl || ""),
       mediaKind,
+      scheduledAt: String(planItem?.scheduledAt || ""),
+      subject: String(planItem?.subject || ""),
     });
   });
+  const represented = new Set(creatives.map((creative) => creative.planIndex).filter((index) => index >= 0));
+  for (const item of planItems) {
+    if (represented.has(item.planIndex)) continue;
+    const paragraphs = String(item.text || "").split(/\n\s*\n/).map(cleanCreativeText).filter(Boolean);
+    const previewText = paragraphs.find((value) => !/^#/.test(value)) || cleanCreativeText(item.subject) || `${deliveryChannelLabel(item.channel)} post`;
+    const scheduled = new Date(item.scheduledAt);
+    creatives.push({
+      planIndex: item.planIndex,
+      channel: item.channel,
+      day: Number.isFinite(scheduled.getTime()) ? scheduled.toLocaleDateString(undefined, { month: "short", day: "numeric" }) : `Post ${item.planIndex + 1}`,
+      format: item.mediaKind === "video" ? "reel" : "post",
+      title: cleanCreativeText(item.subject) || `${deliveryChannelLabel(item.channel)} post ${item.planIndex + 1}`,
+      frames: [{ label: item.mediaKind ? "Selected asset" : "Visual draft", text: previewText.slice(0, 240) }],
+      caption: String(item.text || "").trim(),
+      mediaUrl: String(item.mediaUrl || ""),
+      mediaKind: item.mediaKind,
+      scheduledAt: String(item.scheduledAt || ""),
+      subject: String(item.subject || ""),
+    });
+  }
+  if (!creatives.length && /\b(social|instagram|linkedin|tik\s?tok|reel|carousel|post|campaign)\b/i.test(`${run.action} ${run.prompt} ${run.title}`)) {
+    const genericHeadings = [...output.matchAll(/^#{2,4}\s+([^\n]+)$/gm)]
+      .filter((match) => /\b(day\s*\d+|post\s*\d+|reel|carousel|story|instagram|linkedin|tik\s?tok|youtube|social)\b/i.test(match[1]));
+    genericHeadings.slice(0, 20).forEach((match, index) => {
+      const start = Number(match.index || 0) + match[0].length;
+      const end = Number(genericHeadings[index + 1]?.index ?? output.length);
+      const block = output.slice(start, end).trim();
+      const bulletFrames = [...block.matchAll(/^\s*(?:[-*]|\d+[.)])\s+(.+)$/gm)].map((item, frameIndex) => ({ label: `Frame ${frameIndex + 1}`, text: cleanCreativeText(item[1]).slice(0, 280) })).slice(0, 10);
+      const paragraphs = block.split(/\n\s*\n/).map(cleanCreativeText).filter(Boolean);
+      const title = cleanCreativeText(match[1]);
+      const format: CampaignCreative["format"] = /reel|video/i.test(title) ? "reel" : /carousel/i.test(title) ? "carousel" : /story/i.test(title) ? "story" : "post";
+      creatives.push({
+        planIndex: -1,
+        channel: /linkedin/i.test(title) ? "linkedin" : /tik\s?tok/i.test(title) ? "tiktok" : /youtube/i.test(title) ? "youtube" : "instagram",
+        day: title.match(/day\s*\d+/i)?.[0] || `Post ${index + 1}`,
+        format,
+        title,
+        frames: bulletFrames.length ? bulletFrames : [{ label: format === "reel" ? "Video concept" : "Post concept", text: (paragraphs[0] || title).slice(0, 280) }],
+        caption: paragraphs.join("\n\n").slice(0, 8_000),
+        mediaUrl: "",
+        mediaKind: "",
+        scheduledAt: "",
+        subject: "",
+      });
+    });
+    if (!creatives.length && output.trim()) {
+      const plain = output.split("\n").map(cleanCreativeText).filter((line) => line && !/^#+\s/.test(line));
+      creatives.push({ planIndex: -1, channel: "instagram", day: "Draft", format: "post", title: run.title || "Social content", frames: [{ label: "Content draft", text: (plain[0] || "Campaign content").slice(0, 280) }], caption: plain.slice(0, 8).join("\n\n"), mediaUrl: "", mediaKind: "", scheduledAt: "", subject: "" });
+    }
+  }
   return creatives;
 }
 
@@ -3700,7 +3812,7 @@ function safeBrandColor(value: string, fallback: string) {
   return /^#[0-9a-f]{6}$/i.test(String(value || "")) ? value : fallback;
 }
 
-function CampaignCreativePreview({ run, workspace }: { run: AgentRun; workspace: ProductWorkspace }) {
+function CampaignCreativePreview({ run, workspace, saving, onEdit }: { run: AgentRun; workspace: ProductWorkspace; saving: string; onEdit: (creative: CampaignCreative, changes: { subject: string; text: string; scheduledAt: string }) => Promise<void> }) {
   const creatives = useMemo(() => extractCampaignCreatives(run), [run]);
   if (!creatives.length) return null;
   const style = {
@@ -3710,20 +3822,30 @@ function CampaignCreativePreview({ run, workspace }: { run: AgentRun; workspace:
     "--creative-dark": safeBrandColor(workspace.brand.neutralDarkColor, "#1d1d1b"),
   } as CSSProperties;
   return <section className="op-campaign-creative-preview" style={style}>
-    <header><div><small>INSTAGRAM CREATIVE</small><h2>See every planned asset</h2><p>These are Instagram-sized visual drafts made from the approved slide and Reel copy. A selected library file appears with the item; otherwise the card is clearly marked as needing final production.</p></div><span>{creatives.length} planned posts</span></header>
-    <div className="op-creative-list">{creatives.map((creative, creativeIndex) => <article className={`op-creative-item ${creative.format}`} key={`${creative.day}-${creativeIndex}`}>
+    <header><div><small>CAMPAIGN PREVIEW</small><h2>See and edit every planned post</h2><p>This preview is driven by the structured campaign—not by the assistant’s prose. Edit the actual caption, title, or publication date here; saved changes become the payload reviewed for publishing.</p></div><span>{creatives.length} planned posts</span></header>
+    <div className="op-creative-list">{creatives.map((creative, creativeIndex) => <CampaignCreativeCard key={`${creative.day}-${creativeIndex}`} creative={creative} creativeIndex={creativeIndex} workspace={workspace} saving={saving} onEdit={onEdit} />)}</div>
+  </section>;
+}
+
+function CampaignCreativeCard({ creative, creativeIndex, workspace, saving, onEdit }: { creative: CampaignCreative; creativeIndex: number; workspace: ProductWorkspace; saving: string; onEdit: (creative: CampaignCreative, changes: { subject: string; text: string; scheduledAt: string }) => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const [subject, setSubject] = useState(creative.subject);
+  const [caption, setCaption] = useState(creative.caption);
+  const [scheduledAt, setScheduledAt] = useState(toLocalDateTimeValue(creative.scheduledAt));
+  useEffect(() => { setSubject(creative.subject); setCaption(creative.caption); setScheduledAt(toLocalDateTimeValue(creative.scheduledAt)); }, [creative.subject, creative.caption, creative.scheduledAt]);
+  const busy = saving === `creative-${creative.planIndex}`;
+  return <article className={`op-creative-item ${creative.format}`}>
       <header><div><span>{creative.day}</span><strong>{creative.title}</strong></div><em>{creative.format === "carousel" ? `${creative.frames.length} slides` : creative.format}</em></header>
       {creative.mediaUrl && <div className={`op-creative-selected-media ${creative.mediaKind || "image"}`}>{creative.mediaKind === "video" ? <video src={creative.mediaUrl} controls preload="metadata" /> : <img src={creative.mediaUrl} alt={`Selected campaign asset for ${creative.title}`} />}<span>Selected Content Library asset</span></div>}
       <div className="op-creative-frames">{creative.frames.map((frame, frameIndex) => <div className="op-creative-frame" key={`${frame.label}-${frameIndex}`}>
         <small>{frame.label}</small><strong>{frame.text}</strong><footer><span>{workspace.name || "Brand"}</span><b>{frameIndex + 1}/{creative.frames.length}</b></footer>
       </div>)}</div>
       <div className={`op-creative-production-state ${creative.mediaUrl ? "ready" : "draft"}`}>{creative.mediaUrl ? <Check size={15} /> : <CircleAlert size={15} />}<span><strong>{creative.mediaUrl ? "Media selected" : "Visual draft — final files not produced"}</strong>{creative.mediaUrl ? "The selected file will be used when the delivery queue is prepared." : "No paid image or video generation has been started. Production still requires an existing library asset or an approved generation budget."}</span></div>
-      {creative.caption && <details className="op-creative-caption"><summary>Read caption</summary><p>{creative.caption}</p></details>}
-    </article>)}</div>
-  </section>;
+      {editing ? <div className="op-creative-editor">{creative.channel !== "instagram" && <label><span>Title</span><input value={subject} onChange={(event) => setSubject(event.target.value)} /></label>}<label><span>Caption</span><textarea value={caption} onChange={(event) => setCaption(event.target.value)} /></label><label><span>Publication</span><input type="datetime-local" value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} /></label><footer><button className="secondary" disabled={busy} onClick={() => { setSubject(creative.subject); setCaption(creative.caption); setScheduledAt(toLocalDateTimeValue(creative.scheduledAt)); setEditing(false); }}>Cancel</button><button disabled={busy || !caption.trim() || !scheduledAt} onClick={() => void onEdit(creative, { subject, text: caption, scheduledAt: fromLocalDateTimeValue(scheduledAt) }).then(() => setEditing(false)).catch(() => undefined)}>{busy ? <LoaderCircle className="spin" size={13} /> : <Save size={13} />} Save post</button></footer></div> : <>{creative.caption && <details className="op-creative-caption"><summary>Read caption</summary><p>{creative.caption}</p></details>}{creative.planIndex >= 0 && <button className="op-creative-edit" onClick={() => setEditing(true)}>Edit this post</button>}</>}
+    </article>;
 }
 
-function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, onOutput, onDelete, notify }: { run: AgentRun; workspace: ProductWorkspace; connections: ConnectionStatus; onBack: () => void; onConnect: () => void; onStatus: (id: string, status: RunStatus) => void; onOutput: (id: string, output: string) => void; onDelete: (id: string) => Promise<void>; notify: (message: string) => void }) {
+function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, onOutput, onCampaignUpdate, onDelete, notify }: { run: AgentRun; workspace: ProductWorkspace; connections: ConnectionStatus; onBack: () => void; onConnect: () => void; onStatus: (id: string, status: RunStatus) => void; onOutput: (id: string, output: string) => void; onCampaignUpdate: (run: AgentRun, revision?: number) => void; onDelete: (id: string) => Promise<void>; notify: (message: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [output, setOutput] = useState(run.output);
   const [deliveryJobs, setDeliveryJobs] = useState<DeliveryJob[]>([]);
@@ -3878,6 +4000,21 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
   const updateDeliverySchedule = (jobId: string, scheduledAt: string) => {
     setDeliveryJobs((current) => current.map((item) => item.id === jobId ? { ...item, payload: { ...item.payload, scheduledAt } } : item));
   };
+  const updateCampaignCreative = async (creative: CampaignCreative, changes: { subject: string; text: string; scheduledAt: string }) => {
+    if (creative.planIndex < 0) { notify("This visual draft does not have a structured publishing item yet."); return; }
+    setDeliveryWorking(`creative-${creative.planIndex}`);
+    try {
+      const response = await apiFetch("/api/delivery", { method: "POST", body: JSON.stringify({ action: "update-plan-item", projectId: run.projectId, runId: run.id, itemIndex: creative.planIndex, changes }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The campaign post could not be updated.");
+      onCampaignUpdate(data.run as AgentRun, Number(data.revision || 0));
+      const deliveryResponse = await apiFetch(`/api/delivery?projectId=${encodeURIComponent(run.projectId)}&runId=${encodeURIComponent(run.id)}`);
+      const deliveryData = await deliveryResponse.json();
+      if (deliveryResponse.ok) { setDeliveryJobs(Array.isArray(deliveryData.jobs) ? deliveryData.jobs : []); setDeliveryCoverage(deliveryData.coverage || deliveryCoverage); }
+      notify(data.run?.status === "Draft" && run.status === "Approved" ? "Post updated. Campaign approval was reopened because the approved payload changed." : "Post updated in the campaign preview and publishing payload.");
+    } catch (error) { notify(error instanceof Error ? error.message : "The campaign post could not be updated."); throw error; }
+    finally { setDeliveryWorking(""); }
+  };
   const saveEdit = () => { onOutput(run.id, output); setEditing(false); notify("Changes saved."); };
   const distributionRun = run.action === "campaign" || run.action === "social" || run.action === "chat";
   const campaignIssues = [
@@ -3890,7 +4027,7 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
     <button className="op-back" onClick={onBack}><ArrowLeft size={15} /> Back to workspace</button>
     <section className="op-run-detail">
       <header><div><div className="op-eyebrow">{actionMeta[run.action].title} · {new Date(run.createdAt).toLocaleString()}</div><h1>{run.title}</h1><p>{run.prompt || actionMeta[run.action].description}</p></div><div><span className={`op-review-state ${run.status === "Approved" ? "approved" : ""}`}>{run.status === "Approved" && <Check size={13} />}{run.status}</span><button className="op-more" onClick={() => { if (window.confirm("Delete this campaign and cancel every unpublished scheduled item? Already published posts remain on their platforms.")) void onDelete(run.id); }}><Trash2 size={16} /></button></div></header>
-      {distributionRun && <CampaignCreativePreview run={run} workspace={workspace} />}
+      {distributionRun && <CampaignCreativePreview run={run} workspace={workspace} saving={deliveryWorking} onEdit={updateCampaignCreative} />}
       {distributionRun && (run.assetReferences || []).length > 0 && <section className="op-campaign-assets"><div><small>CAMPAIGN ASSETS</small><strong>Selected by the project agent</strong><p>These files remain in the Content Library and are linked here for this campaign.</p></div><div>{run.assetReferences?.map((asset) => <article key={asset.id}><span>{asset.kind === "image" ? <ImageIcon size={16} /> : asset.kind === "video" ? <Video size={16} /> : <FileText size={16} />}</span><div><strong>{asset.name}</strong><p>{asset.summary}</p><small>{asset.routingRationale}</small></div></article>)}</div></section>}
       {distributionRun && campaignIssues.length > 0 && <section className="op-campaign-issues"><div><small>CAMPAIGN CHECKS</small><strong>{campaignIssues.length} {campaignIssues.length === 1 ? "item" : "items"} to review before publishing</strong><p>These apply only to this campaign and do not appear in the project Issues panel.</p></div><ul>{campaignIssues.map((issue, index) => <li className={issue.severity} key={`${issue.severity}-${index}`}><CircleAlert size={15} /><span>{issue.text}</span></li>)}</ul></section>}
       {distributionRun && <div className={`op-execution-state ${operationalChannels.length ? "connected" : ""}`}><span>{operationalChannels.length ? <Check size={19} /> : <Send size={19} />}</span><div><small>EXECUTION STATUS</small><strong>{operationalChannels.length ? `${operationalChannels.join(", ")} operational` : "Prepared — not launched"}</strong><p>{operationalChannels.length ? "Review the full calendar once. You can publish one item now or approve the complete schedule for automatic delivery." : "No operational delivery channel is connected, so nothing can be sent or published."}</p></div><button onClick={onConnect}>{operationalChannels.length ? "Manage connections" : "Connection setup"} <ArrowRight size={14} /></button></div>}

@@ -72,6 +72,64 @@ export async function updateCampaignLink(userId, projectId, runId, targetUrl, en
   return { run: updated, targetUrl: normalizeTarget(targetUrl), replaced, revision };
 }
 
+export async function updateCampaignPlanItem(userId, projectId, runId, itemIndex, changes = {}, env = process.env) {
+  const index = Number(itemIndex);
+  if (!runId || !Number.isInteger(index) || index < 0) throw campaignEditError("Choose a campaign item to edit.", 400);
+  const database = getPool(env);
+  const result = await database.query(
+    "SELECT data FROM market_agent_runs WHERE user_id = $1 AND project_id = $2 AND id = $3 LIMIT 1",
+    [userId, projectId, runId],
+  );
+  const run = result.rows[0]?.data;
+  const items = Array.isArray(run?.campaignPlan?.items) ? run.campaignPlan.items : [];
+  if (!run || !items[index]) throw campaignEditError("The campaign item is no longer available.", 404);
+  const original = items[index];
+  const next = { ...original };
+  if (Object.prototype.hasOwnProperty.call(changes, "subject")) next.subject = String(changes.subject || "").replace(/[\r\n]+/g, " ").trim().slice(0, 300);
+  if (Object.prototype.hasOwnProperty.call(changes, "text")) next.text = String(changes.text || "").trim().slice(0, 8_000);
+  if (Object.prototype.hasOwnProperty.call(changes, "scheduledAt")) {
+    const scheduledAt = new Date(String(changes.scheduledAt || ""));
+    if (!Number.isFinite(scheduledAt.getTime())) throw campaignEditError("Choose a valid publication date.", 400);
+    next.scheduledAt = scheduledAt.toISOString();
+  }
+  if (!next.text && !next.subject) throw campaignEditError("The post needs copy before it can be saved.", 400);
+  if (JSON.stringify(next) === JSON.stringify(original)) return { run, revision: 0, job: null };
+
+  const jobsResult = await database.query(
+    "SELECT * FROM market_agent_delivery_jobs WHERE user_id = $1 AND project_id = $2 AND run_id = $3 ORDER BY created_at ASC",
+    [userId, projectId, runId],
+  ).catch(() => ({ rows: [] }));
+  const job = jobsResult.rows.find((row) => row.channel === original.channel && (row.payload?.text === original.text || (original.subject && row.payload?.subject === original.subject))) || jobsResult.rows[index];
+  if (job && ["running", "submitted", "complete"].includes(job.status)) throw campaignEditError("This post has already been sent to the platform and cannot be changed.", 409);
+
+  let output = String(run.output || "");
+  if (original.subject) output = output.replace(String(original.subject), next.subject || String(original.subject));
+  if (original.text) output = output.replace(String(original.text), next.text || String(original.text));
+  const updated = {
+    ...run,
+    status: run.status === "Approved" ? "Draft" : run.status,
+    output,
+    campaignPlan: { ...run.campaignPlan, items: items.map((item, itemPosition) => itemPosition === index ? next : item) },
+  };
+  const revision = await persistCampaignRun(userId, projectId, runId, updated, env);
+  let updatedJob = null;
+  if (job) {
+    const payload = { ...(job.payload || {}), subject: next.subject, text: next.text, scheduledAt: next.scheduledAt };
+    const savedJob = await database.query(
+      `UPDATE market_agent_delivery_jobs
+          SET payload = $3::jsonb,
+              status = CASE WHEN status = 'scheduled' THEN 'awaiting_approval' ELSE status END,
+              approved_at = CASE WHEN status = 'scheduled' THEN NULL ELSE approved_at END,
+              next_attempt_at = CASE WHEN status = 'scheduled' THEN NULL ELSE next_attempt_at END,
+              error = '', updated_at = NOW()
+        WHERE id = $1 AND user_id = $2 RETURNING *`,
+      [job.id, userId, JSON.stringify(payload)],
+    );
+    updatedJob = savedJob.rows[0] || null;
+  }
+  return { run: updated, revision, job: updatedJob };
+}
+
 async function persistCampaignRun(userId, projectId, runId, updated, env) {
   const database = getPool(env);
   await database.query(
@@ -94,4 +152,10 @@ function normalizeTarget(value) {
   const raw = String(value || "").trim();
   try { return new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`).toString(); }
   catch { return raw; }
+}
+
+function campaignEditError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
 }

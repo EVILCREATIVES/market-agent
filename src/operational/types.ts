@@ -156,6 +156,7 @@ export interface AgentRun {
   model: string;
   executionMode?: "single" | "panel";
   campaignPlan?: CampaignPlan | null;
+  researchPlan?: ResearchPlan | null;
   intensity?: CampaignIntensity;
   issueFindings?: {
     high: string[];
@@ -163,6 +164,25 @@ export interface AgentRun {
   };
   assetReferences?: RunAssetReference[];
   createdAt: string;
+}
+
+export interface ResearchPlan {
+  summary: string;
+  opportunities: Array<{
+    title: string;
+    signal: string;
+    whyItMatters: string;
+    audience: string;
+    campaignIdea: string;
+    exactMessage: string;
+    assets: string[];
+    channels: string[];
+    timing: string;
+    primaryConversion: string;
+    tracking: Array<{ metric: string; source: string; target: string }>;
+    evidence: Array<{ title: string; url: string }>;
+    confidence: "high" | "medium" | "exploratory";
+  }>;
 }
 
 export interface CampaignPlan {

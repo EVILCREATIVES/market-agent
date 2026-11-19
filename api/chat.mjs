@@ -6,7 +6,7 @@ import { getConnectionStatus } from "../server/connections.mjs";
 import { findProjectAssetForInstruction, listProjectAssets, updateProjectAsset } from "../server/assets.mjs";
 import { replaceDeliveryMediaFromAsset } from "../server/delivery.mjs";
 import { createNewsletterDraft, getNewsletterActionContext, updateLatestNewsletterLink, updateLatestNewsletterLogo, updateNewsletterDraft, updateOptinCampaign } from "../server/newsletters.mjs";
-import { getCampaignActionContext, updateCampaignLink, updateCampaignText } from "../server/campaign-edits.mjs";
+import { getCampaignActionContext, updateCampaignLink, updateCampaignPlanItem, updateCampaignText } from "../server/campaign-edits.mjs";
 import { archiveProjectConversationDays, getProjectConversationMemory } from "../server/conversation-memory.mjs";
 import { waitUntil } from "@vercel/functions";
 
@@ -194,6 +194,18 @@ async function executeInterfaceActions({ userId, projectId, runId, workspace, pl
         campaignAction = await updateCampaignText(userId, projectId, targetId, action.findText, action.replacementText);
         if (!campaignAction?.replaced) throw new Error("The exact campaign text to replace was not found, so no change was saved.");
         results.push({ type: action.type, status: "completed", detail: `Changed ${campaignAction.replaced} saved campaign text ${campaignAction.replaced === 1 ? "block" : "blocks"}.` });
+        continue;
+      }
+      if (action.type === "update_campaign_item") {
+        const targetId = String(action.targetId || runId || "");
+        if (!targetId) throw new Error("There is no active campaign draft to edit.");
+        const changes = {};
+        if (String(action.subject || "").trim()) changes.subject = action.subject;
+        if (String(action.body || "").trim()) changes.text = action.body;
+        if (String(action.scheduledAt || "").trim()) changes.scheduledAt = action.scheduledAt;
+        if (!Object.keys(changes).length) throw new Error("The instruction did not contain a concrete post change.");
+        campaignAction = await updateCampaignPlanItem(userId, projectId, targetId, action.itemIndex, changes);
+        results.push({ type: action.type, status: "completed", detail: `Updated campaign item ${Number(action.itemIndex) + 1}; its visual preview and publishing payload now match.` });
       }
     } catch (error) {
       results.push({ type: action.type, status: "failed", detail: String(error?.message || "The change could not be saved.") });

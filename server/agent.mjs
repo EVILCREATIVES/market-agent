@@ -9,7 +9,7 @@ import { compileSchema, decodeBinarySchema } from "kiwi-schema";
 import { Agent as UndiciAgent, fetch as pinnedFetch } from "undici";
 
 const actionInstructions = {
-  research: `Research the live market for this product now. Identify the strongest audience pains, language people actually use, relevant alternatives, timely market signals, and concrete marketing opportunities. Deliver the sourced findings, prioritized targets, and usable implications yourself; do not tell the user to assign a researcher or conduct the research later. Distinguish sourced facts from your analysis.`,
+  research: `Research the live market for this product now, but do not produce a generic news digest. Keep only signals that create a credible marketing opportunity for this specific brand. For every useful signal, define why it matters, the campaign idea it supports, an exact message, the assets required, the best channels and timing, the primary conversion, and how success will be measured. Deliver the sourced findings and usable implications yourself; do not tell the user to assign a researcher or conduct the research later. Distinguish sourced facts from your analysis.`,
   campaign: `Build an executable campaign and complete every deliverable possible in this run. Research and deliver a sourced first-priority prospect batch, final outreach copy, follow-ups, channel assets, a launch queue, qualification rules, and tracking fields. When LinkedIn is relevant, research verifiable public professional communities and LinkedIn Groups that may fit the audience, but never claim to have joined or posted to a group: LinkedIn group discovery, membership requests, and group posting require manual user action unless a future approved connector explicitly supports them. Label each group recommendation with its public evidence and the manual participation step. Treat organic company-page publishing and paid LinkedIn Ads as separate capabilities. Never create paid media spend without a user-connected ad account, an explicit hard budget cap, and final launch approval; provider charges must go to the user's selected ad account. For a target larger than one response can contain, complete the largest credible first wave and define the continuation pattern. Keep strategy explanation short: lead with completed work and launch-ready assets. Do not invent people, product proof, performance numbers, or commercial terms.`,
   social: `Create a seven-day social content pack adapted for the project's operational channels, including LinkedIn, Instagram, TikTok, YouTube, and X when connected. Deliver final copy, creative direction, short-video scripts, calls to action, and a launch queue. Keep explanation short and make every item ready to publish. Never claim customer results that are not in the product context.`,
   audience: `Research and define three concrete audience segments. For each, deliver their job, pain, triggering events, objections, where they gather, language to listen for, and ethical public signals for prospect discovery. Include verified example organizations when web evidence supports them; never fabricate named people or buying intent.`,
@@ -86,7 +86,82 @@ export async function runMarketingAgent(payload, env = process.env) {
     }, env).catch(() => null);
     if (campaignPlan?.items?.length) result.output = `${result.output.trim()}\n\n${renderExecutionPlan(campaignPlan.items)}`;
   }
-  return { ...result, issueFindings, intensity, executionMode: mode, campaignPlan };
+  let researchPlan = null;
+  if (["research", "audience"].includes(action)) {
+    researchPlan = await generateResearchPlan({ workspace, result, action, prompt }, env).catch(() => null);
+  }
+  return { ...result, issueFindings, intensity, executionMode: mode, campaignPlan, researchPlan };
+}
+
+async function generateResearchPlan(payload, env = process.env) {
+  const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
+  const result = payload?.result && typeof payload.result === "object" ? payload.result : {};
+  const sources = Array.isArray(result.sources) ? result.sources.slice(0, 30) : [];
+  return generateStructuredObject({
+    env,
+    name: "market_opportunity_plan",
+    system: `${operatorSystem} Convert research into brand-specific campaign opportunities, not a news feed.`,
+    prompt: `BRAND\n${buildContext(workspace)}\n\nRESEARCH RESULT\n${String(result.output || "").slice(0, 42_000)}\n\nVERIFIED SOURCES\n${JSON.stringify(sources, null, 2)}\n\nUSER DIRECTION\n${String(payload?.prompt || "").slice(0, 5_000)}\n\nCreate up to three useful campaign opportunities. Exclude a signal if it has no specific implication for this brand. Every opportunity must contain an exact usable message, the assets needed, the recommended channels and timing, the project's primary conversion, and a concrete measurement plan. Use only evidence URLs supplied above; never invent a source, result, target, benchmark, or customer claim. Targets may be written as a baseline-relative goal such as “increase from the current 30-day baseline” when no numeric baseline is known.`,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["summary", "opportunities"],
+      properties: {
+        summary: { type: "string" },
+        opportunities: {
+          type: "array",
+          minItems: 1,
+          maxItems: 3,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["title", "signal", "whyItMatters", "audience", "campaignIdea", "exactMessage", "assets", "channels", "timing", "primaryConversion", "tracking", "evidence", "confidence"],
+            properties: {
+              title: { type: "string" },
+              signal: { type: "string" },
+              whyItMatters: { type: "string" },
+              audience: { type: "string" },
+              campaignIdea: { type: "string" },
+              exactMessage: { type: "string" },
+              assets: { type: "array", minItems: 1, maxItems: 8, items: { type: "string" } },
+              channels: { type: "array", minItems: 1, maxItems: 6, items: { type: "string" } },
+              timing: { type: "string" },
+              primaryConversion: { type: "string" },
+              tracking: {
+                type: "array",
+                minItems: 1,
+                maxItems: 6,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["metric", "source", "target"],
+                  properties: {
+                    metric: { type: "string" },
+                    source: { type: "string" },
+                    target: { type: "string" },
+                  },
+                },
+              },
+              evidence: {
+                type: "array",
+                maxItems: 8,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["title", "url"],
+                  properties: {
+                    title: { type: "string" },
+                    url: { type: "string" },
+                  },
+                },
+              },
+              confidence: { type: "string", enum: ["high", "medium", "exploratory"] },
+            },
+          },
+        },
+      },
+    },
+  });
 }
 
 function requestedPlanChannels(prompt, available) {
@@ -310,9 +385,10 @@ Supported saved actions:
 - update_newsletter changes saved newsletter copy, link, hero, logo selection, sender, contact details, or address preference.
 - create_newsletter creates a complete draft from the user's direction.
 - update_campaign_text changes exact text inside the visible saved campaign.
+- update_campaign_item changes one structured saved campaign item by its supplied index. Use this for a post caption, title, or publication-time change; it edits the actual payload shown in the visual preview.
 - update_asset changes the name and/or summary of a Content Library item. Use the asset id from contentLibraryAssets; put the final name in name and final summary in body, leaving either empty to preserve it.
 
-Never infer a Brand-source refresh merely because draft copy contains words such as “updates” and “site”. Only update a Brand field when the user explicitly asks to edit that Brand information. Never send, schedule, publish, connect an account, spend money, delete data, or alter an already sent item. Those external or destructive operations require their existing approval flow. Never claim an action succeeded here; this step only describes actions that the server will attempt and verify. If the user is asking a question, giving general product feedback, or requesting an unsupported/destructive/external action, return no actions. For a campaign text edit, copy an exact existing excerpt into findText and put the complete replacement in replacementText. For an invitation or newsletter rewrite, return complete, ready-to-use copy without commentary or bracket placeholders, except the supported merge token {{first_name}} and the required movable action token {{invitation_button}}.`;
+Never infer a Brand-source refresh merely because draft copy contains words such as “updates” and “site”. Only update a Brand field when the user explicitly asks to edit that Brand information. Never send, schedule, publish, connect an account, spend money, delete data, or alter an already sent item. Those external or destructive operations require their existing approval flow. Never claim an action succeeded here; this step only describes actions that the server will attempt and verify. If the user is asking a question, giving general product feedback, or requesting an unsupported/destructive/external action, return no actions. For a campaign-item edit, use the index shown in campaign.items, return the complete final caption in body, the complete final title in subject when relevant, and an ISO time in scheduledAt only when the user asked to change it. For a campaign text edit, copy an exact existing excerpt into findText and put the complete replacement in replacementText. For an invitation or newsletter rewrite, return complete, ready-to-use copy without commentary or bracket placeholders, except the supported merge token {{first_name}} and the required movable action token {{invitation_button}}.`;
   return generateStructuredObject({
     env,
     name: "project_interface_actions",
@@ -991,10 +1067,11 @@ function projectInterfaceActionsSchema() {
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["type", "targetId", "field", "value", "name", "subject", "previewText", "headline", "body", "closing", "ctaLabel", "url", "strategy", "findText", "replacementText", "direction", "reason", "heroImageUrl", "heroImageAlt", "logoVariantId", "senderName", "businessDetails", "physicalAddress", "addressPreference"],
+          required: ["type", "targetId", "itemIndex", "field", "value", "name", "subject", "previewText", "headline", "body", "closing", "ctaLabel", "url", "scheduledAt", "strategy", "findText", "replacementText", "direction", "reason", "heroImageUrl", "heroImageAlt", "logoVariantId", "senderName", "businessDetails", "physicalAddress", "addressPreference"],
           properties: {
-            type: { type: "string", enum: ["none", "update_workspace", "update_invitation", "update_newsletter", "create_newsletter", "update_campaign_text", "update_asset"] },
+            type: { type: "string", enum: ["none", "update_workspace", "update_invitation", "update_newsletter", "create_newsletter", "update_campaign_text", "update_campaign_item", "update_asset"] },
             targetId: { type: "string" },
+            itemIndex: { type: "integer", minimum: -1 },
             field: { type: "string", enum: ["", "name", "website", "description", "segmentation", "positioning", "manifesto", "audience", "valueProposition", "voice", "guardrails", "notes", "reviewSummary", "sourcePriority", "sourceGuidance", "issueNotes.high", "issueNotes.attention", "issueNotes.context", "brand.primaryColor", "brand.secondaryColor", "brand.accentColor", "brand.neutralLightColor", "brand.neutralDarkColor", "brand.typography", "brand.lookAndFeel", "brand.photographyStyle", "brand.imageryStyle", "brand.notes", "emailIdentity.senderName", "emailIdentity.businessDetails", "emailIdentity.physicalAddress", "emailIdentity.addressPreference", "growth.objective", "growth.primaryConversion", "growth.analyticsEvent", "growth.rationale", "growth.targetValue", "growth.targetPeriodDays"] },
             value: { type: "string" },
             name: { type: "string" },
@@ -1005,6 +1082,7 @@ function projectInterfaceActionsSchema() {
             closing: { type: "string" },
             ctaLabel: { type: "string" },
             url: { type: "string" },
+            scheduledAt: { type: "string" },
             strategy: { type: "string", enum: ["", "project_first", "direct_signup", "custom"] },
             findText: { type: "string" },
             replacementText: { type: "string" },
@@ -2799,6 +2877,7 @@ export function createRunRecord(result, action = "chat", prompt = "", projectId 
     model: result.model,
     executionMode: result.executionMode === "panel" ? "panel" : "single",
     campaignPlan: result.campaignPlan?.items ? result.campaignPlan : null,
+    researchPlan: result.researchPlan?.opportunities ? result.researchPlan : null,
     intensity: result.intensity,
     issueFindings: {
       high: Array.isArray(result.issueFindings?.high) ? result.issueFindings.high : [],
