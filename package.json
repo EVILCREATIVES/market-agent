@@ -20,6 +20,7 @@
     "@ai-sdk/google": "^4.0.112",
     "@neon/auth": "^0.8.2",
     "@pdf-lib/fontkit": "^1.1.1",
+    "@svg-maps/world": "^2.0.0",
     "@vercel/blob": "^2.4.0",
     "@vercel/functions": "^3.10.6",
     "ai": "^7.0.163",

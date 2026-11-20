@@ -3159,11 +3159,14 @@ function newsletterGeographyForRange(dashboard: NewsletterDashboard | null, rang
   };
 }
 
-const countryCentroids: Record<string, [number, number]> = {
-  AR: [-38, -64], AU: [-25, 134], AT: [47.5, 14.5], BE: [50.8, 4.6], BR: [-10, -55], BG: [42.7, 25.5], CA: [56, -106], CL: [-33, -71], CN: [35, 103], CO: [4, -72], HR: [45.1, 15.2], CY: [35, 33], CZ: [49.8, 15.5], DK: [56, 10], EG: [27, 30], EE: [59, 26], FI: [64, 26], FR: [46.5, 2], DE: [51, 10], GR: [39, 22], HK: [22.3, 114.2], HU: [47, 19.5], IS: [65, -19], IN: [22, 79], ID: [-2, 118], IE: [53, -8], IL: [31.5, 34.8], IT: [42.5, 12.5], JP: [36, 138], KE: [0, 37], KR: [36, 128], LV: [57, 25], LT: [55, 24], LU: [49.8, 6.1], MY: [4, 102], MX: [23, -102], MA: [32, -6], NL: [52.2, 5.3], NZ: [-41, 174], NG: [9, 8], NO: [62, 10], PK: [30, 70], PE: [-10, -76], PH: [13, 122], PL: [52, 20], PT: [39.5, -8], RO: [46, 25], SA: [24, 45], SG: [1.3, 103.8], SK: [48.7, 19.7], SI: [46.1, 14.8], ZA: [-30, 25], ES: [40, -4], SE: [62, 15], CH: [47, 8], TW: [23.7, 121], TH: [15, 101], TR: [39, 35], UA: [49, 32], AE: [24, 54], GB: [54, -2], US: [38, -97], UY: [-33, -56], VN: [16, 108], ZZ: [0, 0],
-};
-
 function GeographyMap({ geography, title }: { geography: GeographyReport; title: string }) {
+  const [worldGeometry, setWorldGeometry] = useState<{ viewBox: string; locations: Array<{ id: string; name: string; path: string }> } | null>(null);
+  const [hoveredCountry, setHoveredCountry] = useState<{ country: string; value: number } | null>(null);
+  useEffect(() => {
+    let active = true;
+    import("@svg-maps/world").then(({ default: map }) => { if (active) setWorldGeometry(map); });
+    return () => { active = false; };
+  }, []);
   const report = geography || { availability: "insufficient_data", metric: "activity", metricLabel: "Activity", note: "No location data is available.", locations: [] };
   const countryTotals = new Map<string, { countryCode: string; country: string; value: number }>();
   for (const location of report.locations || []) {
@@ -3174,19 +3177,25 @@ function GeographyMap({ geography, title }: { geography: GeographyReport; title:
   }
   const rankedCountries = [...countryTotals.values()].sort((left, right) => right.value - left.value);
   const max = Math.max(1, ...rankedCountries.map((item) => item.value));
-  const points = rankedCountries.flatMap((item) => {
-    const coordinate = countryCentroids[item.countryCode];
-    if (!coordinate) return [];
-    const [latitude, longitude] = coordinate;
-    return [{ ...item, left: ((longitude + 180) / 360) * 100, top: ((90 - latitude) / 180) * 100, size: 10 + Math.sqrt(item.value / max) * 18 }];
-  }).slice(0, 30);
   const live = report.availability === "live" && rankedCountries.length > 0;
   return <section className={`op-geography op-geography--${report.availability}`}>
     <header><div><small>AUDIENCE GEOGRAPHY</small><h2>{title}</h2><p>{report.note}</p></div><span>{live ? `${formatMetric(rankedCountries.reduce((sum, item) => sum + item.value, 0))} ${report.metricLabel.toLowerCase()}` : "No reportable locations"}</span></header>
     <div className="op-geography__layout">
       <div className="op-geography__map" aria-label={`${title} map`}>
-        <svg viewBox="0 0 1000 500" role="img" aria-hidden="true"><path d="M62 105L116 58l106 7 67 43-8 55-60 21-24 55-62 7-46-42-37-29z" /><path d="M246 262l57 27 31 76-30 103-40-39-27-91z" /><path d="M429 91l69-29 68 17 36 50-38 27-57-11-35 31-59-21z" /><path d="M477 175l86-12 48 43-11 100-54 90-47-31-19-86-38-48z" /><path d="M592 96l95-45 142 25 89 55-34 71-109-4-49 45-83-13-60-58z" /><path d="M760 247l56-28 65 24 17 61-56 32-65-24z" /><path d="M835 367l75-29 48 36-31 65-80 8-35-39z" /></svg>
-        {live && points.map((point) => <button type="button" key={point.countryCode || point.country} style={{ left: `${point.left}%`, top: `${point.top}%`, width: point.size, height: point.size } as CSSProperties} aria-label={`${point.country}: ${formatMetric(point.value)} ${report.metricLabel}`} data-tooltip={`${point.country} · ${formatMetric(point.value)} ${report.metricLabel.toLowerCase()}`} />)}
+        {worldGeometry && <svg viewBox={worldGeometry.viewBox} role="img" aria-label={`${title}. Countries are shaded by ${report.metricLabel.toLowerCase()}.`} preserveAspectRatio="xMidYMid meet">
+          {worldGeometry.locations.map((location) => {
+            const country = countryTotals.get(location.id.toUpperCase());
+            const value = Number(country?.value || 0);
+            const intensity = Math.sqrt(value / max);
+            const fill = value > 0 ? `hsl(253 58% ${Math.round(88 - intensity * 48)}%)` : "#e8e7e2";
+            const label = `${country?.country || location.name}: ${formatMetric(value)} ${report.metricLabel.toLowerCase()}`;
+            return <path key={location.id} d={location.path} fill={fill} className={value > 0 ? "has-data" : ""} tabIndex={value > 0 ? 0 : -1} aria-label={label} onMouseEnter={() => value > 0 && setHoveredCountry({ country: country?.country || location.name, value })} onMouseLeave={() => setHoveredCountry(null)} onFocus={() => value > 0 && setHoveredCountry({ country: country?.country || location.name, value })} onBlur={() => setHoveredCountry(null)}><title>{label}</title></path>;
+          })}
+        </svg>}
+        {!worldGeometry && <div className="op-geography__loading"><LoaderCircle className="spin" size={20} /> Loading map…</div>}
+        {live && hoveredCountry && <div className="op-geography__tooltip"><strong>{hoveredCountry.country}</strong><span>{formatMetric(hoveredCountry.value)} {report.metricLabel.toLowerCase()}</span></div>}
+        {live && <div className="op-geography__legend"><span>Lower</span><i /><i /><i /><i /><span>Higher</span></div>}
+        {live && <a className="op-geography__credit" href="https://github.com/VictorCazanave/svg-maps" target="_blank" rel="noreferrer">Map geometry: SVG Maps</a>}
         {!live && <div className="op-geography__unavailable"><Globe2 size={28} /><strong>Location data unavailable</strong><span>{report.availability === "not_provided" ? "This channel’s approved API does not expose audience geography." : report.availability === "not_connected" ? "Connect the channel to check location reporting." : "More activity may be required before locations can be reported."}</span></div>}
       </div>
       <div className="op-geography__ranking"><div><strong>Top locations</strong><span>{report.metricLabel}</span></div>{live ? (report.locations || []).slice(0, 10).map((location, index) => <article key={`${location.countryCode}-${location.region}-${location.city}-${index}`}><i>{index + 1}</i><span><strong>{[location.city, location.region, location.country].filter(Boolean).join(", ")}</strong><small>{location.countryCode}</small></span><b>{formatMetric(location.value)}</b></article>) : <p>No location rows were returned for this reporting window.</p>}</div>
