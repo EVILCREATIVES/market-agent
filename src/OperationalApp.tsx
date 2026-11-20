@@ -357,7 +357,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
 
   const activeProject = state.projects.find((project) => project.id === state.activeProjectId) || state.projects[0];
   const projectRuns = state.runs.filter((run) => run.projectId === activeProject.id);
-  const campaignRuns = projectRuns.filter(isCampaignRun);
+  const campaignRuns = projectRuns.filter((run) => isCampaignRun(run) && run.status === "Approved");
   const activeSchedule = state.schedules[activeProject.id] || createDefaultSchedule();
   const runtimeReady = apiCredentials.ready || billing.active || billing.trial.active;
   const automationReady = apiCredentials.ready || billing.active;
@@ -4014,6 +4014,9 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
   const youtubeOptionsRequested = useRef(new Set<string>());
   const operationalChannels = [connections.gmail.canSend && "Email", connections.shopify.canManage && "Shopify", connections.linkedin.canPublish && "LinkedIn", connections.instagram.canPublish && "Instagram", connections.tiktok.canPublish && "TikTok", connections.youtube.canPublish && "YouTube", connections.x.canPublish && "X", connections.discord.canPublish && "Discord", connections.reddit.canPublish && "Reddit"].filter(Boolean) as string[];
   useEffect(() => {
+    if (!editing) setOutput(run.output);
+  }, [editing, run.id, run.output]);
+  useEffect(() => {
     const refreshRunDelivery = () => apiFetch(`/api/delivery?projectId=${encodeURIComponent(run.projectId)}&runId=${encodeURIComponent(run.id)}`)
       .then(async (response) => { const data = await response.json(); if (response.ok) { setDeliveryJobs(Array.isArray(data.jobs) ? data.jobs : []); setDeliveryCoverage(data.coverage || { expected: data.jobs?.length || 0, prepared: data.jobs?.length || 0, missing: 0 }); } })
       .catch(() => undefined);
@@ -4214,7 +4217,7 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
       <div className="op-detail-grid">
         <article className="op-output-card">{editing ? <textarea value={output} onChange={(e) => setOutput(e.target.value)} /> : <MarkdownLite value={run.output} hideAction={distributionRun} />}</article>
         <aside>
-          <div className="op-review-card"><strong>Review control</strong><p>Approval saves your decision. It does not send or publish anything.</p>{editing ? <><button onClick={saveEdit}><Save size={14} /> Save changes</button><button className="secondary" onClick={() => { setOutput(run.output); setEditing(false); }}>Cancel</button></> : <button className="secondary" onClick={() => setEditing(true)}>Edit output</button>}{run.status === "Draft" ? <button onClick={() => { onStatus(run.id, "Approved"); notify("Approved and saved. Nothing was published."); }}><Check size={14} /> Mark approved</button> : <button className="secondary" onClick={() => onStatus(run.id, "Draft")}>Return to draft</button>}</div>
+          <div className="op-review-card"><strong>Review control</strong><p>{distributionRun ? "This proposal stays in Agent until approved. Approval adds it to Campaigns; it does not send or publish anything." : "Approval saves your decision. It does not send or publish anything."}</p>{editing ? <><button onClick={saveEdit}><Save size={14} /> Save changes</button><button className="secondary" onClick={() => { setOutput(run.output); setEditing(false); }}>Cancel</button></> : <button className="secondary" onClick={() => setEditing(true)}>Edit output</button>}{run.status === "Draft" ? <button onClick={() => { onStatus(run.id, "Approved"); notify(distributionRun ? "Approved and added to Campaigns. Nothing was published." : "Approved and saved. Nothing was published."); }}><Check size={14} /> Mark approved</button> : <button className="secondary" onClick={() => onStatus(run.id, "Draft")}>Return to draft</button>}</div>
           {run.sources.length > 0 && <RunSources sources={run.sources} />}
           <div className="op-run-meta"><span>Analysis</span><strong>{String(run.model || "").toLowerCase().includes("panel") ? "Balanced review" : "Standard review"}</strong>{run.intensity && <><span>Campaign style</span><strong>{run.intensity[0].toUpperCase() + run.intensity.slice(1)}</strong></>}</div>
         </aside>

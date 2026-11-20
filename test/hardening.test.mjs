@@ -3,7 +3,7 @@ import test from "node:test";
 import { authoritativeRuns, isPanelRun } from "../server/db.mjs";
 import { formatLinkedInProfileResearch, isBrandSourceRefreshRequest, isPrivateAddress } from "../server/agent.mjs";
 import { applyInvitationTracking, campaignPublicationTarget, createInvitationTrackingUrl, explicitApprovedYouTubeFallback, personalizeInvitationTemplate, renderInvitationEmailHtml, resolveInvitationDestination, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
-import { isContextualDraftEditRequest } from "../api/chat.mjs";
+import { isContextualDraftEditRequest, shouldRewriteSavedInvitation } from "../api/chat.mjs";
 import { canonicalAnalyticsPath, prepareAnalyticsLandingRows, prepareAnalyticsPageRows } from "../server/analytics.mjs";
 import { scoreMarketingOutput } from "../server/evaluation.mjs";
 import { handleSchedule } from "../server/schedule-handler.mjs";
@@ -224,6 +224,24 @@ test("short follow-up corrections are treated as edits from every page", () => {
   assert.equal(isContextualDraftEditRequest("I want the document link before the demo"), true);
   assert.equal(isContextualDraftEditRequest("add the saved logo here"), true);
   assert.equal(isContextualDraftEditRequest("How many invitations were sent?"), false);
+});
+
+test("an Agent proposal takes priority over remembered invitation context", () => {
+  const rememberedInvitation = {
+    hasInvitation: true,
+    message: "no, make the first step the document",
+    contextualDraftEdit: true,
+    editableRunId: "run-1",
+    uiContext: { page: "agent", selectedRunId: "run-1", campaignSection: "newsletter", campaignEmailMode: "invitation" },
+    recentConversationText: "We were editing the invitation recipient preview.",
+  };
+  assert.equal(shouldRewriteSavedInvitation(rememberedInvitation), false);
+  assert.equal(shouldRewriteSavedInvitation({ ...rememberedInvitation, message: "Change the saved Campaigns invitation subject" }), true);
+  assert.equal(shouldRewriteSavedInvitation({
+    ...rememberedInvitation,
+    editableRunId: "",
+    uiContext: { page: "campaigns", campaignSection: "newsletter", campaignEmailMode: "invitation" },
+  }), true);
 });
 
 test("invitation destination falls back to the Brand website and normalizes assistant domains", () => {

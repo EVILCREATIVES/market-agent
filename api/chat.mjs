@@ -92,10 +92,15 @@ export default async function handler(req, res) {
       ]);
       const actionWorkspace = { ...rememberedWorkspace, contentLibraryAssets: libraryContext };
       let plan;
-      const editingInvitation = uiContext.campaignSection === "newsletter" && uiContext.campaignEmailMode === "invitation";
       const recentConversationText = Array.isArray(req.body?.history) ? req.body.history.slice(-8).map((item) => String(item?.content || "")).join("\n") : "";
-      const recentInvitationContext = /\b(invitation|invite new people|recipient preview|prospect email)\b/i.test(recentConversationText);
-      if (newsletterContext.invitation && (isInvitationEditRequest(message) || (contextualDraftEdit && (editingInvitation || recentInvitationContext)))) {
+      if (shouldRewriteSavedInvitation({
+        hasInvitation: Boolean(newsletterContext.invitation),
+        message,
+        contextualDraftEdit,
+        editableRunId,
+        uiContext,
+        recentConversationText,
+      })) {
         const revision = await rewriteProspectInvitation({ workspace: actionWorkspace, invitation: newsletterContext.invitation, message }, userApiEnv);
         plan = {
           summary: "Update the saved prospect invitation.",
@@ -365,6 +370,24 @@ function isInvitationEditRequest(value) {
     || (/\b(demo|project|subscribe|subscription)\b/i.test(message) && /\b(email|message|copy|subject)\b/i.test(message));
   const correction = /\b(update|change|replace|rewrite|revise|fix|correct|edit|improve|redo|should|want|prefer|ask|don['’]t like|do not like|not subscribe|instead)\b/i.test(message);
   return invitation && correction;
+}
+
+export function shouldRewriteSavedInvitation({ hasInvitation, message, contextualDraftEdit, editableRunId, uiContext = {}, recentConversationText = "" }) {
+  if (!hasInvitation) return false;
+  const page = String(uiContext?.page || "");
+  const editingInvitation = page === "campaigns"
+    && uiContext?.campaignSection === "newsletter"
+    && uiContext?.campaignEmailMode === "invitation";
+  const explicitInvitation = isInvitationEditRequest(message);
+  const recentInvitationContext = /\b(invitation|invite new people|recipient preview|prospect email)\b/i.test(String(recentConversationText || ""));
+
+  // The record currently open in Agent is the primary editing target. Remembered
+  // Campaigns state must never redirect a short correction away from that proposal.
+  if (page === "agent" && editableRunId) {
+    return explicitInvitation && /\b(saved|campaigns?|newsletter)\b/i.test(String(message || ""));
+  }
+  if (editingInvitation) return explicitInvitation || (contextualDraftEdit && recentInvitationContext);
+  return explicitInvitation;
 }
 
 function isCampaignAssetReplacement(value) {
