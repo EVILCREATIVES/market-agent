@@ -911,7 +911,11 @@ function isCampaignRequest(action: AgentAction, direction: string) {
 }
 
 function isCampaignRun(run: AgentRun) {
-  return isCampaignRequest(run.action, run.prompt || "");
+  // Free-text tasks created from the Agent command use the `chat` action even
+  // when the result is a campaign proposal. RunDetail already treats those as
+  // distribution work and tells the user that approval adds them to Campaigns,
+  // so the Campaigns filter must follow the same rule.
+  return run.action === "campaign" || run.action === "social" || run.action === "chat";
 }
 
 function ProductBrain({ userId, workspace, onSave, onOpenContentLibrary, notify }: { userId: string; workspace: ProductWorkspace; onSave: (workspace: ProductWorkspace) => void; onOpenContentLibrary: () => void; notify: (message: string) => void }) {
