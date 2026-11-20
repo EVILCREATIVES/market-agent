@@ -83,7 +83,8 @@ export default async function handler(req, res) {
       });
     }
     if (!aiUsageConsumed) await consumeAiUsage(userId, "chat", userApiEnv);
-    if (mayRequestInterfaceAction(message) || isInvitationEditRequest(message)) {
+    const contextualDraftEdit = isContextualDraftEditRequest(message);
+    if (mayRequestInterfaceAction(message) || isInvitationEditRequest(message) || contextualDraftEdit) {
       const campaignRunIdForContext = editableRunId;
       const [newsletterContext, campaignContext] = await Promise.all([
         getNewsletterActionContext(userId, projectId, { newsletterId: uiContext.selectedNewsletterId }).catch(() => ({ newsletter: null, invitation: null })),
@@ -91,7 +92,10 @@ export default async function handler(req, res) {
       ]);
       const actionWorkspace = { ...rememberedWorkspace, contentLibraryAssets: libraryContext };
       let plan;
-      if (newsletterContext.invitation && isInvitationEditRequest(message)) {
+      const editingInvitation = uiContext.campaignSection === "newsletter" && uiContext.campaignEmailMode === "invitation";
+      const recentConversationText = Array.isArray(req.body?.history) ? req.body.history.slice(-8).map((item) => String(item?.content || "")).join("\n") : "";
+      const recentInvitationContext = /\b(invitation|invite new people|recipient preview|prospect email)\b/i.test(recentConversationText);
+      if (newsletterContext.invitation && (isInvitationEditRequest(message) || (contextualDraftEdit && (editingInvitation || recentInvitationContext)))) {
         const revision = await rewriteProspectInvitation({ workspace: actionWorkspace, invitation: newsletterContext.invitation, message }, userApiEnv);
         plan = {
           summary: "Update the saved prospect invitation.",
@@ -105,7 +109,13 @@ export default async function handler(req, res) {
           message,
           workspace: actionWorkspace,
           uiContext,
-          editable: { uiContext, newsletter: newsletterContext.newsletter, invitation: newsletterContext.invitation, campaign: campaignContext },
+          editable: {
+            uiContext,
+            recentConversation: Array.isArray(req.body?.history) ? req.body.history.slice(-12).map((item) => ({ role: item?.role, content: String(item?.content || "").slice(0, 4_000) })) : [],
+            newsletter: newsletterContext.newsletter,
+            invitation: newsletterContext.invitation,
+            campaign: campaignContext,
+          },
         }, userApiEnv);
       }
       const execution = await executeInterfaceActions({ userId, projectId, runId: campaignRunIdForContext, workspace: req.body?.workspace || {}, plan, newsletterContext, libraryContext, userApiEnv });
@@ -171,6 +181,7 @@ async function executeInterfaceActions({ userId, projectId, runId, workspace, pl
           previewText: action.previewText,
           headline: action.headline,
           introduction: action.body,
+          sections: action.sections,
           closing: action.closing,
           ctaLabel: action.ctaLabel,
           ctaUrl: action.url,
@@ -262,7 +273,11 @@ async function executeInterfaceActions({ userId, projectId, runId, workspace, pl
 }
 
 function compactChanges(value) {
-  return Object.fromEntries(Object.entries(value).filter(([, item]) => String(item || "").trim()));
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => {
+    if (Array.isArray(item)) return item.length > 0;
+    if (item && typeof item === "object") return Object.keys(item).length > 0;
+    return String(item || "").trim();
+  }));
 }
 
 function applyWorkspaceField(patch, workspace, field, rawValue) {
@@ -302,6 +317,15 @@ function mayRequestInterfaceAction(value) {
   const instruction = /\b(update|change|replace|rewrite|revise|fix|correct|edit|add|remove|use|save|create|make|set|move|swap|improve|redo|apply|start)\b/i.test(message);
   const rejection = /\b(wrong|awful|bad|terrible|shit|bullshit|useless|stupid|confusing|nothing happens|does not work|doesn't work|did not|didn't|don['’]t like|do not like|cazzo|merda|schifo)\b/i.test(message);
   return subject && (instruction || rejection);
+}
+
+export function isContextualDraftEditRequest(value) {
+  const message = String(value || "").trim();
+  if (!message) return false;
+  const correction = /^(?:no\b|not\b|instead\b)|\b(?:i\s+(?:want|prefer|think)|should|must|use|make|put|keep|change|replace|rewrite|update|fix|correct|add|remove|rename|attach|upload|enable|disable|first\s+step|second\s+step|third\s+step)\b/i.test(message);
+  const orderedDirection = /(?:^|\s)(?:step\s*)?[1-9][.)]?\s+/i.test(message);
+  const questionOnly = /^(?:what|why|how|when|where|who|does|do|did|can|could|is|are|will|would)\b/i.test(message) && /\?\s*$/.test(message);
+  return (correction || orderedDirection) && !questionOnly;
 }
 
 export function campaignTableColumnRequest(value) {

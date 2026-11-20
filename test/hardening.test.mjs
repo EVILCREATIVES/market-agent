@@ -3,6 +3,7 @@ import test from "node:test";
 import { authoritativeRuns, isPanelRun } from "../server/db.mjs";
 import { formatLinkedInProfileResearch, isBrandSourceRefreshRequest, isPrivateAddress } from "../server/agent.mjs";
 import { applyInvitationTracking, campaignPublicationTarget, createInvitationTrackingUrl, explicitApprovedYouTubeFallback, personalizeInvitationTemplate, renderInvitationEmailHtml, resolveInvitationDestination, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
+import { isContextualDraftEditRequest } from "../api/chat.mjs";
 import { canonicalAnalyticsPath, prepareAnalyticsLandingRows, prepareAnalyticsPageRows } from "../server/analytics.mjs";
 import { scoreMarketingOutput } from "../server/evaluation.mjs";
 import { handleSchedule } from "../server/schedule-handler.mjs";
@@ -199,6 +200,30 @@ test("invitation delivery renders the approved brand, message, action, and opt-o
   assert.match(html, />https:\/\/visit-lumen\.com\/<\/a>/);
   assert.match(html, /Stop future invitations/);
   assert.ok(html.indexOf(">Try the demo</a>") < html.indexOf("Tell us what you think."));
+});
+
+test("invitation delivery keeps ordered secondary actions clickable", () => {
+  const html = renderInvitationEmailHtml({
+    name: "LUMEN",
+    website: "https://www.visit-lumen.com/",
+    brand: { primaryColor: "#8CC35E" },
+  }, { invitationCtaLabel: "Subscribe" }, {
+    subject: "Discover LUMEN",
+    body: "Hi Alex,\n\n1. Subscribe for updates:\n\n{{invitation_button}}\n\n2. [Read the Copilot deck](https://www.visit-lumen.com/copilot-deck)\n\n3. [Try the demo](https://www.visit-lumen.com/)",
+    invitationUrl: "https://www.visit-lumen.com/subscribe",
+  });
+  assert.match(html, />Subscribe<\/a>/);
+  assert.match(html, /href="https:\/\/www\.visit-lumen\.com\/copilot-deck"[^>]*>Read the Copilot deck<\/a>/);
+  assert.match(html, /href="https:\/\/www\.visit-lumen\.com\/"[^>]*>Try the demo<\/a>/);
+  assert.ok(html.indexOf(">Subscribe</a>") < html.indexOf("Read the Copilot deck</a>"));
+  assert.ok(html.indexOf("Read the Copilot deck</a>") < html.indexOf("Try the demo</a>"));
+});
+
+test("short follow-up corrections are treated as edits from every page", () => {
+  assert.equal(isContextualDraftEditRequest("no, first step 1. subscribe, 2. read the deck, 3. access the demo"), true);
+  assert.equal(isContextualDraftEditRequest("I want the document link before the demo"), true);
+  assert.equal(isContextualDraftEditRequest("add the saved logo here"), true);
+  assert.equal(isContextualDraftEditRequest("How many invitations were sent?"), false);
 });
 
 test("invitation destination falls back to the Brand website and normalizes assistant domains", () => {

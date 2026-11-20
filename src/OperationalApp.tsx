@@ -537,9 +537,9 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
         <div className="op-brand"><BrandLogo /><strong>Market Agent</strong><button onClick={() => setMobileOpen(false)} aria-label="Close navigation"><X size={18} /></button></div>
         <div className="op-project-switcher">
           <button className="op-workspace" onClick={() => setProjectMenuOpen((open) => !open)} aria-expanded={projectMenuOpen}>
-            <span>{projectInitials(activeProject.name)}</span><div><small>Active project</small><strong>{activeProject.name || "Unnamed project"}</strong></div><ChevronDown size={15} />
+            <ProjectBrandMark workspace={activeProject} /><div><small>Active project</small><strong>{activeProject.name || "Unnamed project"}</strong></div><ChevronDown size={15} />
           </button>
-          {projectMenuOpen && <div className="op-project-menu"><div className="op-project-menu__head"><span>Projects</span><small>{state.projects.length}</small></div>{state.projects.map((project) => <button key={project.id} className={project.id === activeProject.id ? "active" : ""} onClick={() => switchProject(project.id)}><span>{projectInitials(project.name)}</span><div><strong>{project.name || "Unnamed project"}</strong><small>{project.id === activeProject.id ? "Active" : "Switch project"}</small></div>{project.id === activeProject.id && <Check size={14} />}</button>)}<button className="op-project-add" onClick={createProject}><Plus size={14} /> Create new project</button></div>}
+          {projectMenuOpen && <div className="op-project-menu"><div className="op-project-menu__head"><span>Projects</span><small>{state.projects.length}</small></div>{state.projects.map((project) => <button key={project.id} className={project.id === activeProject.id ? "active" : ""} onClick={() => switchProject(project.id)}><ProjectBrandMark workspace={project} /><div><strong>{project.name || "Unnamed project"}</strong><small>{project.id === activeProject.id ? "Active" : "Switch project"}</small></div>{project.id === activeProject.id && <Check size={14} />}</button>)}<button className="op-project-add" onClick={createProject}><Plus size={14} /> Create new project</button></div>}
         </div>
         <nav>{nav.map((item) => { const Icon = item.icon; const count = item.id === "issues" ? issueCount : item.id === "research" ? projectRuns.filter((r) => ["research", "audience"].includes(r.action)).length : item.id === "campaigns" ? campaignRuns.length : item.id === "content" ? projectRuns.filter((r) => r.action === "social").length : 0; return <button key={item.id} className={`${page === item.id ? "active" : ""} ${item.id === "issues" ? "issues" : ""} ${item.id === "issues" && count > 0 ? "attention" : ""}`} onClick={() => navigate(item.id)}><Icon size={17} /><span>{item.label}</span>{count > 0 && <em>{count}</em>}</button>; })}</nav>
         <div className="op-sidebar__bottom"><div className={`op-api-dot ${runtimeReady ? "ready" : ""}`} /><div><strong>{runtimeReady ? "Agent ready" : "Choose access"}</strong><small>{accessMode === "byok" ? "Your private APIs" : accessMode === "managed" ? "Managed text plan" : accessMode === "trial" ? `${billing.trial.daysRemaining}-day demo remaining` : "Connect APIs or subscribe"}</small></div></div>
@@ -715,9 +715,10 @@ function ProjectChat({ userId, workspace, currentPage, activeRunId, activeCampai
       routedWorkspace = { ...routedWorkspace, chatMessages: nextHistory, updatedAt: new Date().toISOString() };
       onSave(routedWorkspace);
       const routedContext = routingNotes.length ? `${content}\n\nATTACHMENT ROUTING ALREADY COMPLETED\n${routingNotes.map((note) => `- ${note}`).join("\n")}\nAcknowledge these completed placements clearly. Do not ask the user to upload or move the files again. A contact list belongs to Campaigns, never Brand or Content Library. Do not claim that no contacts were processed when a staged count is supplied.` : content;
-      const campaignSection = currentPage === "campaigns" ? window.sessionStorage.getItem(`market-agent:campaign-current-section:${workspace.id}`) || "overview" : "";
+      const campaignSection = window.sessionStorage.getItem(`market-agent:campaign-current-section:${workspace.id}`) || "overview";
+      const campaignEmailMode = window.sessionStorage.getItem(`market-agent:campaign-email-mode:${workspace.id}`) || "newsletter";
       const selectedNewsletterId = campaignSection === "newsletter" ? window.sessionStorage.getItem(`market-agent:campaign-selected-newsletter:${workspace.id}`) || "" : "";
-      const response = await apiFetch("/api/chat", { method: "POST", body: JSON.stringify({ projectId: workspace.id, activeRunId, activeCampaignRunId, workspace: routedWorkspace, history: nextHistory, message: routedContext, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, uiContext: { page: currentPage, campaignSection, selectedRunId: activeRunId, selectedNewsletterId }, intent: isTypographyInspectionInstruction(content) ? "inspect-typography" : isBrandSourceRefreshInstruction(content) ? "refresh-brand" : undefined, useWeb: true }) });
+      const response = await apiFetch("/api/chat", { method: "POST", body: JSON.stringify({ projectId: workspace.id, activeRunId, activeCampaignRunId, workspace: routedWorkspace, history: nextHistory, message: routedContext, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, uiContext: { page: currentPage, campaignSection, campaignEmailMode, selectedRunId: activeRunId, selectedNewsletterId }, intent: isTypographyInspectionInstruction(content) ? "inspect-typography" : isBrandSourceRefreshInstruction(content) ? "refresh-brand" : undefined, useWeb: true }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The project assistant could not reply.");
       if (data.assetAction?.jobs && activeCampaignRunId) window.dispatchEvent(new CustomEvent("market-agent-delivery-updated", { detail: { runId: activeCampaignRunId, jobs: data.assetAction.jobs } }));
@@ -1627,8 +1628,24 @@ function InvitationEmailPreview({ workspace, draft }: { workspace: ProductWorksp
   return <article className="op-invitation-email-preview"><header><small>RECIPIENT PREVIEW</small><strong>{draft.invitationSubject}</strong></header><div className="op-invitation-email-canvas" style={{ "--invitation-primary": primary } as React.CSSProperties}>{logo ? <img className="logo" src={logo} alt={workspace.name} /> : <b className="wordmark">{workspace.name}</b>}{hero && <img className="hero" src={hero} alt="" />}<main><h3>{draft.invitationSubject}</h3>{paragraphs.map((paragraph, index) => {
     if (/^\{\{(?:invitation_button|invitation_url|signup_url)\}\}$/.test(paragraph)) return <div key={`${paragraph}-${index}`}>{action}</div>;
     const parts = paragraph.split(/(\{\{(?:invitation_button|invitation_url|signup_url)\}\})/g);
-    return <p key={`${paragraph}-${index}`}>{parts.map((part, partIndex) => /\{\{(?:invitation_button|invitation_url|signup_url)\}\}/.test(part) ? destination ? <a className="inline-destination" href={destination} target="_blank" rel="noreferrer" key={`${part}-${partIndex}`}>{destination}</a> : <span key={`${part}-${partIndex}`}>[destination missing]</span> : part)}</p>;
+    return <p key={`${paragraph}-${index}`}>{parts.map((part, partIndex) => /\{\{(?:invitation_button|invitation_url|signup_url)\}\}/.test(part) ? destination ? <a className="inline-destination" href={destination} target="_blank" rel="noreferrer" key={`${part}-${partIndex}`}>{destination}</a> : <span key={`${part}-${partIndex}`}>[destination missing]</span> : invitationRichText(part))}</p>;
   })}{!hasActionToken && action}<p className="signature">{workspace.emailIdentity.senderName || workspace.name}<br />{workspace.emailIdentity.businessDetails}</p></main><footer>This is a direct project invitation, not a newsletter subscription. No email is sent until you approve delivery.</footer></div></article>;
+}
+
+function invitationRichText(value: string) {
+  const nodes: ReactNode[] = [];
+  const pattern = /\[([^\]]+)\]\((https:\/\/[^\s)]+)\)|(https:\/\/[^\s<>()]+)/gi;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(value))) {
+    if (match.index > cursor) nodes.push(value.slice(cursor, match.index));
+    const href = match[2] || match[3];
+    const label = match[1] || href;
+    nodes.push(<a href={href} target="_blank" rel="noreferrer" key={`${href}-${match.index}`}>{label}</a>);
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < value.length) nodes.push(value.slice(cursor));
+  return nodes;
 }
 
 function invitationPreviewDestination(value: string) {
@@ -4844,6 +4861,23 @@ function projectInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return "NP";
   return parts.slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+}
+
+function projectBrandIconUrl(workspace: ProductWorkspace) {
+  const variants = workspace.brand?.logoVariants || [];
+  return variants.find((variant) => variant.usage === "icon")?.url
+    || variants.find((variant) => variant.usage === "primary")?.url
+    || workspace.brand?.logoDataUrl
+    || "";
+}
+
+function ProjectBrandMark({ workspace }: { workspace: ProductWorkspace }) {
+  const iconUrl = projectBrandIconUrl(workspace);
+  const [failedUrl, setFailedUrl] = useState("");
+  const showImage = Boolean(iconUrl) && failedUrl !== iconUrl;
+  return <span className={`op-project-mark ${showImage ? "has-logo" : ""}`} aria-hidden="true">
+    {showImage ? <img src={iconUrl} alt="" onError={() => setFailedUrl(iconUrl)} /> : projectInitials(workspace.name)}
+  </span>;
 }
 
 function resizeLongFormTextarea(target: EventTarget | null) {

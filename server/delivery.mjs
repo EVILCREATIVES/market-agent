@@ -84,10 +84,10 @@ export function renderInvitationEmailHtml(workspace = {}, campaign = {}, input =
     }
     if (destination && item.includes(destination)) {
       actionPlaced = true;
-      const linked = emailParagraphs(item).replaceAll(escapeEmailHtml(destination), `<a href="${escapeEmailAttribute(destination)}" style="color:${primary};word-break:break-all">${escapeEmailHtml(destination)}</a>`);
+      const linked = invitationRichTextHtml(item, primary);
       return `<p style="margin:0 0 18px;font:400 16px/1.65 Arial,sans-serif;color:${text}">${linked}</p>`;
     }
-    return `<p style="margin:0 0 18px;font:400 16px/1.65 Arial,sans-serif;color:${text}">${emailParagraphs(item)}</p>`;
+    return `<p style="margin:0 0 18px;font:400 16px/1.65 Arial,sans-serif;color:${text}">${invitationRichTextHtml(item, primary)}</p>`;
   }).join("");
   const trailingAction = destination && !actionPlaced ? action : "";
   const testBanner = input.test === true ? `<tr><td style="padding:11px 28px;background:#fff3cd;color:#654d03;font:700 12px/1.4 Arial,sans-serif;text-align:center">TEST EMAIL — no prospect received this message</td></tr>` : "";
@@ -136,6 +136,23 @@ function safeEmailColor(value, fallback) {
 
 function emailParagraphs(value) {
   return escapeEmailHtml(value).replace(/\r?\n/g, "<br>");
+}
+
+function invitationRichTextHtml(value, color) {
+  const source = String(value || "");
+  const pattern = /\[([^\]]+)\]\((https:\/\/[^\s)]+)\)|(https:\/\/[^\s<>()]+)/gi;
+  let output = "";
+  let cursor = 0;
+  let match;
+  while ((match = pattern.exec(source))) {
+    output += escapeEmailHtml(source.slice(cursor, match.index));
+    const href = match[2] || match[3];
+    const label = match[1] || href;
+    output += `<a href="${escapeEmailAttribute(href)}" style="color:${safeEmailColor(color, "#6e50d7")};word-break:break-word">${escapeEmailHtml(label)}</a>`;
+    cursor = match.index + match[0].length;
+  }
+  output += escapeEmailHtml(source.slice(cursor));
+  return output.replace(/\r?\n/g, "<br>");
 }
 
 function escapeEmailHtml(value) {

@@ -479,8 +479,8 @@ Decide whether this message asks Market Agent to change something already editab
 
 Supported saved actions:
 - update_workspace changes a specific project, Brand, email identity, issue-note, source-preference, or growth field.
-- update_invitation changes the complete saved invitation and must preserve {{invitation_button}} exactly once.
-- update_newsletter changes saved newsletter copy, link, hero, logo selection, sender, contact details, or address preference.
+- update_invitation changes the complete saved invitation and must preserve {{invitation_button}} exactly once. Preserve every explicit URL exactly and preserve the user's requested action order. The movable button may be the primary action; use Markdown links for additional actions.
+- update_newsletter changes saved newsletter copy, sections, link, hero, logo selection, sender, contact details, or address preference. Return the complete sections array when changing newsletter structure.
 - create_newsletter creates a complete draft from the user's direction.
 - update_campaign_text changes exact text inside the visible saved campaign.
 - update_campaign_item changes one structured saved campaign item by its supplied index. Use this for a post caption, title, or publication-time change; it edits the actual payload shown in the visual preview.
@@ -488,7 +488,7 @@ Supported saved actions:
 - enrich_linkedin_profiles searches public web results for every person in the visible People table, verifies direct LinkedIn member-profile matches, and saves the links into that table. Use it when the user asks to find, verify, populate, or add LinkedIn/profile links; do not use a placeholder column instead.
 - update_asset changes the name and/or summary of a Content Library item. Use the asset id from contentLibraryAssets; put the final name in name and final summary in body, leaving either empty to preserve it.
 
-Never infer a Brand-source refresh merely because draft copy contains words such as “updates” and “site”. Only update a Brand field when the user explicitly asks to edit that Brand information. Never send, schedule, publish, connect an account, spend money, delete data, or alter an already sent item. Those external or destructive operations require their existing approval flow. Never claim an action succeeded here; this step only describes actions that the server will attempt and verify. If the user is asking a question, giving general product feedback, or requesting an unsupported/destructive/external action, return no actions. For a campaign-item edit, use the index shown in campaign.items, return the complete final caption in body, the complete final title in subject when relevant, and an ISO time in scheduledAt only when the user asked to change it. For a campaign text edit, copy an exact existing excerpt into findText and put the complete replacement in replacementText. For an invitation or newsletter rewrite, return complete, ready-to-use copy without commentary or bracket placeholders, except the supported merge token {{first_name}} and the required movable action token {{invitation_button}}.`;
+Never infer a Brand-source refresh merely because draft copy contains words such as “updates” and “site”. Only update a Brand field when the user explicitly asks to edit that Brand information. The assistant can operate from every page: uiContext.page is a relevance hint, never a permission boundary. Use recentConversation and the remembered Campaigns section/mode to resolve short follow-up corrections such as “no, first do this”. Never send, schedule, publish, connect an account, spend money, delete data, or alter an already sent item. Those external or destructive operations require their existing approval flow. Never claim an action succeeded here; this step only describes actions that the server will attempt and verify. If the user is asking a question, giving general product feedback, or requesting an unsupported/destructive/external action, return no actions. For a campaign-item edit, use the index shown in campaign.items, return the complete final caption in body, the complete final title in subject when relevant, and an ISO time in scheduledAt only when the user asked to change it. For a campaign text edit, copy an exact existing excerpt into findText and put the complete replacement in replacementText. For an invitation or newsletter rewrite, return complete, ready-to-use copy without commentary or bracket placeholders, except the supported merge token {{first_name}} and the required movable action token {{invitation_button}}. Never answer an editable request by telling the user to edit it manually.`;
   return generateStructuredObject({
     env,
     name: "project_interface_actions",
@@ -527,6 +527,7 @@ export async function rewriteProspectInvitation(payload, env = process.env) {
     prompt: `PROJECT
 Name: ${projectName}
 Website or demo: ${projectWebsite}
+Saved subscription page: ${String(invitation.publicUrl || "")}
 Description: ${String(workspace.description || "").slice(0, 3_000)}
 Audience: ${String(workspace.audience || "").slice(0, 2_000)}
 Voice: ${String(workspace.voice || "").slice(0, 1_500)}
@@ -538,7 +539,7 @@ ${JSON.stringify(invitation, null, 2).slice(0, 12_000)}
 USER CORRECTION
 ${direction}
 
-Rewrite the saved prospect invitation exactly as requested. This is an invitation to one prospect, not a newsletter. Keep it human and specific. Do not describe the workflow, do not add headings such as RECIPIENT PREVIEW, and do not add bracket placeholders. {{first_name}} is allowed for the greeting and the movable {{invitation_button}} object must appear exactly once where the action should render. The object is filled at send time: never leave the url field empty. Unless the user explicitly supplies another link, use the saved project website shown above. If the user asks to change the link and gives a domain or URL, return that exact destination in url, normalized to https://. If the direction says people should experience a project or demo before deciding whether to subscribe, use project_first, direct them to the project website, and make subscription an optional later action rather than the email's request. The call to action must match the destination.`,
+Rewrite the saved prospect invitation exactly as requested and preserve the user's requested action order. This is an invitation to one prospect, not a newsletter. Keep it human and specific. Do not describe the workflow, do not add headings such as RECIPIENT PREVIEW, and do not add bracket placeholders. {{first_name}} is allowed for the greeting and the movable {{invitation_button}} object must appear exactly once at the requested primary action. The object is filled at send time: never leave the url field empty. Preserve every explicit URL from the user exactly, normalized to https:// only when needed. Additional actions must be Markdown links in the body, for example [Read the document](https://example.com/document), so they remain clickable in preview and delivery. When subscription is the first requested step, use the saved subscription page for the movable button, choose direct_signup, and put later document/demo links after it in the exact requested order. Otherwise, unless the user explicitly supplies another link, use the saved project website shown above. If the direction says people should experience a project or demo before deciding whether to subscribe, use project_first, direct them to the project website, and make subscription an optional later action rather than the email's request. The button label must match its destination.`,
     schema: prospectInvitationRevisionSchema(),
   });
   return {
@@ -1182,7 +1183,7 @@ function projectInterfaceActionsSchema() {
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["type", "targetId", "itemIndex", "field", "value", "name", "subject", "previewText", "headline", "body", "closing", "ctaLabel", "url", "scheduledAt", "strategy", "findText", "replacementText", "direction", "reason", "heroImageUrl", "heroImageAlt", "logoVariantId", "senderName", "businessDetails", "physicalAddress", "addressPreference"],
+          required: ["type", "targetId", "itemIndex", "field", "value", "name", "subject", "previewText", "headline", "body", "sections", "closing", "ctaLabel", "url", "scheduledAt", "strategy", "findText", "replacementText", "direction", "reason", "heroImageUrl", "heroImageAlt", "logoVariantId", "senderName", "businessDetails", "physicalAddress", "addressPreference"],
           properties: {
             type: { type: "string", enum: ["none", "update_workspace", "update_invitation", "update_newsletter", "create_newsletter", "update_campaign_text", "update_campaign_item", "add_campaign_table_column", "enrich_linkedin_profiles", "update_asset"] },
             targetId: { type: "string" },
@@ -1194,6 +1195,16 @@ function projectInterfaceActionsSchema() {
             previewText: { type: "string" },
             headline: { type: "string" },
             body: { type: "string" },
+            sections: {
+              type: "array",
+              maxItems: 4,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["heading", "body"],
+                properties: { heading: { type: "string" }, body: { type: "string" } },
+              },
+            },
             closing: { type: "string" },
             ctaLabel: { type: "string" },
             url: { type: "string" },

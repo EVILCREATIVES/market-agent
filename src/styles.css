@@ -612,6 +612,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-workspace { width: 100%; margin: 0; padding: 10px; border: 1px solid #3d3d39; color: inherit; background: #292927; border-radius: 11px; display: flex; gap: 9px; align-items: center; text-align: left; cursor: pointer; }
 .op-workspace:hover, .op-workspace[aria-expanded="true"] { border-color: #5a5953; background: #302f2d; }
 .op-workspace > span { width: 29px; height: 29px; border-radius: 8px; background: #7856ff; display: grid; place-items: center; font-size: 11px; font-weight: 750; }
+.op-workspace > .op-project-mark, .op-project-menu > button > .op-project-mark { overflow: hidden; flex: 0 0 auto; }
+.op-workspace > .op-project-mark.has-logo, .op-project-menu > button > .op-project-mark.has-logo { background: #f7f6f2; box-shadow: inset 0 0 0 1px rgba(255,255,255,.14); }
+.op-project-mark img { width: 100%; height: 100%; padding: 3px; object-fit: contain; display: block; }
 .op-workspace > div { display: flex; flex: 1; flex-direction: column; }
 .op-workspace small { color: #96958f; font-size: 8px; }
 .op-workspace strong { font-size: 11px; }
