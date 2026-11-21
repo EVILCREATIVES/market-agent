@@ -4048,11 +4048,43 @@ function CampaignCreativeCard({ creative, creativeIndex, workspace, saving, onEd
     </article>;
 }
 
+type CampaignDeliveryTracking = {
+  status: "draft" | "ready" | "active";
+  campaignId: string;
+  campaignName: string;
+  startedAt: string | null;
+  totalItems: number;
+  scheduledItems: number;
+  processingItems: number;
+  publishedItems: number;
+  failedItems: number;
+  trackedItems: number;
+  clicks: number;
+};
+
+function initialCampaignTracking(run: AgentRun): CampaignDeliveryTracking {
+  return {
+    status: run.campaignTracking?.status || (run.status === "Approved" ? "ready" : "draft"),
+    campaignId: run.campaignTracking?.campaignId || run.id,
+    campaignName: run.campaignTracking?.campaignName || run.title,
+    startedAt: run.campaignTracking?.startedAt || null,
+    totalItems: 0,
+    scheduledItems: 0,
+    processingItems: 0,
+    publishedItems: 0,
+    failedItems: 0,
+    trackedItems: 0,
+    clicks: 0,
+  };
+}
+
 function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, onOutput, onCampaignUpdate, onDelete, notify }: { run: AgentRun; workspace: ProductWorkspace; connections: ConnectionStatus; onBack: () => void; onConnect: () => void; onStatus: (id: string, status: RunStatus) => void; onOutput: (id: string, output: string) => void; onCampaignUpdate: (run: AgentRun, revision?: number) => void; onDelete: (id: string) => Promise<void>; notify: (message: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [output, setOutput] = useState(run.output);
   const [deliveryJobs, setDeliveryJobs] = useState<DeliveryJob[]>([]);
   const [deliveryCoverage, setDeliveryCoverage] = useState({ expected: 0, prepared: 0, missing: 0 });
+  const [deliveryTracking, setDeliveryTracking] = useState<CampaignDeliveryTracking>(() => initialCampaignTracking(run));
+  const [campaignGrowth, setCampaignGrowth] = useState<GrowthReport | null>(null);
   const [deliveryWorking, setDeliveryWorking] = useState("");
   const [tiktokOptions, setTikTokOptions] = useState<Record<string, TikTokPublishingOptions>>({});
   const [youtubeOptions, setYouTubeOptions] = useState<Record<string, YouTubePublishingOptions>>({});
@@ -4063,13 +4095,27 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
     if (!editing) setOutput(run.output);
   }, [editing, run.id, run.output]);
   useEffect(() => {
+    setDeliveryTracking(initialCampaignTracking(run));
+    setCampaignGrowth(null);
+  }, [run.id]);
+  useEffect(() => {
     const refreshRunDelivery = () => apiFetch(`/api/delivery?projectId=${encodeURIComponent(run.projectId)}&runId=${encodeURIComponent(run.id)}`)
-      .then(async (response) => { const data = await response.json(); if (response.ok) { setDeliveryJobs(Array.isArray(data.jobs) ? data.jobs : []); setDeliveryCoverage(data.coverage || { expected: data.jobs?.length || 0, prepared: data.jobs?.length || 0, missing: 0 }); } })
+      .then(async (response) => { const data = await response.json(); if (response.ok) { setDeliveryJobs(Array.isArray(data.jobs) ? data.jobs : []); setDeliveryCoverage(data.coverage || { expected: data.jobs?.length || 0, prepared: data.jobs?.length || 0, missing: 0 }); if (data.tracking) setDeliveryTracking(data.tracking as CampaignDeliveryTracking); } })
       .catch(() => undefined);
     void refreshRunDelivery();
     const poll = window.setInterval(() => void refreshRunDelivery(), 45_000);
     return () => window.clearInterval(poll);
   }, [run.id, run.projectId]);
+  useEffect(() => {
+    if (deliveryTracking.status !== "active" || !connections.analytics.canRead) { setCampaignGrowth(null); return; }
+    let active = true;
+    const refreshGrowth = () => apiFetch(`/api/growth?projectId=${encodeURIComponent(run.projectId)}&range=28daysAgo`)
+      .then(async (response) => { const data = await response.json(); if (!response.ok) throw new Error(data.error || "Campaign results could not be read."); if (active) setCampaignGrowth(data as GrowthReport); })
+      .catch(() => { if (active) setCampaignGrowth(null); });
+    void refreshGrowth();
+    const poll = window.setInterval(() => void refreshGrowth(), 90_000);
+    return () => { active = false; window.clearInterval(poll); };
+  }, [connections.analytics.canRead, deliveryTracking.status, run.id, run.projectId]);
   useEffect(() => {
     const update = (event: Event) => {
       const detail = (event as CustomEvent<{ runId?: string; jobs?: DeliveryJob[] }>).detail;
@@ -4118,6 +4164,7 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
       if (!response.ok) throw new Error(data.error || "The approval queue could not be prepared.");
       setDeliveryJobs(Array.isArray(data.jobs) ? data.jobs : []);
       setDeliveryCoverage(data.coverage || { expected: data.jobs?.length || 0, prepared: data.jobs?.length || 0, missing: 0 });
+      if (data.tracking) setDeliveryTracking(data.tracking as CampaignDeliveryTracking);
       notify(data.jobs?.length ? "Approval queue prepared. Nothing has been sent." : "No executable item was found. Recipients and public media are never invented.");
     } catch (error) { notify(error instanceof Error ? error.message : "The approval queue could not be prepared."); }
     finally { setDeliveryWorking(""); }
@@ -4132,7 +4179,10 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
       const response = await apiFetch("/api/delivery", { method: "POST", body: JSON.stringify({ action: "execute", projectId: run.projectId, id: job.id, approval: ["tiktok", "youtube"].includes(job.channel) ? job.payload : undefined }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The external action failed.");
-      setDeliveryJobs((current) => current.map((item) => item.id === data.job.id ? data.job : item));
+      if (Array.isArray(data.jobs)) setDeliveryJobs(data.jobs);
+      else setDeliveryJobs((current) => current.map((item) => item.id === data.job.id ? data.job : item));
+      if (data.coverage) setDeliveryCoverage(data.coverage);
+      if (data.tracking) setDeliveryTracking(data.tracking as CampaignDeliveryTracking);
       notify(data.job.status === "complete" || data.job.status === "submitted" ? job.channel === "tiktok" ? "TikTok accepted the post. Processing can take a few minutes; its status will update here." : `${deliveryChannelLabel(job.channel)} accepted the action.` : data.job.error || "The external action failed.");
     } catch (error) { notify(error instanceof Error ? error.message : "The external action failed."); }
     finally { setDeliveryWorking(""); }
@@ -4160,7 +4210,8 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
       if (!response.ok) throw new Error(data.error || "The campaign schedule could not be approved.");
       setDeliveryJobs(Array.isArray(data.jobs) ? data.jobs : []);
       setDeliveryCoverage(data.coverage || deliveryCoverage);
-      notify("Campaign schedule approved. Future items will publish automatically without another approval.");
+      if (data.tracking) setDeliveryTracking(data.tracking as CampaignDeliveryTracking);
+      notify("Campaign started. Tracking is active and future items will publish automatically without another approval.");
     } catch (error) { notify(error instanceof Error ? error.message : "The campaign schedule could not be approved."); }
     finally { setDeliveryWorking(""); }
   };
@@ -4172,6 +4223,7 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The campaign schedule could not be paused.");
       setDeliveryJobs(Array.isArray(data.jobs) ? data.jobs : []);
+      if (data.tracking) setDeliveryTracking(data.tracking as CampaignDeliveryTracking);
       notify("Future campaign publishing is paused. Review and approve the schedule again when ready.");
     } catch (error) { notify(error instanceof Error ? error.message : "The campaign schedule could not be paused."); }
     finally { setDeliveryWorking(""); }
@@ -4216,7 +4268,7 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
       onCampaignUpdate(data.run as AgentRun, Number(data.revision || 0));
       const deliveryResponse = await apiFetch(`/api/delivery?projectId=${encodeURIComponent(run.projectId)}&runId=${encodeURIComponent(run.id)}`);
       const deliveryData = await deliveryResponse.json();
-      if (deliveryResponse.ok) { setDeliveryJobs(Array.isArray(deliveryData.jobs) ? deliveryData.jobs : []); setDeliveryCoverage(deliveryData.coverage || deliveryCoverage); }
+      if (deliveryResponse.ok) { setDeliveryJobs(Array.isArray(deliveryData.jobs) ? deliveryData.jobs : []); setDeliveryCoverage(deliveryData.coverage || deliveryCoverage); if (deliveryData.tracking) setDeliveryTracking(deliveryData.tracking as CampaignDeliveryTracking); }
       notify(data.run?.status === "Draft" && run.status === "Approved" ? "Post updated. Campaign approval was reopened because the approved payload changed." : "Post updated in the campaign preview and publishing payload.");
     } catch (error) { notify(error instanceof Error ? error.message : "The campaign post could not be updated."); throw error; }
     finally { setDeliveryWorking(""); }
@@ -4241,13 +4293,14 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
       {distributionRun && (run.assetReferences || []).length > 0 && <section className="op-campaign-assets"><div><small>CAMPAIGN ASSETS</small><strong>Selected by the project agent</strong><p>These files remain in the Content Library and are linked here for this campaign.</p></div><div>{run.assetReferences?.map((asset) => <article key={asset.id}><span>{asset.kind === "image" ? <ImageIcon size={16} /> : asset.kind === "video" ? <Video size={16} /> : <FileText size={16} />}</span><div><strong>{asset.name}</strong><p>{asset.summary}</p><small>{asset.routingRationale}</small></div></article>)}</div></section>}
       {distributionRun && campaignIssues.length > 0 && <section className="op-campaign-issues"><div><small>CAMPAIGN CHECKS</small><strong>{campaignIssues.length} {campaignIssues.length === 1 ? "item" : "items"} to review before publishing</strong><p>These apply only to this campaign and do not appear in the project Issues panel.</p></div><ul>{campaignIssues.map((issue, index) => <li className={issue.severity} key={`${issue.severity}-${index}`}><CircleAlert size={15} /><span>{issue.text}</span></li>)}</ul></section>}
       {distributionRun && <div className={`op-execution-state ${operationalChannels.length ? "connected" : ""}`}><span>{operationalChannels.length ? <Check size={19} /> : <Send size={19} />}</span><div><small>EXECUTION STATUS</small><strong>{operationalChannels.length ? `${operationalChannels.join(", ")} operational` : "Prepared — not launched"}</strong><p>{operationalChannels.length ? "Review the full calendar once. You can publish one item now or approve the complete schedule for automatic delivery." : "No operational delivery channel is connected, so nothing can be sent or published."}</p></div><button onClick={onConnect}>{operationalChannels.length ? "Manage connections" : "Connection setup"} <ArrowRight size={14} /></button></div>}
+      {distributionRun && <CampaignTrackingPanel run={run} workspace={workspace} jobs={deliveryJobs} tracking={deliveryTracking} growth={campaignGrowth} analyticsConnected={connections.analytics.canRead} />}
       {distributionRun && operationalChannels.length > 0 && <section className="op-delivery-queue">
         <div className="op-section-title">
           <div><small>CAMPAIGN DELIVERY</small><h2>Review once, then run automatically</h2><p>Review the complete calendar and approve it once. Market Agent publishes each unchanged item on its approved date without asking again.</p></div>
           {run.status === "Approved" && deliveryJobs.length === 0 && <button onClick={() => void prepareDelivery()} disabled={deliveryWorking === "prepare"}>{deliveryWorking === "prepare" ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}{deliveryWorking === "prepare" ? "Preparing…" : "Prepare actions"}</button>}
         </div>
         {run.status !== "Approved" && <div className="op-delivery-empty"><CircleAlert size={16} /> Mark this work approved before creating external actions.</div>}
-        {awaitingDeliveryJobs.length > 0 && <div className={`op-campaign-schedule-approval ${deliveryCoverage.missing > 0 ? "incomplete" : ""}`}><div><small>{deliveryCoverage.missing > 0 ? "CAMPAIGN INCOMPLETE" : "ONE APPROVAL FOR THE CAMPAIGN"}</small><strong>{deliveryCoverage.missing > 0 ? `${deliveryCoverage.prepared} of ${deliveryCoverage.expected} planned items ready` : `${awaitingDeliveryJobs.length} item${awaitingDeliveryJobs.length === 1 ? "" : "s"} ready across ${new Set(awaitingDeliveryJobs.map((job) => job.channel)).size} channel${new Set(awaitingDeliveryJobs.map((job) => job.channel)).size === 1 ? "" : "s"}`}</strong><p>{deliveryCoverage.missing > 0 ? `${deliveryCoverage.missing} planned item${deliveryCoverage.missing === 1 ? " still needs" : "s still need"} final copy or an approved asset. The app will not call a partial queue a full campaign.` : "Dates remain editable below. Paid media is never included unless a separate budget is explicitly approved."}</p></div><button onClick={() => void approveCampaignSchedule()} disabled={Boolean(deliveryWorking) || deliveryCoverage.missing > 0}>{deliveryWorking === "approve-campaign" ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />} {deliveryCoverage.missing > 0 ? "Complete campaign first" : "Approve full schedule"}</button></div>}
+        {awaitingDeliveryJobs.length > 0 && <div className={`op-campaign-schedule-approval ${deliveryCoverage.missing > 0 ? "incomplete" : ""}`}><div><small>{deliveryCoverage.missing > 0 ? "CAMPAIGN INCOMPLETE" : "ONE APPROVAL FOR THE CAMPAIGN"}</small><strong>{deliveryCoverage.missing > 0 ? `${deliveryCoverage.prepared} of ${deliveryCoverage.expected} planned items ready` : `${awaitingDeliveryJobs.length} item${awaitingDeliveryJobs.length === 1 ? "" : "s"} ready across ${new Set(awaitingDeliveryJobs.map((job) => job.channel)).size} channel${new Set(awaitingDeliveryJobs.map((job) => job.channel)).size === 1 ? "" : "s"}`}</strong><p>{deliveryCoverage.missing > 0 ? `${deliveryCoverage.missing} planned item${deliveryCoverage.missing === 1 ? " still needs" : "s still need"} final copy or an approved asset. The app will not call a partial queue a full campaign.` : "Dates remain editable below. Starting the campaign activates delivery, link, channel, and conversion tracking. Paid media still requires separate budget approval."}</p></div><button onClick={() => void approveCampaignSchedule()} disabled={Boolean(deliveryWorking) || deliveryCoverage.missing > 0}>{deliveryWorking === "approve-campaign" ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />} {deliveryCoverage.missing > 0 ? "Complete campaign first" : "Approve schedule & start"}</button></div>}
         {scheduledDeliveryJobs.length > 0 && <div className="op-campaign-schedule-approval scheduled"><div><small>AUTOMATIC PUBLISHING ACTIVE</small><strong>{scheduledDeliveryJobs.length} future item{scheduledDeliveryJobs.length === 1 ? "" : "s"} approved</strong><p>The cloud scheduler will publish these exact items on their dates. Changes and new items require approval again.</p></div><button className="secondary" onClick={() => void pauseCampaignSchedule()} disabled={Boolean(deliveryWorking)}>{deliveryWorking === "pause-campaign" ? <LoaderCircle className="spin" size={14} /> : <CircleAlert size={14} />} Pause future posts</button></div>}
         {followupEmailJobs.length > 1 && <BulkEmailApprovalSummary jobs={followupEmailJobs} sender={connections.gmail.accountEmail} />}
         {visibleDeliveryJobs.length > 0 && <div className="op-delivery-list">{visibleDeliveryJobs.map((job) => <DeliveryApprovalCard
@@ -4266,15 +4319,63 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
         />)}</div>}
       </section>}
       <div className="op-detail-grid">
-        <article className="op-output-card">{editing ? <textarea value={output} onChange={(e) => setOutput(e.target.value)} /> : <MarkdownLite value={run.output} hideAction={distributionRun} />}</article>
+        <article className="op-output-card">{editing ? <textarea value={output} onChange={(e) => setOutput(e.target.value)} /> : <MarkdownLite value={run.output} hideAction={distributionRun} hideTracking={distributionRun} />}</article>
         <aside>
-          <div className="op-review-card"><strong>Review control</strong><p>{distributionRun ? "This proposal stays in Agent until approved. Approval adds it to Campaigns; it does not send or publish anything." : "Approval saves your decision. It does not send or publish anything."}</p>{editing ? <><button onClick={saveEdit}><Save size={14} /> Save changes</button><button className="secondary" onClick={() => { setOutput(run.output); setEditing(false); }}>Cancel</button></> : <button className="secondary" onClick={() => setEditing(true)}>Edit output</button>}{run.status === "Draft" ? <button onClick={() => { onStatus(run.id, "Approved"); notify(distributionRun ? "Approved and added to Campaigns. Nothing was published." : "Approved and saved. Nothing was published."); }}><Check size={14} /> Mark approved</button> : <button className="secondary" onClick={() => onStatus(run.id, "Draft")}>Return to draft</button>}</div>
+          <div className="op-review-card"><strong>Review control</strong><p>{distributionRun ? "Approval adds this proposal to Campaigns and prepares its tracking identity. Tracking becomes active when the campaign schedule starts; approval alone publishes nothing." : "Approval saves your decision. It does not send or publish anything."}</p>{editing ? <><button onClick={saveEdit}><Save size={14} /> Save changes</button><button className="secondary" onClick={() => { setOutput(run.output); setEditing(false); }}>Cancel</button></> : <button className="secondary" onClick={() => setEditing(true)}>Edit output</button>}{run.status === "Draft" ? <button onClick={() => { onStatus(run.id, "Approved"); notify(distributionRun ? "Approved and added to Campaigns. Tracking is ready and will start when the campaign starts; nothing was published." : "Approved and saved. Nothing was published."); }}><Check size={14} /> Mark approved</button> : <button className="secondary" onClick={() => onStatus(run.id, "Draft")}>Return to draft</button>}</div>
           {run.sources.length > 0 && <RunSources sources={run.sources} />}
           <div className="op-run-meta"><span>Analysis</span><strong>{String(run.model || "").toLowerCase().includes("panel") ? "Balanced review" : "Standard review"}</strong>{run.intensity && <><span>Campaign style</span><strong>{run.intensity[0].toUpperCase() + run.intensity.slice(1)}</strong></>}</div>
         </aside>
       </div>
     </section>
   </div>;
+}
+
+function CampaignTrackingPanel({ run, workspace, jobs, tracking, growth, analyticsConnected }: { run: AgentRun; workspace: ProductWorkspace; jobs: DeliveryJob[]; tracking: CampaignDeliveryTracking; growth: GrowthReport | null; analyticsConnected: boolean }) {
+  const campaignId = tracking.campaignId || run.id;
+  const rows = (growth?.campaigns || []).filter((campaign) => campaign.id === campaignId);
+  const visits = rows.reduce((total, campaign) => total + Number(campaign.sessions || 0), 0);
+  const conversionValues = rows.map((campaign) => campaign.leads).filter((value): value is number => value != null);
+  const conversions = conversionValues.length ? conversionValues.reduce((total, value) => total + value, 0) : analyticsConnected ? 0 : null;
+  const primaryConversion = growth?.goal.primaryConversion || workspace.growth?.primaryConversion || "contact_form";
+  const measuredJobs = jobs.filter((job) => job.runId === run.id && job.result?.performance && typeof job.result.performance === "object");
+  const performance = measuredJobs.map((job) => job.result.performance as Record<string, unknown>);
+  const visibility = performance.reduce((total, metrics) => total + firstFiniteMetric(metrics, ["reach", "impressions", "views"]), 0);
+  const interactions = performance.reduce((total, metrics) => total + ["likes", "reactions", "comments", "shares", "saves"].reduce((sum, key) => sum + finiteMetric(metrics[key]), 0), 0);
+  const active = tracking.status === "active";
+  const ready = tracking.status === "ready";
+  const message = active
+    ? `Active since ${tracking.startedAt ? new Date(tracking.startedAt).toLocaleString() : "campaign start"}. Delivery receipts, tracked links, connected-channel results, and attributed website outcomes update automatically.`
+    : ready
+      ? "The campaign identity is ready. Approving its schedule or publishing its first item starts tracking automatically."
+      : "Approve this campaign first. Its tracking identity will be prepared without publishing anything.";
+  return <section className={`op-campaign-tracking ${tracking.status}`}>
+    <header><div><small>LIVE CAMPAIGN TRACKING</small><h2>{active ? "Tracking active" : ready ? "Ready to track" : "Tracking starts with approval"}</h2><p>{message}</p></div><span>{active ? <><Check size={14} /> Active</> : ready ? "Ready" : "Draft"}</span></header>
+    <div className="op-campaign-tracking__metrics">
+      <article><small>Scheduled now</small><strong>{tracking.scheduledItems}</strong><span>approved publications</span></article>
+      <article><small>Processing</small><strong>{tracking.processingItems}</strong><span>accepted by provider</span></article>
+      <article><small>Published</small><strong>{tracking.publishedItems}</strong><span>provider receipts</span></article>
+      <article><small>Failed</small><strong>{tracking.failedItems}</strong><span>items needing attention</span></article>
+      <article><small>Tracked links</small><strong>{tracking.trackedItems}</strong><span>campaign destinations</span></article>
+      <article><small>Confirmed link visits</small><strong>{active ? tracking.clicks : "—"}</strong><span>Market Agent redirects</span></article>
+      <article><small>Reported visibility</small><strong>{active && measuredJobs.length ? formatMetric(visibility) : "—"}</strong><span>{measuredJobs.length ? `${measuredJobs.length} measured publication${measuredJobs.length === 1 ? "" : "s"}` : "waiting for channel results"}</span></article>
+      <article><small>Interactions</small><strong>{active && measuredJobs.length ? formatMetric(interactions) : "—"}</strong><span>likes, comments, shares, and saves</span></article>
+      <article><small>Attributed website visits</small><strong>{active && analyticsConnected ? visits : "—"}</strong><span>{analyticsConnected ? "connected Analytics" : "Analytics not connected"}</span></article>
+      <article><small>{primaryConversionLabel(primaryConversion)}</small><strong>{active ? formatMetric(conversions) : "—"}</strong><span>{growth?.goal.analyticsEvent ? `event: ${growth.goal.analyticsEvent}` : analyticsConnected ? "matching event not detected" : "Analytics not connected"}</span></article>
+    </div>
+  </section>;
+}
+
+function finiteMetric(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function firstFiniteMetric(metrics: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = finiteMetric(metrics[key]);
+    if (value) return value;
+  }
+  return 0;
 }
 
 function BulkEmailApprovalSummary({ jobs, sender }: { jobs: DeliveryJob[]; sender: string }) {
@@ -4828,12 +4929,12 @@ function Field({ label, value, onChange, placeholder, multiline = false, wide = 
 
 type ReportSection = { heading: string; lines: string[] };
 
-function MarkdownLite({ value, hideAction = false }: { value: string; hideAction?: boolean }) {
+function MarkdownLite({ value, hideAction = false, hideTracking = false }: { value: string; hideAction?: boolean; hideTracking?: boolean }) {
   const report = useMemo(() => parseReport(value), [value]);
   if (!report.sections.length) return <div className="op-markdown"><MarkdownBlocks lines={report.preamble} /></div>;
   const status = report.sections.find((section) => section.heading.toLowerCase() === "status");
   const nextAction = report.sections.find((section) => /next action/i.test(section.heading));
-  const mainSections = report.sections.filter((section) => section !== status && section !== nextAction);
+  const mainSections = report.sections.filter((section) => section !== status && section !== nextAction && (!hideTracking || !/^tracking$/i.test(section.heading.trim())));
   const showTitle = Boolean(report.title && !/prepared|not launched/i.test(report.title));
   return <div className="op-markdown op-result-report">
     <section className="op-result-summary"><small>RESULT SUMMARY</small>{showTitle && <h1>{report.title}</h1>}{status && <MarkdownBlocks lines={status.lines} />}</section>

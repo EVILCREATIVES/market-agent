@@ -158,18 +158,30 @@ export async function updateRunStatusForUser(userId, runId, status, env = proces
   const client = await getPool(env).connect();
   try {
     await client.query("BEGIN");
-    const updatedRun = await client.query(
-      `UPDATE market_agent_runs
-          SET data = jsonb_set(data, '{status}', to_jsonb($3::text), true)
-        WHERE user_id = $1 AND id = $2
-        RETURNING data`,
-      [userId, id, nextStatus],
-    );
-    if (!updatedRun.rows[0]?.data) {
+    const currentRun = await client.query("SELECT data FROM market_agent_runs WHERE user_id = $1 AND id = $2 FOR UPDATE", [userId, id]);
+    if (!currentRun.rows[0]?.data) {
       const error = new Error("The campaign could not be found.");
       error.statusCode = 404;
       throw error;
     }
+    const now = new Date().toISOString();
+    const run = { ...currentRun.rows[0].data, status: nextStatus };
+    if (nextStatus === "Approved" && ["campaign", "social", "chat"].includes(String(run.action || ""))) {
+      const currentTracking = run.campaignTracking && typeof run.campaignTracking === "object" ? run.campaignTracking : {};
+      run.campaignTracking = {
+        status: currentTracking.startedAt ? "active" : "ready",
+        campaignId: id,
+        campaignName: String(run.title || "Campaign").slice(0, 200),
+        approvedAt: currentTracking.approvedAt || now,
+        startedAt: currentTracking.startedAt || null,
+      };
+    } else if (nextStatus === "Draft" && run.campaignTracking && !run.campaignTracking.startedAt) {
+      delete run.campaignTracking;
+    }
+    const updatedRun = await client.query(
+      "UPDATE market_agent_runs SET data = $3::jsonb WHERE user_id = $1 AND id = $2 RETURNING data",
+      [userId, id, JSON.stringify(run)],
+    );
     const updatedState = await client.query(
       `UPDATE market_agent_states SET state = jsonb_set(
          state, '{runs}',

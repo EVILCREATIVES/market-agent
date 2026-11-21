@@ -163,6 +163,13 @@ export interface AgentRun {
     attention: string[];
   };
   assetReferences?: RunAssetReference[];
+  campaignTracking?: {
+    status: "ready" | "active";
+    campaignId: string;
+    campaignName: string;
+    approvedAt: string;
+    startedAt: string | null;
+  };
   createdAt: string;
 }
 
@@ -618,6 +625,7 @@ export interface DeliveryJob {
     musicConsent: boolean;
     scheduledAt: string;
     campaignApprovalId?: string;
+    campaignId?: string;
     campaignType?: "prospect_invitation" | "prospect_followup";
     audienceSize?: number;
     invitationUrl?: string;
@@ -632,6 +640,9 @@ export interface DeliveryJob {
   attemptCount: number;
   maxAttempts: number;
   nextAttemptAt: string | null;
+  clickCount: number;
+  firstClickedAt: string | null;
+  lastClickedAt: string | null;
   approvedAt: string | null;
   completedAt: string | null;
   createdAt: string;

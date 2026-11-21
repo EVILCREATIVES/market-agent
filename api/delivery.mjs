@@ -16,7 +16,11 @@ export default async function handler(req, res) {
     const action = String(req.body?.action || "prepare");
     const userApiEnv = await loadUserApiEnv(userId);
     if (action === "options") return res.status(200).json(await getDeliveryPublishingOptions(userId, String(req.body?.id || "").slice(0, 100)));
-    if (action === "execute") return res.status(200).json(await executeDeliveryJob(userId, String(req.body?.id || "").slice(0, 100), userApiEnv, req.body?.approval || {}));
+    if (action === "execute") {
+      const executed = await executeDeliveryJob(userId, String(req.body?.id || "").slice(0, 100), userApiEnv, req.body?.approval || {});
+      const current = await listDeliveryJobs(userId, executed.job.projectId, executed.job.runId);
+      return res.status(200).json({ ...current, job: executed.job });
+    }
     if (action === "approve-campaign") {
       if (!runId) return res.status(400).json({ error: "Choose an approved campaign first." });
       return res.status(200).json(await approveDeliveryCampaign(userId, projectId, runId, req.body?.items || [], userApiEnv));

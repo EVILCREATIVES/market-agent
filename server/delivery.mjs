@@ -32,15 +32,42 @@ export async function listDeliveryJobs(userId, projectId, runId = "", env = proc
     if (job.payload?.sourceAssetId) job.payload.mediaUrl = createPublicProjectAssetUrl(job.payload.sourceAssetId, env);
     return job;
   });
+  let run = null;
   let coverage = { expected: jobs.length, prepared: jobs.filter((job) => job.status !== "cancelled").length, missing: 0 };
   if (runId) {
     const { state } = await loadStateForUser(userId, env);
-    const run = state.runs.find((item) => item.id === runId && item.projectId === projectId);
+    run = state.runs.find((item) => item.id === runId && item.projectId === projectId) || null;
     const expected = campaignPublicationTarget(run);
     const prepared = jobs.filter((job) => job.status !== "cancelled").length;
     coverage = { expected: Math.max(expected, prepared), prepared, missing: Math.max(0, expected - prepared) };
   }
-  return { jobs, coverage };
+  return { jobs, coverage, tracking: campaignTrackingSummary(run, jobs) };
+}
+
+export function campaignTrackingSummary(run, jobs = []) {
+  const activeJobs = (Array.isArray(jobs) ? jobs : []).filter((job) => job?.status !== "cancelled");
+  const published = activeJobs.filter((job) => job.status === "complete").length;
+  const processing = activeJobs.filter((job) => ["running", "submitted"].includes(job.status)).length;
+  const scheduled = activeJobs.filter((job) => job.status === "scheduled").length;
+  const failed = activeJobs.filter((job) => ["failed", "dead_letter"].includes(job.status)).length;
+  const trackedItems = activeJobs.filter((job) => job?.payload?.tracking?.url || ["prospect_invitation", "prospect_followup"].includes(job?.payload?.campaignType)).length;
+  const approvedAt = activeJobs.map((job) => job?.approvedAt).filter(Boolean).sort()[0] || null;
+  const stored = run?.campaignTracking && typeof run.campaignTracking === "object" ? run.campaignTracking : {};
+  const startedAt = stored.startedAt || approvedAt;
+  const status = startedAt || scheduled || published ? "active" : run?.status === "Approved" ? "ready" : "draft";
+  return {
+    status,
+    campaignId: String(stored.campaignId || run?.id || ""),
+    campaignName: String(stored.campaignName || run?.title || "Campaign"),
+    startedAt,
+    totalItems: activeJobs.length,
+    scheduledItems: scheduled,
+    processingItems: processing,
+    publishedItems: published,
+    failedItems: failed,
+    trackedItems,
+    clicks: activeJobs.reduce((total, job) => total + Math.max(0, Number(job?.clickCount || 0)), 0),
+  };
 }
 
 export function prospectInvitationRunId(campaignId) {
@@ -423,6 +450,7 @@ export async function prepareDeliveryJobs(userId, projectId, runId, userApiEnv, 
           brandContentToggle: false,
           musicConsent: false,
           scheduledAt,
+          campaignId: runId,
           campaignType: "prospect_followup",
           invitationUrl: followup.primaryUrl,
           audienceSize: recipients.length,
@@ -493,6 +521,7 @@ export async function executeDeliveryJob(userId, id, userApiEnv, approval = {}, 
       [id, userId, JSON.stringify(payload || {})],
     );
     row = claimed.rows[0];
+    await activateCampaignTracking(client, userId, row.project_id, row.run_id);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -541,6 +570,7 @@ export async function approveDeliveryCampaign(userId, projectId, runId, items = 
         [row.id, userId, JSON.stringify(payload), scheduledAt],
       );
     }
+    await activateCampaignTracking(client, userId, projectId, runId);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -575,7 +605,42 @@ export async function approveTrustedDeliveryJobs(userId, projectId, runId, trust
     );
     approved += 1;
   }
+  if (approved > 0) await activateCampaignTracking(getPool(env), userId, projectId, runId);
   return { approved, ...(await listDeliveryJobs(userId, projectId, runId, env)) };
+}
+
+async function activateCampaignTracking(database, userId, projectId, runId) {
+  const current = await database.query(
+    "SELECT data FROM market_agent_runs WHERE user_id = $1 AND project_id = $2 AND id = $3 FOR UPDATE",
+    [userId, projectId, runId],
+  );
+  if (!current.rows[0]?.data) return null;
+  const run = current.rows[0].data;
+  const existing = run.campaignTracking && typeof run.campaignTracking === "object" ? run.campaignTracking : {};
+  const startedAt = existing.startedAt || new Date().toISOString();
+  const tracking = {
+    status: "active",
+    campaignId: String(existing.campaignId || runId),
+    campaignName: String(existing.campaignName || run.title || "Campaign").slice(0, 200),
+    approvedAt: existing.approvedAt || startedAt,
+    startedAt,
+  };
+  if (existing.status === "active" && existing.startedAt) return tracking;
+  const updatedRun = { ...run, campaignTracking: tracking };
+  await database.query(
+    "UPDATE market_agent_runs SET data = $4::jsonb WHERE user_id = $1 AND project_id = $2 AND id = $3",
+    [userId, projectId, runId, JSON.stringify(updatedRun)],
+  );
+  await database.query(
+    `UPDATE market_agent_states SET state = jsonb_set(
+       state, '{runs}',
+       COALESCE((SELECT jsonb_agg(CASE WHEN item->>'id' = $2 THEN $3::jsonb ELSE item END)
+         FROM jsonb_array_elements(COALESCE(state->'runs','[]'::jsonb)) AS item), '[]'::jsonb), true),
+       revision = revision + 1, updated_at = NOW()
+     WHERE user_id = $1`,
+    [userId, runId, JSON.stringify(updatedRun)],
+  );
+  return tracking;
 }
 
 export async function pauseDeliveryCampaign(userId, projectId, runId, env = process.env) {
@@ -701,7 +766,7 @@ export async function recordInvitationClick(token, env = process.env) {
             first_clicked_at = COALESCE(first_clicked_at, NOW()),
             last_clicked_at = NOW(),
             updated_at = NOW()
-      WHERE id = $1 AND channel = 'gmail' AND payload->>'campaignType' = 'prospect_invitation'
+      WHERE id = $1 AND channel = 'gmail' AND payload->>'campaignType' IN ('prospect_invitation','prospect_followup')
       RETURNING payload`,
     [id],
   );
@@ -1299,6 +1364,9 @@ function serializeDeliveryJob(row) {
     attemptCount: Number(row.attempt_count || 0),
     maxAttempts: Number(row.max_attempts || 5),
     nextAttemptAt: row.next_attempt_at ? new Date(row.next_attempt_at).toISOString() : null,
+    clickCount: Number(row.click_count || 0),
+    firstClickedAt: row.first_clicked_at ? new Date(row.first_clicked_at).toISOString() : null,
+    lastClickedAt: row.last_clicked_at ? new Date(row.last_clicked_at).toISOString() : null,
     externalId: row.external_id || "",
     result: row.result || {},
     error: row.error || "",

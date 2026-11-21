@@ -1153,6 +1153,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-campaign-issues li { padding: 9px 10px; border: 1px solid; border-radius: 8px; display: grid; grid-template-columns: 17px minmax(0,1fr); align-items: start; gap: 7px; font-size: 8.5px; line-height: 1.45; }
 .op-campaign-issues li.high { border-color: #ebc1bc; background: #fff3f1; color: #98483e; }
 .op-campaign-issues li.attention { border-color: #ead5a6; background: #fff9e9; color: #80601e; }
+.op-campaign-tracking { padding: 18px; border-bottom: 1px solid #ded8eb; background: #faf8ff; }
+.op-campaign-tracking.active { border-color: #bcdcca; background: #f2faf5; }
+.op-campaign-tracking > header { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; }
+.op-campaign-tracking > header > div { min-width: 0; }
+.op-campaign-tracking > header small { color: #6e50d7; font-size: 7px; font-weight: 850; letter-spacing: .1em; }
+.op-campaign-tracking.active > header small { color: #2d7454; }
+.op-campaign-tracking > header h2 { margin: 4px 0; font-size: 15px; }
+.op-campaign-tracking > header p { margin: 0; max-width: 820px; color: #716b77; font-size: 8.5px; line-height: 1.5; }
+.op-campaign-tracking > header > span { flex: 0 0 auto; padding: 6px 9px; border-radius: 999px; background: #eee9ff; color: #6048b8; display: inline-flex; align-items: center; gap: 4px; font-size: 8px; font-weight: 800; }
+.op-campaign-tracking.active > header > span { background: #dff2e7; color: #286d4d; }
+.op-campaign-tracking__metrics { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit,minmax(120px,1fr)); gap: 7px; }
+.op-campaign-tracking__metrics article { min-width: 0; padding: 10px; border: 1px solid #e4dfeb; border-radius: 9px; background: rgba(255,255,255,.82); display: flex; flex-direction: column; gap: 3px; }
+.op-campaign-tracking.active .op-campaign-tracking__metrics article { border-color: #d4e8dc; }
+.op-campaign-tracking__metrics small { color: #7b7581; font-size: 6.7px; font-weight: 750; }
+.op-campaign-tracking__metrics strong { font-size: 15px; }
+.op-campaign-tracking__metrics span { overflow: hidden; color: #837d88; font-size: 6.7px; line-height: 1.3; text-overflow: ellipsis; }
 .op-campaign-assets { padding: 16px 18px; border-bottom: 1px solid #ddd9ec; background: #faf8ff; display: grid; grid-template-columns: minmax(190px,.7fr) minmax(0,1.3fr); gap: 18px; }
 .op-campaign-assets > div:first-child { display: flex; flex-direction: column; gap: 4px; }
 .op-campaign-assets > div:first-child small { color: #7053d0; font-size: 7px; font-weight: 850; letter-spacing: .1em; }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { authoritativeRuns, isPanelRun } from "../server/db.mjs";
 import { formatLinkedInProfileResearch, isBrandSourceRefreshRequest, isPrivateAddress } from "../server/agent.mjs";
-import { applyInvitationTracking, campaignPublicationTarget, createInvitationTrackingUrl, explicitApprovedYouTubeFallback, personalizeInvitationTemplate, renderInvitationEmailHtml, resolveInvitationDestination, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
+import { applyInvitationTracking, campaignPublicationTarget, campaignTrackingSummary, createInvitationTrackingUrl, explicitApprovedYouTubeFallback, personalizeInvitationTemplate, renderInvitationEmailHtml, resolveInvitationDestination, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
 import { isContextualDraftEditRequest, shouldRewriteSavedInvitation } from "../api/chat.mjs";
 import { canonicalAnalyticsPath, prepareAnalyticsLandingRows, prepareAnalyticsPageRows } from "../server/analytics.mjs";
 import { scoreMarketingOutput } from "../server/evaluation.mjs";
@@ -67,6 +67,37 @@ test("normalized campaign rows prevent deleted campaigns from returning after re
     authoritativeRuns([deleted], [], false).map((run) => run.id),
     ["deleted-campaign"],
   );
+});
+
+test("campaign tracking becomes ready on approval and active when delivery starts", () => {
+  const approvedRun = { id: "campaign-1", title: "Launch campaign", status: "Approved", campaignTracking: { status: "ready", campaignId: "campaign-1", campaignName: "Launch campaign", approvedAt: "2026-11-21T12:00:00.000Z", startedAt: null } };
+  assert.deepEqual(campaignTrackingSummary(approvedRun, []), {
+    status: "ready",
+    campaignId: "campaign-1",
+    campaignName: "Launch campaign",
+    startedAt: null,
+    totalItems: 0,
+    scheduledItems: 0,
+    processingItems: 0,
+    publishedItems: 0,
+    failedItems: 0,
+    trackedItems: 0,
+    clicks: 0,
+  });
+  const jobs = [
+    { status: "scheduled", approvedAt: "2026-11-21T13:00:00.000Z", payload: { tracking: { url: "https://example.com/?utm_id=campaign-1" } }, clickCount: 3 },
+    { status: "submitted", approvedAt: "2026-11-21T13:00:00.000Z", payload: { tracking: null }, clickCount: 0 },
+    { status: "complete", approvedAt: "2026-11-21T13:00:00.000Z", payload: { campaignType: "prospect_followup" }, clickCount: 2 },
+    { status: "failed", approvedAt: "2026-11-21T13:00:00.000Z", payload: {}, clickCount: 0 },
+  ];
+  const active = campaignTrackingSummary(approvedRun, jobs);
+  assert.equal(active.status, "active");
+  assert.equal(active.scheduledItems, 1);
+  assert.equal(active.processingItems, 1);
+  assert.equal(active.publishedItems, 1);
+  assert.equal(active.failedItems, 1);
+  assert.equal(active.trackedItems, 2);
+  assert.equal(active.clicks, 5);
 });
 
 test("the assistant can add a real column to a saved campaign people table", () => {
