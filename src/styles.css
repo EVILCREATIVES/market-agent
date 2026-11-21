@@ -1285,6 +1285,19 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-delivery-list footer button:disabled { opacity: .45; cursor: default; }
 .op-delivery-error { margin-top: 8px; padding: 8px; border-radius: 7px; background: #fff0ee; color: #9a443d; font-size: 7.5px; line-height: 1.45; }
 .op-delivery-card { align-self: start; }
+.op-bulk-email-review { margin: 14px 0; padding: 18px; border: 1px solid #d8d1e8; border-radius: 14px; background: #fff; box-shadow: var(--shadow); }
+.op-bulk-email-review > header { display: flex; justify-content: space-between; align-items: start; gap: 18px; }
+.op-bulk-email-review > header small, .op-bulk-email-review__preview > small { color: #6e50d7; font-size: 8px; font-weight: 800; letter-spacing: .08em; }
+.op-bulk-email-review > header h3 { margin: 4px 0; font-size: 16px; }
+.op-bulk-email-review > header p { margin: 0; max-width: 720px; color: #716d68; font-size: 9px; line-height: 1.5; }
+.op-bulk-email-review > header > span { flex: 0 0 auto; padding: 6px 9px; border-radius: 999px; background: #e7f4ec; color: #2e7152; font-size: 8px; font-weight: 750; }
+.op-bulk-email-review__facts { display: grid; grid-template-columns: 1fr 1.5fr .5fr; gap: 8px; margin: 14px 0; }
+.op-bulk-email-review__facts > span { display: flex; flex-direction: column; gap: 4px; padding: 11px; border-radius: 9px; background: #f2f0eb; }
+.op-bulk-email-review__facts small { color: #7d7972; font-size: 7px; text-transform: uppercase; letter-spacing: .05em; }
+.op-bulk-email-review__facts strong { font-size: 9px; overflow-wrap: anywhere; }
+.op-bulk-email-review__preview { padding: 16px; border: 1px solid #ded8ec; border-radius: 11px; background: #faf8ff; }
+.op-bulk-email-review__preview h3 { margin: 5px 0 12px; font-size: 15px; }
+.op-bulk-email-review__preview p { margin: 0; color: #35322f; font-size: 10px; line-height: 1.65; white-space: pre-wrap; }
 .op-delivery-rationale { margin-top: 10px; color: #706b78; font-size: 8px; }
 .op-delivery-rationale summary { width: fit-content; cursor: pointer; color: #654ac4; font-weight: 750; }
 .op-delivery-rationale blockquote { margin-top: 7px; }

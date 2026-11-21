@@ -389,6 +389,48 @@ export async function prepareDeliveryJobs(userId, projectId, runId, userApiEnv, 
     ? run.campaignPlan
     : await generateDeliveryPlan({ run, workspace: deliveryWorkspace, channels, channelContexts }, userApiEnv);
   let safeItems = normalizeDeliveryItems(plan?.items, channels, deliveryWorkspace, run);
+  if (!safeItems.length && channels.includes("gmail")) {
+    const followup = approvedProspectFollowupTemplate(run);
+    if (followup) {
+      const recipients = await listEligibleProspectFollowupRecipients(userId, projectId, env);
+      if (!recipients.length) throw deliveryError("No eligible recipients remain from the original invitation campaign. Opt-outs, replies, delivery failures, paused contacts, and existing subscribers were excluded.", 409);
+      const startAt = Date.now() + 20 * 60_000;
+      safeItems = recipients.map((recipient, index) => {
+        const scheduledAt = new Date(startAt + index * 2 * 60_000).toISOString();
+        return {
+          channel: "gmail",
+          recipient: recipient.email,
+          subject: followup.subject,
+          text: followup.text,
+          html: renderInvitationEmailHtml(deliveryWorkspace, {}, {
+            subject: followup.subject,
+            body: stripApprovedEmailSignature(followup.text),
+            invitationUrl: followup.primaryUrl,
+            ctaLabel: followup.ctaLabel,
+            unsubscribeUrl: "{{unsubscribe_url}}",
+          }),
+          mediaUrl: "",
+          sourceAssetId: "",
+          mediaKind: "",
+          privacyLevel: "",
+          aiGenerated: false,
+          madeForKids: false,
+          disableComment: false,
+          disableDuet: false,
+          disableStitch: false,
+          commercialContentToggle: false,
+          brandOrganicToggle: false,
+          brandContentToggle: false,
+          musicConsent: false,
+          scheduledAt,
+          campaignType: "prospect_followup",
+          invitationUrl: followup.primaryUrl,
+          audienceSize: recipients.length,
+          rationale: "Approved follow-up to eligible recipients of the original project invitation. Suppressed contacts, replies, delivery failures, paused contacts, and existing subscribers were excluded.",
+        };
+      });
+    }
+  }
   if (!safeItems.length) {
     const fallback = explicitApprovedYouTubeFallback(run, deliveryWorkspace, channels);
     if (fallback) safeItems = normalizeDeliveryItems([fallback], channels, deliveryWorkspace, run);
@@ -595,7 +637,7 @@ async function completeDeliveryExecution(row, userId, env) {
       const suppressed = await getPool(env).query("SELECT 1 FROM market_agent_email_suppressions WHERE user_id = $1 AND project_id = $2 AND email = $3 AND (hold_until IS NULL OR hold_until > NOW()) LIMIT 1", [userId, row.project_id, String(payload.recipient || "").toLowerCase()]);
       if (suppressed.rows[0]) throw deliveryError("This recipient is paused or suppressed, so the email was not sent.", 409);
       const optOutUrl = createEmailOptOutUrl(row.id, env);
-      if (payload.campaignType === "prospect_invitation" && resolveInvitationDestination(payload.invitationUrl)) {
+      if (["prospect_invitation", "prospect_followup"].includes(payload.campaignType) && resolveInvitationDestination(payload.invitationUrl)) {
         payload = applyInvitationTracking(payload, createInvitationTrackingUrl(row.id, env));
       }
       payload = {
@@ -941,6 +983,65 @@ function normalizeDeliveryItems(values, channels, workspace, run = {}) {
     });
   }
   return items;
+}
+
+export function approvedProspectFollowupTemplate(run = {}) {
+  const output = String(run?.output || "").replace(/\r/g, "");
+  const intent = `${String(run?.prompt || "")}\n${output}`;
+  if (!/\b(?:follow[- ]?up|original invitation|eligible recipients?)\b/i.test(intent)) return null;
+  const section = output.match(/(?:^|\n)#{1,6}\s+Follow-up email\s*\n([\s\S]*?)(?=\n#{1,6}\s+|$)/i)?.[1] || "";
+  if (!section) return null;
+  const subject = section.match(/^\s*(?:\*\*)?Subject:(?:\*\*)?\s*(.+?)\s*$/im)?.[1]?.replace(/\*\*/g, "").trim().slice(0, 300) || "";
+  if (!subject) return null;
+  const body = section
+    .replace(/^\s*(?:\*\*)?Subject:(?:\*\*)?\s*.+?\s*$/im, "")
+    .replace(/^\s*(?:\*\*)?Preview:(?:\*\*)?\s*.+?\s*$/im, "")
+    .replace(/\*\*/g, "")
+    .replace(/\[([^\]]+)\]\((https:\/\/[^\s)]+)\)/g, "$1: $2")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const urls = [...body.matchAll(/https:\/\/[^\s<>()]+/g)].map((match) => match[0].replace(/[.,;:!?]+$/, ""));
+  const primaryUrl = resolveInvitationDestination(urls[0]);
+  if (!body || !primaryUrl) return null;
+  const firstLine = body.split("\n").find((line) => /^1\.\s+/.test(line.trim())) || "";
+  const ctaLabel = firstLine.replace(/^1\.\s+/, "").split(":")[0].trim().slice(0, 100) || "Open";
+  return { subject, text: body, primaryUrl, ctaLabel };
+}
+
+function stripApprovedEmailSignature(text) {
+  return String(text || "").replace(/\n\nBest,\s*\n[\s\S]*$/i, "").trim();
+}
+
+async function listEligibleProspectFollowupRecipients(userId, projectId, env) {
+  const result = await getPool(env).query(
+    `WITH latest_invitations AS (
+       SELECT DISTINCT ON (lower(payload->>'recipient'))
+         lower(payload->>'recipient') AS email
+       FROM market_agent_delivery_jobs
+       WHERE user_id = $1 AND project_id = $2 AND channel = 'gmail'
+         AND status IN ('complete','submitted')
+         AND payload->>'campaignType' = 'prospect_invitation'
+         AND payload->>'recipient' <> ''
+       ORDER BY lower(payload->>'recipient'), COALESCE(completed_at, updated_at) DESC
+     )
+     SELECT invitations.email
+     FROM latest_invitations invitations
+     LEFT JOIN market_agent_email_suppressions suppressions
+       ON suppressions.user_id = $1 AND suppressions.project_id = $2
+      AND lower(suppressions.email) = invitations.email
+      AND (suppressions.hold_until IS NULL OR suppressions.hold_until > NOW())
+     LEFT JOIN market_agent_subscribers subscribers
+       ON subscribers.user_id = $1 AND subscribers.project_id = $2
+      AND lower(subscribers.email) = invitations.email
+     WHERE suppressions.email IS NULL AND subscribers.email IS NULL
+     ORDER BY invitations.email
+     LIMIT 1000`,
+    [userId, projectId],
+  );
+  return result.rows
+    .map((row) => ({ email: String(row.email || "").trim().toLowerCase() }))
+    .filter((recipient) => /^[^\s@<>;,]+@[^\s@<>;,]+\.[^\s@<>;,]+$/.test(recipient.email));
 }
 
 function applyCampaignTracking(text, workspace, run, channel, index) {

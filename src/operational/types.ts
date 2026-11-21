@@ -618,6 +618,10 @@ export interface DeliveryJob {
     musicConsent: boolean;
     scheduledAt: string;
     campaignApprovalId?: string;
+    campaignType?: "prospect_invitation" | "prospect_followup";
+    audienceSize?: number;
+    invitationUrl?: string;
+    html?: string;
     tracking?: { url: string; campaignId: string; campaignName: string; source: string; medium: string; content: string } | null;
     rationale: string;
   };

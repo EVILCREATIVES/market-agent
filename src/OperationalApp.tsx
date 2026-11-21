@@ -4187,6 +4187,10 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
   ];
   const awaitingDeliveryJobs = deliveryJobs.filter((job) => job.status === "awaiting_approval");
   const scheduledDeliveryJobs = deliveryJobs.filter((job) => job.status === "scheduled");
+  const followupEmailJobs = deliveryJobs.filter((job) => job.channel === "gmail" && job.payload.campaignType === "prospect_followup" && job.status !== "cancelled");
+  const visibleDeliveryJobs = followupEmailJobs.length > 1
+    ? deliveryJobs.filter((job) => job.payload.campaignType !== "prospect_followup")
+    : deliveryJobs;
   return <div className="op-stack">
     <button className="op-back" onClick={onBack}><ArrowLeft size={15} /> Back to workspace</button>
     <section className="op-run-detail">
@@ -4203,7 +4207,8 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
         {run.status !== "Approved" && <div className="op-delivery-empty"><CircleAlert size={16} /> Mark this work approved before creating external actions.</div>}
         {awaitingDeliveryJobs.length > 0 && <div className={`op-campaign-schedule-approval ${deliveryCoverage.missing > 0 ? "incomplete" : ""}`}><div><small>{deliveryCoverage.missing > 0 ? "CAMPAIGN INCOMPLETE" : "ONE APPROVAL FOR THE CAMPAIGN"}</small><strong>{deliveryCoverage.missing > 0 ? `${deliveryCoverage.prepared} of ${deliveryCoverage.expected} planned items ready` : `${awaitingDeliveryJobs.length} item${awaitingDeliveryJobs.length === 1 ? "" : "s"} ready across ${new Set(awaitingDeliveryJobs.map((job) => job.channel)).size} channel${new Set(awaitingDeliveryJobs.map((job) => job.channel)).size === 1 ? "" : "s"}`}</strong><p>{deliveryCoverage.missing > 0 ? `${deliveryCoverage.missing} planned item${deliveryCoverage.missing === 1 ? " still needs" : "s still need"} final copy or an approved asset. The app will not call a partial queue a full campaign.` : "Dates remain editable below. Paid media is never included unless a separate budget is explicitly approved."}</p></div><button onClick={() => void approveCampaignSchedule()} disabled={Boolean(deliveryWorking) || deliveryCoverage.missing > 0}>{deliveryWorking === "approve-campaign" ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />} {deliveryCoverage.missing > 0 ? "Complete campaign first" : "Approve full schedule"}</button></div>}
         {scheduledDeliveryJobs.length > 0 && <div className="op-campaign-schedule-approval scheduled"><div><small>AUTOMATIC PUBLISHING ACTIVE</small><strong>{scheduledDeliveryJobs.length} future item{scheduledDeliveryJobs.length === 1 ? "" : "s"} approved</strong><p>The cloud scheduler will publish these exact items on their dates. Changes and new items require approval again.</p></div><button className="secondary" onClick={() => void pauseCampaignSchedule()} disabled={Boolean(deliveryWorking)}>{deliveryWorking === "pause-campaign" ? <LoaderCircle className="spin" size={14} /> : <CircleAlert size={14} />} Pause future posts</button></div>}
-        {deliveryJobs.length > 0 && <div className="op-delivery-list">{deliveryJobs.map((job) => <DeliveryApprovalCard
+        {followupEmailJobs.length > 1 && <BulkEmailApprovalSummary jobs={followupEmailJobs} sender={connections.gmail.accountEmail} />}
+        {visibleDeliveryJobs.length > 0 && <div className="op-delivery-list">{visibleDeliveryJobs.map((job) => <DeliveryApprovalCard
           key={job.id}
           job={job}
           accountLabel={job.channel === "instagram" ? connections.instagram.destinationName || connections.instagram.accountLabel : ""}
@@ -4228,6 +4233,21 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
       </div>
     </section>
   </div>;
+}
+
+function BulkEmailApprovalSummary({ jobs, sender }: { jobs: DeliveryJob[]; sender: string }) {
+  const sample = jobs[0];
+  const times = jobs.map((job) => new Date(job.payload.scheduledAt)).filter((date) => Number.isFinite(date.getTime())).sort((left, right) => left.getTime() - right.getTime());
+  const first = times[0];
+  const last = times[times.length - 1];
+  const active = jobs.filter((job) => ["awaiting_approval", "scheduled", "running", "submitted"].includes(job.status)).length;
+  const complete = jobs.filter((job) => job.status === "complete").length;
+  const failed = jobs.filter((job) => ["failed", "dead_letter"].includes(job.status)).length;
+  return <article className="op-bulk-email-review">
+    <header><div><small>EMAIL FOLLOW-UP</small><h3>{jobs.length} individual emails to eligible prior recipients</h3><p>One private email per address. Opt-outs, replies, delivery failures, paused contacts, and existing subscribers were excluded automatically.</p></div><span>{complete ? `${complete} sent` : active ? `${active} ready` : "Prepared"}</span></header>
+    <div className="op-bulk-email-review__facts"><span><small>Sender</small><strong>{sender || "Connected project mailbox"}</strong></span><span><small>Schedule</small><strong>{first ? first.toLocaleString() : "—"}{last && last.getTime() !== first?.getTime() ? ` – ${last.toLocaleString()}` : ""}</strong></span><span><small>Failures</small><strong>{failed}</strong></span></div>
+    <div className="op-bulk-email-review__preview"><small>RECIPIENT PREVIEW</small><h3>{sample.payload.subject}</h3><p>{sample.payload.text}</p></div>
+  </article>;
 }
 
 function DeliveryApprovalCard({ job, accountLabel, busy, tiktokOptions, youtubeOptions, onTikTokChange, onYouTubeChange, onScheduleChange, onExecute, onCancel, onRetry }: {
