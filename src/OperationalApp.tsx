@@ -1390,6 +1390,7 @@ type CampaignCalendarEvent = {
   status: string;
   needsAsset: boolean;
   newsletter: boolean;
+  summary?: string;
 };
 
 function CampaignCalendar({ runs, jobs, newsletters, onOpen, onOpenNewsletter }: { runs: AgentRun[]; jobs: DeliveryJob[]; newsletters: NewsletterDraft[]; onOpen: (id: string) => void; onOpenNewsletter: () => void }) {
@@ -1404,7 +1405,7 @@ function CampaignCalendar({ runs, jobs, newsletters, onOpen, onOpenNewsletter }:
   const byDate = new Map<string, CampaignCalendarEvent[]>();
   for (const event of events) { const key = dateKey(event.date); byDate.set(key, [...(byDate.get(key) || []), event]); }
   const upcoming = events.filter((event) => new Date(event.date).getTime() >= new Date().setHours(0, 0, 0, 0) && !["complete", "sent", "cancelled"].includes(event.status)).slice(0, 8);
-  return <div className="op-campaign-calendar"><section className="op-calendar-board"><header><div><small>CAMPAIGN SCHEDULE</small><h2>{month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</h2><p>Every approved, planned, incomplete, and published item appears here.</p></div><nav><button aria-label="Previous month" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}><ArrowLeft size={14} /></button><button onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Today</button><button aria-label="Next month" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ArrowRight size={14} /></button></nav></header><div className="op-calendar-weekdays">{["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => <span key={day}>{day}</span>)}</div><div className="op-calendar-grid">{days.map((day) => { const key = dateKey(day); const dayEvents = byDate.get(key) || []; const outside = day.getMonth() !== month.getMonth(); const today = key === dateKey(new Date()); return <article key={key} className={`${outside ? "outside" : ""} ${today ? "today" : ""}`}><time>{day.getDate()}</time><div>{dayEvents.slice(0, 3).map((event) => <button key={event.id} className={`channel-${event.channel} status-${event.status}`} onClick={() => event.newsletter ? onOpenNewsletter() : onOpen(event.runId)} title={`${event.title} · ${campaignCalendarStatus(event)}`}><i />{event.title}</button>)}{dayEvents.length > 3 && <small>+{dayEvents.length - 3} more</small>}</div></article>; })}</div></section><aside className="op-calendar-agenda"><header><CalendarDays size={18} /><div><small>NEXT EVENTS</small><h3>Upcoming work</h3></div></header>{upcoming.length ? upcoming.map((event) => <button key={`agenda-${event.id}`} onClick={() => event.newsletter ? onOpenNewsletter() : onOpen(event.runId)}><time>{new Date(event.date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}<small>{new Date(event.date).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</small></time><span><strong>{event.title}</strong><small>{deliveryChannelLabel(event.channel as DeliveryJob["channel"])} · {campaignCalendarStatus(event)}</small></span><ArrowRight size={13} /></button>) : <div className="op-calendar-empty"><Check size={18} /><p>No future item is ready. Planned gaps remain visible in the month grid.</p></div>}</aside></div>;
+  return <div className="op-campaign-calendar"><section className="op-calendar-board"><header><div><small>CAMPAIGN SCHEDULE</small><h2>{month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</h2><p>Each email campaign appears once per day, with its delivery progress summarized.</p></div><nav><button aria-label="Previous month" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}><ArrowLeft size={14} /></button><button onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>Today</button><button aria-label="Next month" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}><ArrowRight size={14} /></button></nav></header><div className="op-calendar-weekdays">{["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => <span key={day}>{day}</span>)}</div><div className="op-calendar-grid">{days.map((day) => { const key = dateKey(day); const dayEvents = byDate.get(key) || []; const outside = day.getMonth() !== month.getMonth(); const today = key === dateKey(new Date()); return <article key={key} className={`${outside ? "outside" : ""} ${today ? "today" : ""}`}><time>{day.getDate()}</time><div>{dayEvents.slice(0, 3).map((event) => <button key={event.id} className={`channel-${event.channel} status-${event.status}`} onClick={() => event.newsletter ? onOpenNewsletter() : onOpen(event.runId)} title={`${event.title} · ${event.summary || campaignCalendarStatus(event)}`}><i /><span><strong>{event.title}</strong>{event.summary && <small>{event.summary}</small>}</span></button>)}{dayEvents.length > 3 && <small>+{dayEvents.length - 3} more</small>}</div></article>; })}</div></section><aside className="op-calendar-agenda"><header><CalendarDays size={18} /><div><small>NEXT EVENTS</small><h3>Upcoming work</h3></div></header>{upcoming.length ? upcoming.map((event) => <button key={`agenda-${event.id}`} onClick={() => event.newsletter ? onOpenNewsletter() : onOpen(event.runId)}><time>{new Date(event.date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}<small>{new Date(event.date).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</small></time><span><strong>{event.title}</strong><small>{event.summary || `${deliveryChannelLabel(event.channel as DeliveryJob["channel"])} · ${campaignCalendarStatus(event)}`}</small></span><ArrowRight size={13} /></button>) : <div className="op-calendar-empty"><Check size={18} /><p>No future item is ready. Planned gaps remain visible in the month grid.</p></div>}</aside></div>;
 }
 
 function CalendarWorkspace({ workspace, runs, onOpen, onOpenNewsletter }: { workspace: ProductWorkspace; runs: AgentRun[]; onOpen: (id: string) => void; onOpenNewsletter: () => void }) {
@@ -1479,7 +1480,7 @@ function buildCampaignCalendarEvents(runs: AgentRun[], jobs: DeliveryJob[], news
         runId: run.id,
         date: new Date(rawDate).toISOString(),
         channel: job?.channel || planned?.channel || "instagram",
-        title: planned?.title || calendarTitle(job?.payload.text || job?.payload.subject, index),
+        title: job?.channel === "gmail" ? calendarTitle(job.payload.subject, index) : planned?.title || calendarTitle(job?.payload.text || job?.payload.subject, index),
         status: job?.status || "planned",
         needsAsset: !job && Boolean(planned?.needsAsset),
         newsletter: false,
@@ -1495,7 +1496,7 @@ function buildCampaignCalendarEvents(runs: AgentRun[], jobs: DeliveryJob[], news
       runId: job.runId,
       date: new Date(rawDate).toISOString(),
       channel: job.channel,
-      title: invitation ? "Invitation email" : calendarTitle(job.payload.subject || job.payload.text, events.length),
+      title: calendarTitle(job.payload.subject || (invitation ? "Invitation campaign" : job.payload.text), events.length),
       status: job.status,
       needsAsset: false,
       newsletter: invitation,
@@ -1506,7 +1507,48 @@ function buildCampaignCalendarEvents(runs: AgentRun[], jobs: DeliveryJob[], news
     if (!date) continue;
     events.push({ id: `newsletter-${draft.id}`, runId: "", date, channel: "gmail", title: draft.content.subject || "Newsletter", status: draft.status === "sent" ? "sent" : draft.status, needsAsset: false, newsletter: true });
   }
-  return events.sort((left, right) => left.date.localeCompare(right.date));
+  return summarizeDailyEmailCampaigns(events).sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function summarizeDailyEmailCampaigns(events: CampaignCalendarEvent[]) {
+  const result: CampaignCalendarEvent[] = [];
+  const groups = new Map<string, CampaignCalendarEvent[]>();
+  for (const event of events) {
+    if (event.channel !== "gmail" || event.id.startsWith("newsletter-")) {
+      result.push(event);
+      continue;
+    }
+    const date = new Date(event.date);
+    const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    const key = `${event.runId || event.id}:${day}`;
+    groups.set(key, [...(groups.get(key) || []), event]);
+  }
+  for (const [key, group] of groups) {
+    const ordered = [...group].sort((left, right) => left.date.localeCompare(right.date));
+    const counts = new Map<string, number>();
+    for (const event of ordered) counts.set(event.status, (counts.get(event.status) || 0) + 1);
+    const sent = (counts.get("complete") || 0) + (counts.get("sent") || 0);
+    const failed = (counts.get("failed") || 0) + (counts.get("dead_letter") || 0);
+    const scheduled = counts.get("scheduled") || 0;
+    const approval = (counts.get("awaiting_approval") || 0) + (counts.get("planned") || 0);
+    const processing = (counts.get("running") || 0) + (counts.get("submitted") || 0);
+    const cancelled = counts.get("cancelled") || 0;
+    const parts = [`${ordered.length} ${ordered.length === 1 ? "email" : "emails"}`];
+    if (sent) parts.push(`${sent} sent`);
+    if (scheduled) parts.push(`${scheduled} scheduled`);
+    if (processing) parts.push(`${processing} processing`);
+    if (approval) parts.push(`${approval} awaiting approval`);
+    if (failed) parts.push(`${failed} failed`);
+    if (cancelled) parts.push(`${cancelled} cancelled`);
+    const status = failed ? "failed" : processing ? "running" : scheduled ? "scheduled" : approval ? "awaiting_approval" : sent ? "complete" : "cancelled";
+    result.push({
+      ...ordered[0],
+      id: `email-campaign-${key}`,
+      status,
+      summary: parts.join(" · "),
+    });
+  }
+  return result;
 }
 
 function extractRunCalendarPlan(run: AgentRun) {

@@ -2342,8 +2342,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .op-calendar-grid > article.today { box-shadow: inset 0 0 0 2px #8f77e1; }
 .op-calendar-grid time { display: block; margin-bottom: 6px; color: #69655f; font-size: 7.5px; font-weight: 800; }
 .op-calendar-grid article > div { display: flex; flex-direction: column; gap: 4px; }
-.op-calendar-grid button { width: 100%; min-width: 0; border: 0; border-radius: 5px; background: #eee9ff; color: #5e46b8; padding: 5px 6px; display: flex; align-items: center; gap: 5px; overflow: hidden; text-align: left; white-space: nowrap; text-overflow: ellipsis; font-size: 6.8px; font-weight: 720; cursor: pointer; }
+.op-calendar-grid button { width: 100%; min-width: 0; border: 0; border-radius: 5px; background: #eee9ff; color: #5e46b8; padding: 5px 6px; display: flex; align-items: center; gap: 5px; overflow: hidden; text-align: left; font-size: 6.8px; font-weight: 720; cursor: pointer; }
 .op-calendar-grid button i { flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.op-calendar-grid button > span { min-width: 0; display: block; }
+.op-calendar-grid button > span strong, .op-calendar-grid button > span small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.op-calendar-grid button > span strong { font: inherit; }
+.op-calendar-grid button > span small { margin-top: 2px; color: currentColor; font-size: .9em; font-weight: 560; opacity: .8; }
 .op-calendar-grid button.status-complete, .op-calendar-grid button.status-sent { background: #e5f4ec; color: #2d7354; }
 .op-calendar-grid button.status-planned { background: #fff2d9; color: #8c5d13; }
 .op-calendar-grid button.status-failed, .op-calendar-grid button.status-dead_letter { background: #ffe9e6; color: #a24439; }
