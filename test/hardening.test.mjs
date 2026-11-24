@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { authoritativeRuns, isPanelRun } from "../server/db.mjs";
+import { authoritativeRuns, isPanelRun, normalizeDatabaseError } from "../server/db.mjs";
 import { formatLinkedInProfileResearch, isBrandSourceRefreshRequest, isPrivateAddress } from "../server/agent.mjs";
 import { applyInvitationTracking, campaignPublicationTarget, campaignTrackingSummary, createInvitationTrackingUrl, explicitApprovedYouTubeFallback, personalizeInvitationTemplate, renderInvitationEmailHtml, resolveInvitationDestination, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
 import { isContextualDraftEditRequest, shouldRewriteSavedInvitation } from "../api/chat.mjs";
@@ -20,6 +20,18 @@ test("owner-paid analysis has a conservative global monthly cost ceiling", () =>
   assert.equal(ownerCostEstimateCents("chat", {}), 25);
   assert.equal(ownerCostEstimateCents("panel", {}), 400);
   assert.equal(ownerCostEstimateCents("panel", { OWNER_PANEL_COST_ESTIMATE_CENTS: "250" }), 250);
+});
+
+test("database quota failures identify an owner-side platform limit", () => {
+  const original = Object.assign(new Error("Your account or project has exceeded the quota. Upgrade your plan to increase limits."), { code: "53000" });
+  const normalized = normalizeDatabaseError(original);
+  assert.equal(normalized.statusCode, 503);
+  assert.equal(normalized.code, "DATABASE_CAPACITY_EXCEEDED");
+  assert.match(normalized.message, /platform-owner issue/i);
+  assert.match(normalized.message, /nothing was sent or published/i);
+  assert.doesNotMatch(normalized.message, /upgrade your plan/i);
+  const unrelated = new Error("Connection reset");
+  assert.equal(normalizeDatabaseError(unrelated), unrelated);
 });
 
 test("LinkedIn company-page review stays separate from optional personal publishing", () => {

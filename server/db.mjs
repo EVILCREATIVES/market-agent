@@ -8,6 +8,32 @@ const { Pool } = pg;
 let pool;
 let attached = false;
 
+export function normalizeDatabaseError(error) {
+  const message = String(error?.message || "");
+  if (String(error?.code || "") !== "53000" && !/account or project has exceeded the quota/i.test(message)) return error;
+  const normalized = new Error("Market Agent’s cloud database has reached its capacity limit. This is a platform-owner issue, not your account. Nothing was sent or published. Try again after database capacity is restored.");
+  normalized.statusCode = 503;
+  normalized.code = "DATABASE_CAPACITY_EXCEEDED";
+  normalized.cause = error;
+  return normalized;
+}
+
+function protectDatabasePool(database) {
+  const query = database.query.bind(database);
+  const connect = database.connect.bind(database);
+  database.query = (...args) => query(...args).catch((error) => { throw normalizeDatabaseError(error); });
+  database.connect = (...args) => connect(...args)
+    .then((client) => {
+      if (client.__marketAgentQuotaProtected) return client;
+      const clientQuery = client.query.bind(client);
+      client.query = (...queryArgs) => clientQuery(...queryArgs).catch((error) => { throw normalizeDatabaseError(error); });
+      Object.defineProperty(client, "__marketAgentQuotaProtected", { value: true });
+      return client;
+    })
+    .catch((error) => { throw normalizeDatabaseError(error); });
+  return database;
+}
+
 export function getPool(env = process.env) {
   if (!env.DATABASE_URL) {
     const error = new Error("The cloud database is not configured.");
@@ -16,7 +42,7 @@ export function getPool(env = process.env) {
   }
 
   if (!pool) {
-    pool = new Pool({ connectionString: env.DATABASE_URL, max: 5 });
+    pool = protectDatabasePool(new Pool({ connectionString: env.DATABASE_URL, max: 5 }));
   }
 
   if (env.VERCEL && !attached) {

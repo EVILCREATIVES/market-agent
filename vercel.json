@@ -1,9 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
-    { "path": "/api/delivery-cron", "schedule": "* * * * *" },
-    { "path": "/api/cron", "schedule": "0 * * * *" },
-    { "path": "/api/memory-cron", "schedule": "15 * * * *" }
+    { "path": "/api/delivery-cron", "schedule": "*/15 * * * *" },
+    { "path": "/api/cron", "schedule": "0 12 * * *" },
+    { "path": "/api/memory-cron", "schedule": "0 7 * * *" }
   ],
   "functions": {
     "api/delivery-cron.mjs": { "maxDuration": 60 },
