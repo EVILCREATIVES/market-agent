@@ -248,7 +248,8 @@ async function openAIImageEdit(job, sourceImage, env) {
 async function loadSourceImage(job, env) {
   const result = await getPool(env).query(
     `SELECT name, blob_path, mime_type FROM market_agent_project_assets
-     WHERE id = $1 AND user_id = $2 AND project_id = $3 AND asset_kind = 'image' LIMIT 1`,
+     WHERE id = $1 AND user_id = $2 AND project_id = $3 AND asset_kind = 'image'
+       AND LOWER(mime_type) <> 'image/svg+xml' LIMIT 1`,
     [job.source_asset_id, job.user_id, job.project_id],
   );
   const row = result.rows[0];

@@ -6,6 +6,7 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { analyzeProjectAsset, generateProjectDocument, safeFetchPublic } from "./agent.mjs";
 import { getPool } from "./db.mjs";
 import { getUserMediaBudgetCents } from "./media-budget.mjs";
+import { assertSafeSvgMarkup, isSvgAsset } from "./svg-safety.mjs";
 
 let tablesReady = false;
 
@@ -33,6 +34,7 @@ export async function listReadyCampaignAssets(userId, projectId, env = process.e
        FROM market_agent_project_assets
       WHERE user_id = $1 AND project_id = $2 AND status = 'ready'
         AND asset_kind IN ('image','video') AND blob_path <> ''
+        AND LOWER(mime_type) <> 'image/svg+xml'
       ORDER BY created_at DESC LIMIT 100`,
     [userId, safeProjectId],
   );
@@ -115,6 +117,9 @@ export async function servePublicProjectAsset(req, res, env = process.env) {
   res.setHeader("Content-Disposition", `inline; filename="${safeFilename(row.name)}"`);
   res.setHeader("Cache-Control", "private, no-store, max-age=0");
   res.setHeader("X-Content-Type-Options", "nosniff");
+  if (isSvgAsset(row.name, blob.blob.contentType || row.mime_type)) {
+    res.setHeader("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox");
+  }
   res.setHeader("Accept-Ranges", blob.headers.get("accept-ranges") || "bytes");
   res.setHeader("Content-Length", blob.headers.get("content-length") || String(blob.blob.size));
   if (contentRange) res.setHeader("Content-Range", contentRange);
@@ -130,12 +135,22 @@ export async function registerUploadedAsset(userId, payload, env = process.env) 
   const name = requiredText(payload?.name, "The uploaded asset needs a name.", 250);
   const blobPath = requiredText(payload?.blobPath, "The uploaded file could not be found.", 2000);
   if (!blobPath.startsWith(`market-agent-assets/${encodeURIComponent(userId)}/${encodeURIComponent(projectId)}/`)) throw httpError(400, "The uploaded file path is invalid.");
+  const suppliedMimeType = String(payload?.mimeType || "application/octet-stream").slice(0, 200);
+  const svg = isSvgAsset(name, suppliedMimeType);
+  if (svg) {
+    try {
+      await validateStoredSvg(blobPath);
+    } catch (error) {
+      try { await del(blobPath); } catch { /* Unsafe uploads remain private and unregistered if cleanup is temporarily unavailable. */ }
+      throw error;
+    }
+  }
   return createAndAnalyzeAsset(userId, {
     projectId,
     name,
     sourceKind: "upload",
-    assetKind: normalizeAssetKind(payload?.kind),
-    mimeType: String(payload?.mimeType || "application/octet-stream").slice(0, 200),
+    assetKind: svg ? "image" : normalizeAssetKind(payload?.kind),
+    mimeType: svg ? "image/svg+xml" : suppliedMimeType,
     sizeBytes: Math.max(0, Number(payload?.sizeBytes || 0)),
     blobPath,
     sourceUrl: "",
@@ -390,13 +405,24 @@ export async function serveProjectFile(userId, req, res, env = process.env) {
 async function loadProposalVisuals(assets, env) {
   const visuals = [];
   for (const asset of assets) {
-    if (!String(asset.mime_type || "").startsWith("image/") || !asset.blob_path) continue;
+    if (!String(asset.mime_type || "").startsWith("image/") || isSvgAsset(asset.name, asset.mime_type) || !asset.blob_path) continue;
     const blob = await get(asset.blob_path, { access: "private" });
     if (!blob || blob.statusCode !== 200 || !blob.stream) continue;
     visuals.push({ mimeType: blob.blob.contentType || asset.mime_type, bytes: Buffer.from(await new Response(blob.stream).arrayBuffer()) });
     if (visuals.length >= 6) break;
   }
   return visuals;
+}
+
+async function validateStoredSvg(blobPath) {
+  const blob = await get(blobPath, { access: "private" });
+  if (!blob || blob.statusCode !== 200 || !blob.stream) throw httpError(400, "The uploaded SVG could not be read.");
+  if (Number(blob.blob?.size || 0) > 10 * 1024 * 1024) {
+    await blob.stream.cancel().catch(() => undefined);
+    throw httpError(400, "SVG files must be 10 MB or smaller.");
+  }
+  const markup = await new Response(blob.stream).text();
+  assertSafeSvgMarkup(markup);
 }
 
 export async function renderPdf(content, kind, brand = {}, visuals = []) {

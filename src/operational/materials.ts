@@ -23,6 +23,19 @@ export interface PreparedTypographySystem {
 
 const MAX_FILE_BYTES = 150 * 1024 * 1024;
 const MAX_TEXT_CHARS = 60_000;
+const MAX_SVG_BYTES = 10 * 1024 * 1024;
+const SVG_MIME_TYPE = "image/svg+xml";
+
+export function isSvgFile(file: Pick<File, "name" | "type">) {
+  return file.type.toLowerCase() === SVG_MIME_TYPE || file.name.toLowerCase().endsWith(".svg");
+}
+
+export async function prepareFileForUpload(file: File) {
+  if (!isSvgFile(file)) return file;
+  if (file.size > MAX_SVG_BYTES) throw new Error(`${file.name} is larger than 10 MB.`);
+  const svg = sanitizeSvgMarkup(await file.text());
+  return new File([svg], file.name, { type: SVG_MIME_TYPE, lastModified: file.lastModified });
+}
 
 export async function prepareMaterial(file: File): Promise<PreparedMaterial> {
   if (file.size > MAX_FILE_BYTES) throw new Error(`${file.name} is larger than 150 MB.`);
@@ -31,6 +44,7 @@ export async function prepareMaterial(file: File): Promise<PreparedMaterial> {
   if (file.type === "application/pdf" || extension === "pdf") return preparePdf(file);
   if (extension === "pptx") return prepareZipDocument(file, "presentation");
   if (extension === "docx") return prepareZipDocument(file, "document");
+  if (isSvgFile(file)) return prepareSvg(file);
   if (file.type.startsWith("image/")) return prepareImage(file);
   if (file.type.startsWith("video/")) return prepareVideo(file);
   if (["txt", "md", "csv", "rtf"].includes(extension) || file.type.startsWith("text/")) {
@@ -38,12 +52,16 @@ export async function prepareMaterial(file: File): Promise<PreparedMaterial> {
     return { name: file.name, kind: "document", mimeType: file.type || "text/plain", text, images: [], detail: `${text.length.toLocaleString()} characters read` };
   }
 
-  throw new Error(`${file.name} is not supported yet. Use PDF, PPTX, DOCX, text, image, or video.`);
+  throw new Error(`${file.name} is not supported yet. Use PDF, PPTX, DOCX, text, SVG, image, or video.`);
 }
 
 export async function prepareLogo(file: File) {
-  if (!file.type.startsWith("image/")) throw new Error("Choose an image file for the logo.");
+  if (!file.type.startsWith("image/") && !isSvgFile(file)) throw new Error("Choose an image or SVG file for the logo.");
   if (file.size > 20 * 1024 * 1024) throw new Error("The logo file is larger than 20 MB.");
+  if (isSvgFile(file)) {
+    const svg = sanitizeSvgMarkup(await file.text());
+    return renderSvg(svg, 1200, "image/png");
+  }
   return resizeLogo(file, 1200);
 }
 
@@ -114,12 +132,17 @@ async function prepareZipDocument(file: File, type: "presentation" | "document")
   const images: string[] = [];
   for (const name of mediaNames) {
     const mimeType = mimeFromName(name);
-    if (!mimeType.startsWith("image/") || mimeType === "image/svg+xml") continue;
+    if (!mimeType.startsWith("image/")) continue;
     const bytes = await zip.file(name)?.async("uint8array");
     if (!bytes) continue;
     try {
       const copy = Uint8Array.from(bytes);
-      images.push(await resizeImage(new Blob([copy.buffer], { type: mimeType }), 1400, 0.72));
+      if (mimeType === SVG_MIME_TYPE) {
+        const svg = sanitizeSvgMarkup(new TextDecoder().decode(copy));
+        images.push(await renderSvg(svg, 1400, "image/png"));
+      } else {
+        images.push(await resizeImage(new Blob([copy.buffer], { type: mimeType }), 1400, 0.72));
+      }
     } catch {
       // Some embedded formats are not browser-decodable; the document text is still usable.
     }
@@ -141,6 +164,20 @@ async function prepareZipDocument(file: File, type: "presentation" | "document")
 async function prepareImage(file: File): Promise<PreparedMaterial> {
   const image = await resizeImage(file, 1800, 0.8);
   return { name: file.name, kind: "image", mimeType: "image/jpeg", text: "", images: [image], detail: "Image ready for analysis" };
+}
+
+async function prepareSvg(file: File): Promise<PreparedMaterial> {
+  if (file.size > MAX_SVG_BYTES) throw new Error(`${file.name} is larger than 10 MB.`);
+  const svg = sanitizeSvgMarkup(await file.text());
+  const image = await renderSvg(svg, 1800, "image/png");
+  return {
+    name: file.name,
+    kind: "image",
+    mimeType: SVG_MIME_TYPE,
+    text: extractSvgText(svg),
+    images: [image],
+    detail: "SVG vector artwork sanitized and rendered for analysis",
+  };
 }
 
 async function prepareVideo(file: File): Promise<PreparedMaterial> {
@@ -198,6 +235,93 @@ async function resizeLogo(blob: Blob, maxDimension: number) {
   } finally {
     bitmap.close();
   }
+}
+
+function sanitizeSvgMarkup(source: string) {
+  const parsed = new DOMParser().parseFromString(String(source || ""), SVG_MIME_TYPE);
+  if (parsed.querySelector("parsererror") || parsed.documentElement.localName.toLowerCase() !== "svg") {
+    throw new Error("The SVG file is not valid.");
+  }
+  const root = parsed.documentElement;
+  root.querySelectorAll("script, foreignObject, iframe, object, embed, audio, video, link, meta").forEach((element) => element.remove());
+  root.querySelectorAll("style").forEach((element) => {
+    const safeCss = sanitizeSvgCss(element.textContent || "");
+    if (safeCss.trim()) element.textContent = safeCss;
+    else element.remove();
+  });
+  for (const element of [root, ...Array.from(root.querySelectorAll("*"))]) {
+    for (const attribute of Array.from(element.attributes)) {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value.trim();
+      if (name.startsWith("on")) {
+        element.removeAttribute(attribute.name);
+        continue;
+      }
+      if (name === "href" || name === "xlink:href") {
+        if (!safeSvgReference(value)) element.removeAttribute(attribute.name);
+        continue;
+      }
+      if (name === "style") {
+        const safeStyle = sanitizeSvgCss(value);
+        if (safeStyle.trim()) element.setAttribute(attribute.name, safeStyle);
+        else element.removeAttribute(attribute.name);
+        continue;
+      }
+      if (/url\s*\(/i.test(value) && !allSvgUrlsAreLocal(value)) element.removeAttribute(attribute.name);
+    }
+  }
+  if (!root.getAttribute("xmlns")) root.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  return new XMLSerializer().serializeToString(root);
+}
+
+function sanitizeSvgCss(value: string) {
+  return String(value || "")
+    .replace(/@import[\s\S]*?(?:;|$)/gi, "")
+    .replace(/expression\s*\([^)]*\)/gi, "")
+    .replace(/url\s*\(\s*(['"]?)(?!#)[^)]*\1\s*\)/gi, "")
+    .replace(/javascript\s*:/gi, "");
+}
+
+function safeSvgReference(value: string) {
+  return /^#[A-Za-z_][\w:.-]*$/.test(value)
+    || /^data:image\/(?:png|jpe?g|webp|gif);base64,[a-z0-9+/=\s]+$/i.test(value);
+}
+
+function allSvgUrlsAreLocal(value: string) {
+  const urls = [...value.matchAll(/url\s*\(\s*(['"]?)(.*?)\1\s*\)/gi)].map((match) => match[2].trim());
+  return urls.length > 0 && urls.every((url) => /^#[A-Za-z_][\w:.-]*$/.test(url));
+}
+
+async function renderSvg(svg: string, maxDimension: number, outputType: "image/png") {
+  const url = URL.createObjectURL(new Blob([svg], { type: SVG_MIME_TYPE }));
+  const image = new Image();
+  image.decoding = "async";
+  image.src = url;
+  try {
+    await image.decode();
+    const width = image.naturalWidth || 300;
+    const height = image.naturalHeight || 150;
+    if (!width || !height) throw new Error("The SVG has no visible dimensions.");
+    const scale = Math.min(1, maxDimension / Math.max(width, height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("The SVG preview could not be created.");
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL(outputType);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function extractSvgText(svg: string) {
+  const parsed = new DOMParser().parseFromString(svg, SVG_MIME_TYPE);
+  return Array.from(parsed.querySelectorAll("title, desc, text"))
+    .map((node) => node.textContent?.replace(/\s+/g, " ").trim() || "")
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, MAX_TEXT_CHARS);
 }
 
 function extractXmlText(xml: string) {

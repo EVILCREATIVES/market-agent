@@ -66,7 +66,7 @@ import {
   siYoutube,
 } from "simple-icons";
 import { createDefaultSchedule, createEmptyProject, loadState, mergeCloudState, saveState } from "./operational/storage";
-import { prepareLogo, prepareMaterial, type PreparedMaterial } from "./operational/materials";
+import { prepareFileForUpload, prepareLogo, prepareMaterial, type PreparedMaterial } from "./operational/materials";
 import { upload } from "@vercel/blob/client";
 import { apiFetch, getAccessToken } from "./auth";
 import BrandLogo from "./BrandLogo";
@@ -667,21 +667,22 @@ function ProjectChat({ userId, workspace, currentPage, activeRunId, activeCampai
 
   const registerAttachment = async (file: File, instruction: string, preparedInput?: PreparedMaterial) => {
     const token = await getAccessToken();
-    const prepared = preparedInput || await prepareMaterial(file);
+    const uploadFile = await prepareFileForUpload(file);
+    const prepared = preparedInput || await prepareMaterial(uploadFile);
     const compact = compactMaterialsForUpload([prepared])[0];
     const safeName = file.name.replace(/[^a-z0-9._-]+/gi, "-").slice(-180) || "asset";
     const pathname = `market-agent-assets/${encodeURIComponent(userId)}/${encodeURIComponent(workspace.id)}/${Date.now()}-${safeName}`;
-    const blob = await upload(pathname, file, {
+    const blob = await upload(pathname, uploadFile, {
       access: "private",
       handleUploadUrl: "/api/asset-upload",
       clientPayload: JSON.stringify({ projectId: workspace.id }),
       headers: { Authorization: `Bearer ${token}` },
-      contentType: file.type || prepared.mimeType,
-      multipart: file.size > 5 * 1024 * 1024,
+      contentType: uploadFile.type || prepared.mimeType,
+      multipart: uploadFile.size > 5 * 1024 * 1024,
     });
     const response = await apiFetch("/api/assets", {
       method: "POST",
-      body: JSON.stringify({ action: "register-upload", projectId: workspace.id, name: file.name, kind: prepared.kind, mimeType: file.type || prepared.mimeType, sizeBytes: file.size, blobPath: blob.pathname, detail: prepared.detail, text: compact.text, images: compact.images, instruction, workspace }),
+      body: JSON.stringify({ action: "register-upload", projectId: workspace.id, name: file.name, kind: prepared.kind, mimeType: uploadFile.type || prepared.mimeType, sizeBytes: uploadFile.size, blobPath: blob.pathname, detail: prepared.detail, text: compact.text, images: compact.images, instruction, workspace }),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `${file.name} could not be analyzed.`);
@@ -841,7 +842,7 @@ function ProjectChat({ userId, workspace, currentPage, activeRunId, activeCampai
         {sending && <div className="assistant thinking"><span><LoaderCircle className="spin" size={13} /></span><p>{uploadingLabel || "Reading the project and your message…"}</p></div>}
       </div>
       {attachments.length > 0 && <div className="op-project-chat__attachments">{attachments.map((file, index) => <span key={`${file.name}-${file.size}`}><Paperclip size={12} /><b>{file.name}</b><button onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${file.name}`}><X size={12} /></button></span>)}</div>}
-      <div className="op-project-chat__composer"><input ref={attachmentInput} type="file" multiple hidden accept=".pdf,.pptx,.docx,.txt,.md,.csv,.rtf,image/*,video/*" onChange={(event) => addAttachments(event.target.files)} /><button className="attach" onClick={() => attachmentInput.current?.click()} disabled={sending} aria-label="Add assets"><Paperclip size={16} /></button><textarea autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder="Ask, correct, instruct, or attach an asset…" /><button onClick={() => void send()} disabled={(!draft.trim() && !attachments.length) || sending} aria-label="Send message"><Send size={16} /></button></div>
+      <div className="op-project-chat__composer"><input ref={attachmentInput} type="file" multiple hidden accept=".pdf,.pptx,.docx,.txt,.md,.csv,.rtf,.svg,image/*,video/*" onChange={(event) => addAttachments(event.target.files)} /><button className="attach" onClick={() => attachmentInput.current?.click()} disabled={sending} aria-label="Add assets"><Paperclip size={16} /></button><textarea autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder="Ask, correct, instruct, or attach an asset…" /><button onClick={() => void send()} disabled={(!draft.trim() && !attachments.length) || sending} aria-label="Send message"><Send size={16} /></button></div>
     </aside>}
   </>;
 }
@@ -1318,7 +1319,7 @@ function ProductBrain({ userId, workspace, onSave, onOpenContentLibrary, notify 
       <div className="op-intake-grid">
         <div className="op-upload-panel">
           <div className="op-card-head"><div><strong>Upload project material</strong><small>Decks, documents, images, and video</small></div><UploadCloud size={20} /></div>
-          <input ref={fileInput} hidden type="file" multiple accept=".pdf,.pptx,.docx,.txt,.md,.csv,.rtf,image/*,video/*" onChange={(event) => event.target.files && void processFiles(event.target.files)} />
+          <input ref={fileInput} hidden type="file" multiple accept=".pdf,.pptx,.docx,.txt,.md,.csv,.rtf,.svg,image/*,video/*" onChange={(event) => event.target.files && void processFiles(event.target.files)} />
           <button className="op-dropzone" onClick={() => fileInput.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void processFiles(event.dataTransfer.files); }}>
             {processing ? <LoaderCircle className="spin" size={28} /> : <UploadCloud size={28} />}
             <strong>{processing ? "Reading your material…" : "Drop files here or choose files"}</strong>
@@ -2538,17 +2539,18 @@ function ContentLibrary({ userId, workspace, runs, mediaConfigured, videoConfigu
 
   const registerAssetFile = async (file: File) => {
     const token = await getAccessToken();
-    const prepared = await prepareMaterial(file);
+    const uploadFile = await prepareFileForUpload(file);
+    const prepared = await prepareMaterial(uploadFile);
     const compact = compactMaterialsForUpload([prepared])[0];
     const safeName = file.name.replace(/[^a-z0-9._-]+/gi, "-").slice(-180) || "asset";
     const pathname = `market-agent-assets/${encodeURIComponent(userId)}/${encodeURIComponent(workspace.id)}/${Date.now()}-${safeName}`;
-    const blob = await upload(pathname, file, {
+    const blob = await upload(pathname, uploadFile, {
       access: "private",
       handleUploadUrl: "/api/asset-upload",
       clientPayload: JSON.stringify({ projectId: workspace.id }),
       headers: { Authorization: `Bearer ${token}` },
-      contentType: file.type || prepared.mimeType,
-      multipart: file.size > 5 * 1024 * 1024,
+      contentType: uploadFile.type || prepared.mimeType,
+      multipart: uploadFile.size > 5 * 1024 * 1024,
     });
     const response = await apiFetch("/api/assets", {
       method: "POST",
@@ -2557,8 +2559,8 @@ function ContentLibrary({ userId, workspace, runs, mediaConfigured, videoConfigu
         projectId: workspace.id,
         name: file.name,
         kind: prepared.kind,
-        mimeType: file.type || prepared.mimeType,
-        sizeBytes: file.size,
+        mimeType: uploadFile.type || prepared.mimeType,
+        sizeBytes: uploadFile.size,
         blobPath: blob.pathname,
         detail: prepared.detail,
         text: compact.text,
@@ -2851,11 +2853,11 @@ function ContentLibrary({ userId, workspace, runs, mediaConfigured, videoConfigu
 
   return <div className="op-stack">
     <div className="op-heading"><div className="op-eyebrow">Creative production and saved assets</div><h1>Content library</h1><p>The agent evaluates existing work and proposes new assets from this project's Brand. You approve the estimated spend before paid production starts.</p></div>
-    <input ref={replacementInput} className="op-hidden-input" type="file" accept=".pdf,.pptx,.docx,.txt,.md,.csv,image/*,video/*" onChange={(event) => void replaceAsset(event.target.files)} />
+    <input ref={replacementInput} className="op-hidden-input" type="file" accept=".pdf,.pptx,.docx,.txt,.md,.csv,.svg,image/*,video/*" onChange={(event) => void replaceAsset(event.target.files)} />
 
     {((workspace.sourceMedia || []).length > 0 || (workspace.materials || []).length > 0 || (workspace.sources || []).length > 0) && <section className="op-project-assets-ready"><div className="op-section-title"><div><small>ALREADY SAVED WITH THIS PROJECT</small><h2>Assets available to the agent</h2><p>Browse the full set here. Preview images and video without leaving Market Agent; replace or delete anything that should no longer be used.</p></div><em>{(workspace.sourceMedia || []).length + (workspace.materials || []).length + (workspace.sources || []).length}</em></div>{(workspace.sourceMedia || []).length > 0 && <SourceMediaStrip media={workspace.sourceMedia || []} title="Reusable images and video" subtitle="Extracted from connected project sources and available for campaign work." limit={(workspace.sourceMedia || []).length} managing onDelete={deleteSourceMedia} onReplace={(item) => requestReplacement("source", item)} />}{((workspace.materials || []).length > 0 || (workspace.sources || []).length > 0) && <div className="op-saved-source-list">{(workspace.materials || []).map((material) => <div key={material.id}><MaterialIcon kind={material.kind} /><span><strong>{material.name}</strong><small>Uploaded and already analyzed</small></span><em>Saved</em></div>)}{(workspace.sources || []).map((source) => <a key={source.id} href={source.url} target="_blank" rel="noreferrer"><SourceServiceIcon url={source.url} /><span><strong>{source.label}</strong><small>{source.url}</small></span><em>Open source <ArrowRight size={12} /></em></a>)}</div>}</section>}
 
-    <section className="op-existing-assets"><div className="op-existing-assets__head"><div><small>ADD MORE · OPTIONAL</small><h2>Add another asset</h2><p>Only use this when you have something new. Upload files directly, or add another public Figma, Slides, document, image, or video link.</p></div><button onClick={() => assetInput.current?.click()} disabled={!mediaConfigured || Boolean(assetWorking)}><UploadCloud size={16} />{assetWorking || "Upload new assets"}</button><input ref={assetInput} type="file" multiple accept=".pdf,.pptx,.docx,.txt,.md,.csv,image/*,video/*" onChange={(event) => void uploadAssets(event.target.files)} /></div><div className="op-asset-link"><Link2 size={15} /><input value={assetLink} onChange={(event) => setAssetLink(event.target.value)} placeholder="Optional: paste another public asset link" /><button onClick={() => void addAssetLink()} disabled={!assetLink.trim() || Boolean(assetWorking)}>Add and analyze</button></div>{!mediaConfigured && <div className="op-asset-setup"><KeyRound size={15} /> Connect OpenAI or Gemini first so the agent can evaluate newly added work.</div>}</section>
+    <section className="op-existing-assets"><div className="op-existing-assets__head"><div><small>ADD MORE · OPTIONAL</small><h2>Add another asset</h2><p>Upload PDF, deck, document, SVG, image, or video files—or add a public Figma, Slides, or asset link.</p></div><button onClick={() => assetInput.current?.click()} disabled={!mediaConfigured || Boolean(assetWorking)}><UploadCloud size={16} />{assetWorking || "Upload new assets"}</button><input ref={assetInput} type="file" multiple accept=".pdf,.pptx,.docx,.txt,.md,.csv,.svg,image/*,video/*" onChange={(event) => void uploadAssets(event.target.files)} /></div><div className="op-asset-link"><Link2 size={15} /><input value={assetLink} onChange={(event) => setAssetLink(event.target.value)} placeholder="Optional: paste another public asset link" /><button onClick={() => void addAssetLink()} disabled={!assetLink.trim() || Boolean(assetWorking)}>Add and analyze</button></div>{!mediaConfigured && <div className="op-asset-setup"><KeyRound size={15} /> Connect OpenAI or Gemini first so the agent can evaluate newly added work.</div>}</section>
 
     {assets.length > 0 && <section className="op-asset-decisions"><div className="op-section-title"><div><small>AGENT DECISIONS</small><h2>What to use, change, or retire</h2><p>Double-click an asset name or description to correct it.</p></div><em>{assets.length}</em></div><div className="op-asset-grid">{assets.map((asset) => <ProjectAssetDecisionCard
       key={asset.id}
