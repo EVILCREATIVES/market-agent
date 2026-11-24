@@ -11,6 +11,7 @@ import { createPublicProjectAssetUrl, listReadyCampaignAssets } from "./assets.m
 import { loadUserApiEnv } from "./user-api-credentials.mjs";
 import { unresolvedEmailPlaceholders } from "./email-content.mjs";
 import { listGmailResponseEvents } from "./gmail-monitor.mjs";
+import { enqueueBackgroundWakes } from "./background-queue.mjs";
 
 let deliveryTableReady = false;
 
@@ -42,6 +43,22 @@ export async function listDeliveryJobs(userId, projectId, runId = "", env = proc
     coverage = { expected: Math.max(expected, prepared), prepared, missing: Math.max(0, expected - prepared) };
   }
   return { jobs, coverage, tracking: campaignTrackingSummary(run, jobs) };
+}
+
+export async function enqueueScheduledDeliveryWakesForUser(userId, env = process.env) {
+  await ensureDeliveryTable(env);
+  const result = await getPool(env).query(
+    `SELECT id, next_attempt_at, payload FROM market_agent_delivery_jobs
+      WHERE user_id = $1 AND status = 'scheduled'
+      ORDER BY COALESCE(next_attempt_at, NULLIF(payload->>'scheduledAt', '')::timestamptz) ASC
+      LIMIT 500`,
+    [userId],
+  );
+  const wakes = result.rows.flatMap((row) => {
+    const scheduledAt = row.next_attempt_at || row.payload?.scheduledAt;
+    return scheduledAt ? [{ type: "delivery", jobId: row.id, scheduledAt }] : [];
+  });
+  return enqueueBackgroundWakes(wakes, env);
 }
 
 export function campaignTrackingSummary(run, jobs = []) {
@@ -225,6 +242,7 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
   }
   const client = await getPool(env).connect();
   let inserted = 0;
+  const wakes = [];
   try {
     await client.query("BEGIN");
     const suppressionResult = await client.query(
@@ -254,14 +272,17 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
         rationale: "One-time invitation to the approved project destination.",
       };
       const idempotencyKey = createHash("sha256").update(`${userId}:${projectId}:${runId}:${repeatSend ? approvalId : "initial"}:${recipient.email}`).digest("hex");
+      const jobId = randomUUID();
       const result = await client.query(
         `INSERT INTO market_agent_delivery_jobs
           (id,user_id,project_id,run_id,channel,payload,status,idempotency_key,approved_at,next_attempt_at,created_at,updated_at)
          VALUES ($1,$2,$3,$4,'gmail',$5::jsonb,'scheduled',$6,NOW(),$7::timestamptz,NOW(),NOW())
-         ON CONFLICT (user_id,idempotency_key) WHERE idempotency_key <> '' DO NOTHING`,
-        [randomUUID(), userId, projectId, runId, JSON.stringify(payload), idempotencyKey, scheduledAt],
+         ON CONFLICT (user_id,idempotency_key) WHERE idempotency_key <> '' DO NOTHING
+         RETURNING id`,
+        [jobId, userId, projectId, runId, JSON.stringify(payload), idempotencyKey, scheduledAt],
       );
       inserted += result.rowCount || 0;
+      if (result.rows[0]?.id) wakes.push({ type: "delivery", jobId: result.rows[0].id, scheduledAt });
       index += 1;
     }
     await client.query("COMMIT");
@@ -271,6 +292,7 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
   } finally {
     client.release();
   }
+  await enqueueBackgroundWakes(wakes, env);
   const summary = await getProspectInvitationStats(userId, projectId, campaign.id, env);
   return { runId, inserted, sender: connections.gmail.accountEmail, intervalMinutes, ...summary };
 }
@@ -537,6 +559,7 @@ export async function approveDeliveryCampaign(userId, projectId, runId, items = 
   const supplied = new Map((Array.isArray(items) ? items : []).map((item) => [String(item?.id || ""), item]));
   const client = await getPool(env).connect();
   const approvalId = randomUUID();
+  const wakes = [];
   try {
     await client.query("BEGIN");
     const runResult = await client.query("SELECT data FROM market_agent_runs WHERE user_id = $1 AND project_id = $2 AND id = $3 LIMIT 1", [userId, projectId, runId]);
@@ -569,6 +592,7 @@ export async function approveDeliveryCampaign(userId, projectId, runId, items = 
           WHERE id = $1 AND user_id = $2`,
         [row.id, userId, JSON.stringify(payload), scheduledAt],
       );
+      wakes.push({ type: "delivery", jobId: row.id, scheduledAt });
     }
     await activateCampaignTracking(client, userId, projectId, runId);
     await client.query("COMMIT");
@@ -578,6 +602,7 @@ export async function approveDeliveryCampaign(userId, projectId, runId, items = 
   } finally {
     client.release();
   }
+  await enqueueBackgroundWakes(wakes, env);
   return listDeliveryJobs(userId, projectId, runId, env);
 }
 
@@ -585,27 +610,42 @@ export async function approveTrustedDeliveryJobs(userId, projectId, runId, trust
   await ensureDeliveryTable(env);
   const allowed = new Set((Array.isArray(trustedChannels) ? trustedChannels : []).filter((channel) => ["linkedin", "instagram", "x", "discord"].includes(channel)));
   if (!allowed.size) return { approved: 0, ...(await listDeliveryJobs(userId, projectId, runId, env)) };
-  const rows = await getPool(env).query(
-    `SELECT * FROM market_agent_delivery_jobs
-      WHERE user_id = $1 AND project_id = $2 AND run_id = $3 AND status = 'awaiting_approval'
-      ORDER BY created_at ASC`,
-    [userId, projectId, runId],
-  );
+  const client = await getPool(env).connect();
   let approved = 0;
-  for (let index = 0; index < rows.rows.length; index += 1) {
-    const row = rows.rows[index];
-    if (!allowed.has(row.channel) || !channelAllowedForAccess(row.channel, userApiEnv)) continue;
-    const scheduledAt = approvedScheduleDate(row.payload?.scheduledAt, index);
-    const payload = { ...(row.payload || {}), scheduledAt, campaignApprovalId: `standing-${runId}` };
-    await getPool(env).query(
-      `UPDATE market_agent_delivery_jobs SET status = 'scheduled', payload = $3::jsonb,
-        approved_at = NOW(), next_attempt_at = $4::timestamptz, error = '', updated_at = NOW()
-        WHERE id = $1 AND user_id = $2 AND status = 'awaiting_approval'`,
-      [row.id, userId, JSON.stringify(payload), scheduledAt],
+  const wakes = [];
+  try {
+    await client.query("BEGIN");
+    const rows = await client.query(
+      `SELECT * FROM market_agent_delivery_jobs
+        WHERE user_id = $1 AND project_id = $2 AND run_id = $3 AND status = 'awaiting_approval'
+        ORDER BY created_at ASC FOR UPDATE`,
+      [userId, projectId, runId],
     );
-    approved += 1;
+    for (let index = 0; index < rows.rows.length; index += 1) {
+      const row = rows.rows[index];
+      if (!allowed.has(row.channel) || !channelAllowedForAccess(row.channel, userApiEnv)) continue;
+      const scheduledAt = approvedScheduleDate(row.payload?.scheduledAt, index);
+      const payload = { ...(row.payload || {}), scheduledAt, campaignApprovalId: `standing-${runId}` };
+      await client.query(
+        `UPDATE market_agent_delivery_jobs SET status = 'scheduled', payload = $3::jsonb,
+          approved_at = NOW(), next_attempt_at = $4::timestamptz, error = '', updated_at = NOW()
+          WHERE id = $1 AND user_id = $2 AND status = 'awaiting_approval'`,
+        [row.id, userId, JSON.stringify(payload), scheduledAt],
+      );
+      wakes.push({ type: "delivery", jobId: row.id, scheduledAt });
+      approved += 1;
+    }
+    if (approved > 0) {
+      await activateCampaignTracking(client, userId, projectId, runId);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
   }
-  if (approved > 0) await activateCampaignTracking(getPool(env), userId, projectId, runId);
+  await enqueueBackgroundWakes(wakes, env);
   return { approved, ...(await listDeliveryJobs(userId, projectId, runId, env)) };
 }
 
@@ -681,7 +721,7 @@ export async function runScheduledDeliveryJobs(env = process.env, limit = 10) {
   const results = [];
   for (const row of due.rows) {
     try {
-      const userApiEnv = await loadUserApiEnv(row.user_id);
+      const userApiEnv = await loadUserApiEnv(row.user_id, env);
       if (!channelAllowedForAccess(row.channel, userApiEnv)) throw deliveryError("This delivery channel is no longer included in the current access level.", 403);
       const result = await completeDeliveryExecution(row, row.user_id, env);
       results.push({ id: row.id, userId: row.user_id, status: result.job.status, error: result.job.error || "" });
@@ -692,6 +732,40 @@ export async function runScheduledDeliveryJobs(env = process.env, limit = 10) {
     }
   }
   return results;
+}
+
+export async function runScheduledDeliveryJob(id, env = process.env) {
+  await ensureDeliveryTable(env);
+  const jobId = String(id || "").trim();
+  if (!jobId) throw deliveryError("The scheduled delivery has no job identifier.", 400);
+  const claimed = await getPool(env).query(
+    `WITH candidate AS (
+      SELECT id FROM market_agent_delivery_jobs
+      WHERE id = $1
+        AND status = 'scheduled'
+        AND COALESCE(next_attempt_at, NULLIF(payload->>'scheduledAt', '')::timestamptz) <= NOW()
+      FOR UPDATE SKIP LOCKED
+    )
+    UPDATE market_agent_delivery_jobs jobs
+      SET status = 'running', attempt_count = attempt_count + 1, updated_at = NOW()
+    FROM candidate
+    WHERE jobs.id = candidate.id
+    RETURNING jobs.*`,
+    [jobId],
+  );
+  const row = claimed.rows[0];
+  if (!row) {
+    const current = await getPool(env).query("SELECT * FROM market_agent_delivery_jobs WHERE id = $1 LIMIT 1", [jobId]);
+    return { job: current.rows[0] ? serializeDeliveryJob(current.rows[0]) : null };
+  }
+  try {
+    const userApiEnv = await loadUserApiEnv(row.user_id, env);
+    if (!channelAllowedForAccess(row.channel, userApiEnv)) throw deliveryError("This delivery channel is no longer included in the current access level.", 403);
+    return completeDeliveryExecution(row, row.user_id, env);
+  } catch (error) {
+    const failed = await recordDeliveryFailure(row, safeError(error), env);
+    return { job: serializeDeliveryJob(failed) };
+  }
 }
 
 async function completeDeliveryExecution(row, userId, env) {

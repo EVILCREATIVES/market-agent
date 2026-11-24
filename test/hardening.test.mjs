@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { authoritativeRuns, isPanelRun, normalizeDatabaseError } from "../server/db.mjs";
 import { formatLinkedInProfileResearch, isBrandSourceRefreshRequest, isPrivateAddress } from "../server/agent.mjs";
 import { applyInvitationTracking, campaignPublicationTarget, campaignTrackingSummary, createInvitationTrackingUrl, explicitApprovedYouTubeFallback, personalizeInvitationTemplate, renderInvitationEmailHtml, resolveInvitationDestination, retryDelayMinutes, validApprovedRecipient } from "../server/delivery.mjs";
@@ -12,6 +13,35 @@ import { createBrandLogoAccessUrl } from "../server/brand-logos.mjs";
 import { linkedinCommunityApprovalStatus, socialConnectorConfigured } from "../server/social-connections.mjs";
 import { ownerCostEstimateCents, ownerMonthlyCostCapCents } from "../server/billing.mjs";
 import { appendMarkdownTableColumn, editableCampaignRunId, extractMarkdownTableRows, setMarkdownTableColumnValues } from "../server/campaign-edits.mjs";
+import { backgroundWakePlan, nextDailyRoutineAt } from "../server/background-queue.mjs";
+
+test("background work sleeps until the exact scheduled event", () => {
+  const now = Date.parse("2026-11-24T12:00:00.000Z");
+  const near = backgroundWakePlan({ type: "delivery", jobId: "job-1", scheduledAt: "2026-11-24T12:05:00.000Z" }, now);
+  assert.equal(near.delaySeconds, 300);
+  assert.equal(near.retentionSeconds, 600);
+  assert.equal(near.payload.scheduledAt, "2026-11-24T12:05:00.000Z");
+
+  const distant = backgroundWakePlan({ type: "delivery", jobId: "job-2", scheduledAt: "2026-12-24T12:00:00.000Z" }, now);
+  assert.equal(distant.delaySeconds, 7 * 24 * 60 * 60);
+  assert.equal(distant.retentionSeconds, 7 * 24 * 60 * 60);
+  assert.equal(distant.payload.scheduledAt, "2026-12-24T12:00:00.000Z");
+  assert.equal(backgroundWakePlan({ type: "delivery", jobId: "job-2", scheduledAt: "2026-12-24T12:00:00.000Z" }, now).idempotencyKey, distant.idempotencyKey);
+});
+
+test("the optional daily routine schedules only its next wake", () => {
+  assert.equal(nextDailyRoutineAt({}, Date.parse("2026-11-24T08:00:00.000Z")), "2026-11-24T12:00:00.000Z");
+  assert.equal(nextDailyRoutineAt({}, Date.parse("2026-11-24T13:00:00.000Z")), "2026-11-25T12:00:00.000Z");
+  assert.equal(nextDailyRoutineAt({ lastRunAt: "2026-11-24T09:00:00.000Z" }, Date.parse("2026-11-24T10:00:00.000Z")), "2026-11-25T12:00:00.000Z");
+});
+
+test("production has no polling timers and uses one delayed queue consumer", () => {
+  const config = JSON.parse(readFileSync(new URL("../vercel.json", import.meta.url), "utf8"));
+  assert.equal(config.crons, undefined);
+  assert.deepEqual(config.functions["api/background-queue.mjs"].experimentalTriggers, [
+    { type: "queue/v2beta", topic: "market-agent-background", retryAfterSeconds: 60 },
+  ]);
+});
 
 test("owner-paid analysis has a conservative global monthly cost ceiling", () => {
   assert.equal(ownerMonthlyCostCapCents({}), 5_000);
