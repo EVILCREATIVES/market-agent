@@ -263,10 +263,23 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
 
   useEffect(() => {
     let active = true;
-    apiFetch("/api/state")
-      .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "Cloud workspace could not be opened.");
+    const openCloudWorkspace = async () => {
+      let data: { state: AppState; isEmpty: boolean; revision: number } | null = null;
+      let lastError: Error | null = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const response = await apiFetch("/api/state");
+          const body = await response.json();
+          if (!response.ok) throw Object.assign(new Error(body.error || "Cloud workspace could not be opened."), { retryable: response.status >= 500 });
+          data = body;
+          break;
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error("Cloud workspace could not be opened.");
+          if (attempt === 2 || ("retryable" in lastError && lastError.retryable === false)) throw lastError;
+          await new Promise((resolve) => window.setTimeout(resolve, 800 * (attempt + 1)));
+        }
+      }
+      if (!data) throw lastError || new Error("Cloud workspace could not be opened.");
         const local = loadState(userId);
         const hasLocalWork = local.runs.length > 0 || local.projects.some((project) => workspaceCompleteness(project) > 20);
         const next = data.isEmpty && hasLocalWork ? local : data.state;
@@ -283,8 +296,8 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
           saveState(next, userId);
           setCloudReady(true);
         }
-      })
-      .catch((error) => { if (active) setCloudError(error instanceof Error ? error.message : "Cloud workspace could not be opened."); });
+    };
+    void openCloudWorkspace().catch((error) => { if (active) setCloudError(error instanceof Error ? error.message : "Cloud workspace could not be opened."); });
     return () => { active = false; };
   }, [userId]);
 

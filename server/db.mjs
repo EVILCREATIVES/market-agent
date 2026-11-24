@@ -47,7 +47,7 @@ export function getPool(env = process.env) {
   }
 
   if (!pool) {
-    const database = new Pool({ connectionString: env.DATABASE_URL, max: 5 });
+    const database = new Pool({ connectionString: env.DATABASE_URL, max: 1, connectionTimeoutMillis: 10_000, idleTimeoutMillis: 10_000 });
     database.on("error", (error) => console.warn("[database] Idle connection closed:", normalizeDatabaseError(error).message));
     pool = protectDatabasePool(database);
   }
@@ -82,6 +82,17 @@ export function authoritativeRuns(legacyRuns, normalizedRows, normalizedTableAva
 }
 
 export async function loadStateForUser(userId, env = process.env) {
+  try {
+    return await loadStateForUserOnce(userId, env);
+  } catch (error) {
+    const normalized = normalizeDatabaseError(error);
+    if (normalized?.code !== "DATABASE_UNAVAILABLE") throw normalized;
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    return loadStateForUserOnce(userId, env);
+  }
+}
+
+async function loadStateForUserOnce(userId, env) {
   const database = getPool(env);
   const [result, runRows, scheduleRows, messageRows] = await Promise.all([
     database.query("SELECT state, revision FROM market_agent_states WHERE user_id = $1", [userId]),
