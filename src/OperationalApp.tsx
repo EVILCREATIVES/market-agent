@@ -98,6 +98,23 @@ const serviceIcons: Partial<Record<ServiceLogoProvider, ServiceIcon>> = {
   anthropic: siAnthropic,
 };
 
+function refreshWhenPageReturns(refresh: () => void) {
+  let lastRefreshAt = 0;
+  const handleReturn = () => {
+    if (document.visibilityState !== "visible" || Date.now() - lastRefreshAt < 1_000) return;
+    lastRefreshAt = Date.now();
+    refresh();
+  };
+  document.addEventListener("visibilitychange", handleReturn);
+  window.addEventListener("focus", handleReturn);
+  window.addEventListener("online", handleReturn);
+  return () => {
+    document.removeEventListener("visibilitychange", handleReturn);
+    window.removeEventListener("focus", handleReturn);
+    window.removeEventListener("online", handleReturn);
+  };
+}
+
 function ServiceLogo({ provider, name }: { provider?: ServiceLogoProvider; name: string }) {
   if (provider === "linkedin") return <span className="op-service-logo op-service-logo--linkedin" aria-label="LinkedIn"><Linkedin size={20} strokeWidth={2.2} /></span>;
   const icon = provider ? serviceIcons[provider] : undefined;
@@ -1447,9 +1464,9 @@ function CalendarWorkspace({ workspace, runs, onOpen, onOpenNewsletter }: { work
     };
     window.addEventListener("market-agent-delivery-updated", handleUpdate);
     window.addEventListener("market-agent-newsletter-updated", handleUpdate);
-    const poll = window.setInterval(() => void refresh(), 60_000);
+    const stopReturnRefresh = refreshWhenPageReturns(() => void refresh());
     return () => {
-      window.clearInterval(poll);
+      stopReturnRefresh();
       window.removeEventListener("market-agent-delivery-updated", handleUpdate);
       window.removeEventListener("market-agent-newsletter-updated", handleUpdate);
     };
@@ -2416,7 +2433,7 @@ function ContentLibrary({ userId, workspace, runs, mediaConfigured, videoConfigu
   useEffect(() => {
     let active = true;
     setLoading(true);
-    apiFetch(`/api/media?projectId=${encodeURIComponent(workspace.id)}`)
+    const loadMedia = () => apiFetch(`/api/media?projectId=${encodeURIComponent(workspace.id)}`)
       .then(async (response) => {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Media library could not be opened.");
@@ -2424,15 +2441,25 @@ function ContentLibrary({ userId, workspace, runs, mediaConfigured, videoConfigu
       })
       .catch((error) => { if (active) notify(error instanceof Error ? error.message : "Media library could not be opened."); })
       .finally(() => { if (active) setLoading(false); });
-    const timer = window.setInterval(() => {
-      if (!active) return;
+    void loadMedia();
+    const stopReturnRefresh = refreshWhenPageReturns(() => void loadMedia());
+    return () => { active = false; stopReturnRefresh(); };
+  }, [workspace.id]);
+
+  const mediaWorkInProgress = jobs.some((job) => ["approved", "running"].includes(job.status));
+  useEffect(() => {
+    if (!mediaWorkInProgress) return;
+    let active = true;
+    const pollActiveProduction = () => {
+      if (!active || document.visibilityState !== "visible") return;
       apiFetch(`/api/media?projectId=${encodeURIComponent(workspace.id)}`)
         .then(async (response) => response.ok ? response.json() : null)
         .then((data) => { if (active && data) applyMediaResponse(data); })
         .catch(() => undefined);
-    }, 8000);
+    };
+    const timer = window.setInterval(pollActiveProduction, 8_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [workspace.id]);
+  }, [mediaWorkInProgress, workspace.id]);
 
   useEffect(() => {
     let active = true;
@@ -3360,9 +3387,9 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
     window.addEventListener("market-agent-newsletter-updated", handleUpdate);
     const handleDeliveryUpdate = () => { void refreshDeliveryJobs(); };
     window.addEventListener("market-agent-delivery-updated", handleDeliveryUpdate);
-    const deliveryPoll = window.setInterval(() => { void refreshDeliveryJobs(); void refresh(true); }, 60_000);
+    const stopReturnRefresh = refreshWhenPageReturns(() => { void refreshDeliveryJobs(); void refresh(true); });
     return () => {
-      window.clearInterval(deliveryPoll);
+      stopReturnRefresh();
       window.removeEventListener("market-agent-newsletter-updated", handleUpdate);
       window.removeEventListener("market-agent-delivery-updated", handleDeliveryUpdate);
     };
@@ -4103,8 +4130,7 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
       .then(async (response) => { const data = await response.json(); if (response.ok) { setDeliveryJobs(Array.isArray(data.jobs) ? data.jobs : []); setDeliveryCoverage(data.coverage || { expected: data.jobs?.length || 0, prepared: data.jobs?.length || 0, missing: 0 }); if (data.tracking) setDeliveryTracking(data.tracking as CampaignDeliveryTracking); } })
       .catch(() => undefined);
     void refreshRunDelivery();
-    const poll = window.setInterval(() => void refreshRunDelivery(), 45_000);
-    return () => window.clearInterval(poll);
+    return refreshWhenPageReturns(() => void refreshRunDelivery());
   }, [run.id, run.projectId]);
   useEffect(() => {
     if (deliveryTracking.status !== "active" || !connections.analytics.canRead) { setCampaignGrowth(null); return; }
@@ -4113,8 +4139,8 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
       .then(async (response) => { const data = await response.json(); if (!response.ok) throw new Error(data.error || "Campaign results could not be read."); if (active) setCampaignGrowth(data as GrowthReport); })
       .catch(() => { if (active) setCampaignGrowth(null); });
     void refreshGrowth();
-    const poll = window.setInterval(() => void refreshGrowth(), 90_000);
-    return () => { active = false; window.clearInterval(poll); };
+    const stopReturnRefresh = refreshWhenPageReturns(() => void refreshGrowth());
+    return () => { active = false; stopReturnRefresh(); };
   }, [connections.analytics.canRead, deliveryTracking.status, run.id, run.projectId]);
   useEffect(() => {
     const update = (event: Event) => {

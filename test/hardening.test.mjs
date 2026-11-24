@@ -43,6 +43,14 @@ test("production has no polling timers and uses one delayed queue consumer", () 
   ]);
 });
 
+test("inactive screens refresh on return instead of polling the database", () => {
+  const app = readFileSync(new URL("../src/OperationalApp.tsx", import.meta.url), "utf8");
+  assert.match(app, /function refreshWhenPageReturns/);
+  assert.doesNotMatch(app, /setInterval\(\(\) => void refreshRunDelivery/);
+  assert.doesNotMatch(app, /setInterval\(\(\) => \{ void refreshDeliveryJobs/);
+  assert.doesNotMatch(app, /setInterval\(\(\) => void refresh\(\), 60_000/);
+});
+
 test("owner-paid analysis has a conservative global monthly cost ceiling", () => {
   assert.equal(ownerMonthlyCostCapCents({}), 5_000);
   assert.equal(ownerMonthlyCostCapCents({ OWNER_MONTHLY_COST_CAP_CENTS: "10000" }), 10_000);
@@ -62,6 +70,20 @@ test("database quota failures identify an owner-side platform limit", () => {
   assert.doesNotMatch(normalized.message, /upgrade your plan/i);
   const unrelated = new Error("Connection reset");
   assert.equal(normalizeDatabaseError(unrelated), unrelated);
+});
+
+test("database network failures remain an owner-side service issue", () => {
+  for (const original of [
+    Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
+    new Error("Authentication timed out"),
+    new Error("Client network socket disconnected before secure TLS connection was established"),
+  ]) {
+    const normalized = normalizeDatabaseError(original);
+    assert.equal(normalized.statusCode, 503);
+    assert.equal(normalized.code, "DATABASE_UNAVAILABLE");
+    assert.match(normalized.message, /platform-owner issue/i);
+    assert.match(normalized.message, /nothing was sent or published/i);
+  }
 });
 
 test("LinkedIn company-page review stays separate from optional personal publishing", () => {

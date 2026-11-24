@@ -10,10 +10,15 @@ let attached = false;
 
 export function normalizeDatabaseError(error) {
   const message = String(error?.message || "");
-  if (String(error?.code || "") !== "53000" && !/account or project has exceeded the quota/i.test(message)) return error;
-  const normalized = new Error("Market Agent’s cloud database has reached its capacity limit. This is a platform-owner issue, not your account. Nothing was sent or published. Try again after database capacity is restored.");
+  const quotaExceeded = String(error?.code || "") === "53000" || /account or project has exceeded the quota/i.test(message);
+  const connectionUnavailable = ["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EAI_AGAIN"].includes(String(error?.code || ""))
+    || /connection terminated unexpectedly|authentication timed out|network socket disconnected|secure tls connection|connection timeout/i.test(message);
+  if (!quotaExceeded && !connectionUnavailable) return error;
+  const normalized = new Error(quotaExceeded
+    ? "Market Agent’s cloud database has reached its capacity limit. This is a platform-owner issue, not your account. Nothing was sent or published. Try again after database capacity is restored."
+    : "Market Agent’s cloud database is temporarily unavailable. This is a platform-owner issue, not your account. Nothing was sent or published. Try again after the database service is restored.");
   normalized.statusCode = 503;
-  normalized.code = "DATABASE_CAPACITY_EXCEEDED";
+  normalized.code = quotaExceeded ? "DATABASE_CAPACITY_EXCEEDED" : "DATABASE_UNAVAILABLE";
   normalized.cause = error;
   return normalized;
 }
@@ -42,7 +47,9 @@ export function getPool(env = process.env) {
   }
 
   if (!pool) {
-    pool = protectDatabasePool(new Pool({ connectionString: env.DATABASE_URL, max: 5 }));
+    const database = new Pool({ connectionString: env.DATABASE_URL, max: 5 });
+    database.on("error", (error) => console.warn("[database] Idle connection closed:", normalizeDatabaseError(error).message));
+    pool = protectDatabasePool(database);
   }
 
   if (env.VERCEL && !attached) {
