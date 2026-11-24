@@ -86,6 +86,14 @@ test("database network failures remain an owner-side service issue", () => {
   }
 });
 
+test("database access uses Neon's stateless serverless transport", () => {
+  const database = readFileSync(new URL("../server/db.mjs", import.meta.url), "utf8");
+  assert.match(database, /from "@neondatabase\/serverless"/);
+  assert.match(database, /neon\(connectionString, \{ fullResults: true \}\)/);
+  assert.doesNotMatch(database, /from "pg"/);
+  assert.doesNotMatch(database, /attachDatabasePool/);
+});
+
 test("LinkedIn company-page review stays separate from optional personal publishing", () => {
   const secure = "connection-key-with-at-least-32-characters";
   assert.equal(linkedinCommunityApprovalStatus({ LINKEDIN_COMMUNITY_ACCESS_STATUS: "pending" }), "pending");

@@ -1,18 +1,15 @@
 import { readdir, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import pg from "pg";
-import { attachDatabasePool } from "@vercel/functions";
+import { neon, Pool as NeonPool } from "@neondatabase/serverless";
 
-const { Pool } = pg;
-let pool;
-let attached = false;
+const databases = new Map();
 
 export function normalizeDatabaseError(error) {
   const message = String(error?.message || "");
   const quotaExceeded = String(error?.code || "") === "53000" || /account or project has exceeded the quota/i.test(message);
-  const connectionUnavailable = ["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EAI_AGAIN"].includes(String(error?.code || ""))
-    || /connection terminated unexpectedly|authentication timed out|network socket disconnected|secure tls connection|connection timeout/i.test(message);
+  const connectionUnavailable = ["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT"].includes(String(error?.code || ""))
+    || /connection terminated unexpectedly|authentication timed out|network socket disconnected|secure tls connection|connection timeout|fetch failed|failed to fetch|socket hang up/i.test(message);
   if (!quotaExceeded && !connectionUnavailable) return error;
   const normalized = new Error(quotaExceeded
     ? "Market Agent’s cloud database has reached its capacity limit. This is a platform-owner issue, not your account. Nothing was sent or published. Try again after database capacity is restored."
@@ -23,20 +20,45 @@ export function normalizeDatabaseError(error) {
   return normalized;
 }
 
-function protectDatabasePool(database) {
-  const query = database.query.bind(database);
-  const connect = database.connect.bind(database);
-  database.query = (...args) => query(...args).catch((error) => { throw normalizeDatabaseError(error); });
-  database.connect = (...args) => connect(...args)
-    .then((client) => {
-      if (client.__marketAgentQuotaProtected) return client;
-      const clientQuery = client.query.bind(client);
-      client.query = (...queryArgs) => clientQuery(...queryArgs).catch((error) => { throw normalizeDatabaseError(error); });
-      Object.defineProperty(client, "__marketAgentQuotaProtected", { value: true });
-      return client;
-    })
-    .catch((error) => { throw normalizeDatabaseError(error); });
-  return database;
+function protectTransactionClient(client, transactionPool) {
+  const query = client.query.bind(client);
+  const release = client.release.bind(client);
+  let released = false;
+  client.query = (...args) => query(...args).catch((error) => { throw normalizeDatabaseError(error); });
+  client.release = () => {
+    if (released) return;
+    released = true;
+    release();
+    void transactionPool.end().catch((error) => console.warn("[database] Transaction connection close failed:", normalizeDatabaseError(error).message));
+  };
+  return client;
+}
+
+function createServerlessDatabase(connectionString) {
+  // Regular queries use Neon's stateless HTTPS transport. This avoids keeping a
+  // TCP pool alive across Vercel function freezes, which caused repeated cold
+  // start authentication and connection timeouts in production.
+  const sql = neon(connectionString, { fullResults: true });
+  return {
+    query: (...args) => sql.query(...args).catch((error) => { throw normalizeDatabaseError(error); }),
+    connect: async () => {
+      // Transactions need a session, so give each transaction its own short-lived
+      // WebSocket pool and close it as soon as the caller releases the client.
+      const transactionPool = new NeonPool({
+        connectionString,
+        max: 1,
+        connectionTimeoutMillis: 15_000,
+        idleTimeoutMillis: 1_000,
+      });
+      transactionPool.on("error", (error) => console.warn("[database] Transaction connection closed:", normalizeDatabaseError(error).message));
+      try {
+        return protectTransactionClient(await transactionPool.connect(), transactionPool);
+      } catch (error) {
+        await transactionPool.end().catch(() => undefined);
+        throw normalizeDatabaseError(error);
+      }
+    },
+  };
 }
 
 export function getPool(env = process.env) {
@@ -46,18 +68,8 @@ export function getPool(env = process.env) {
     throw error;
   }
 
-  if (!pool) {
-    const database = new Pool({ connectionString: env.DATABASE_URL, max: 1, connectionTimeoutMillis: 10_000, idleTimeoutMillis: 10_000 });
-    database.on("error", (error) => console.warn("[database] Idle connection closed:", normalizeDatabaseError(error).message));
-    pool = protectDatabasePool(database);
-  }
-
-  if (env.VERCEL && !attached) {
-    attachDatabasePool(pool);
-    attached = true;
-  }
-
-  return pool;
+  if (!databases.has(env.DATABASE_URL)) databases.set(env.DATABASE_URL, createServerlessDatabase(env.DATABASE_URL));
+  return databases.get(env.DATABASE_URL);
 }
 
 export function defaultState() {
