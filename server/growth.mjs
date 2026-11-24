@@ -8,10 +8,14 @@ const SOCIAL_PROVIDERS = ["linkedin", "instagram", "tiktok", "youtube", "x", "di
 export async function getGrowthReport(userId, projectId, range = "28daysAgo", env = process.env) {
   const normalizedRange = /^(7|14|28|30|60|90)daysAgo$/.test(String(range)) ? String(range) : "28daysAgo";
   const days = Number(normalizedRange.match(/^\d+/)?.[0] || 28);
-  const [{ state }, analyticsStatus, socialStatus] = await Promise.all([
+  const [{ state }, analyticsStatus, socialStatus, invitationLearningRows] = await Promise.all([
     loadStateForUser(userId, env),
     getAnalyticsConnectionStatus(userId, projectId, env),
     getSocialConnectionStatus(userId, projectId, env),
+    getPool(env).query(
+      "SELECT id, title, learning FROM market_agent_optin_campaigns WHERE user_id = $1 AND project_id = $2 AND learning IS NOT NULL ORDER BY updated_at DESC LIMIT 20",
+      [userId, projectId],
+    ).then((result) => result.rows).catch(() => []),
   ]);
   const workspace = state.projects.find((item) => item.id === projectId) || state.projects[0] || {};
   const goal = inferGrowthPlan(workspace);
@@ -84,6 +88,7 @@ export async function getGrowthReport(userId, projectId, range = "28daysAgo", en
     campaigns,
     keyEvents,
     recommendations,
+    experimentLearnings: invitationLearningRows.map((row) => ({ id: String(row.id || ""), title: String(row.title || "Invitation experiment"), learning: row.learning })).filter((item) => item.id && item.learning),
     tracking: {
       startedAt: socialReports.map((report) => report.comparison?.baselineAt).filter(Boolean).sort()[0] || new Date().toISOString(),
       attributed: Boolean(analytics && campaignRows.length),
@@ -96,7 +101,7 @@ export async function getGrowthReport(userId, projectId, range = "28daysAgo", en
 }
 
 export async function getAgentPerformanceContext(userId, projectId, env = process.env) {
-  const [report, deliveries] = await Promise.all([
+  const [report, deliveries, learnedExperiments] = await Promise.all([
     getGrowthReport(userId, projectId, "28daysAgo", env).catch(() => null),
     getPool(env).query(
       `SELECT channel, status, payload->>'subject' AS subject, payload->>'text' AS text,
@@ -105,6 +110,15 @@ export async function getAgentPerformanceContext(userId, projectId, env = proces
         WHERE user_id = $1 AND project_id = $2
           AND created_at >= NOW() - INTERVAL '90 days'
         ORDER BY created_at DESC LIMIT 60`,
+      [userId, projectId],
+    ).then((result) => result.rows).catch(() => []),
+    getPool(env).query(
+      `SELECT id, data->>'title' AS title, data->'experimentPlan' AS experiment,
+              data->'learningConclusion' AS conclusion, created_at
+         FROM market_agent_runs
+        WHERE user_id = $1 AND project_id = $2
+          AND data->'learningConclusion' IS NOT NULL
+        ORDER BY created_at DESC LIMIT 20`,
       [userId, projectId],
     ).then((result) => result.rows).catch(() => []),
   ]);
@@ -122,6 +136,24 @@ export async function getAgentPerformanceContext(userId, projectId, env = proces
       metrics: item.performance,
       completedAt: item.completed_at,
     })),
+    learnedExperiments: [
+      ...learnedExperiments.map((item) => ({
+        campaignId: item.id,
+        title: item.title,
+        hypothesis: item.experiment?.hypothesis || "",
+        businessOutcome: item.experiment?.businessOutcome || "",
+        conclusion: item.conclusion,
+        concludedAt: item.conclusion?.concludedAt || item.created_at,
+      })),
+      ...(report?.experimentLearnings || []).map((item) => ({
+        campaignId: item.id,
+        title: item.title,
+        hypothesis: "Prospect invitation experiment",
+        businessOutcome: "The saved invitation conversion",
+        conclusion: item.learning,
+        concludedAt: item.learning?.concludedAt,
+      })),
+    ],
   };
   return `LIVE PERFORMANCE — use this to decide what to continue, change, or stop. Never invent missing values.\n${JSON.stringify(summary, null, 2).slice(0, 20_000)}`;
 }

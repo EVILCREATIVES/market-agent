@@ -6,7 +6,8 @@ import { getConnectionStatus } from "../server/connections.mjs";
 import { findProjectAssetForInstruction, listProjectAssets, updateProjectAsset } from "../server/assets.mjs";
 import { replaceDeliveryMediaFromAsset } from "../server/delivery.mjs";
 import { createNewsletterDraft, getNewsletterActionContext, updateLatestNewsletterLink, updateLatestNewsletterLogo, updateNewsletterDraft, updateOptinCampaign } from "../server/newsletters.mjs";
-import { addCampaignTableColumn, editableCampaignRunId, getCampaignActionContext, getCampaignPeopleTable, setCampaignTableColumnValues, updateCampaignLink, updateCampaignPlanItem, updateCampaignText } from "../server/campaign-edits.mjs";
+import { addCampaignTableColumn, editableCampaignRunId, getCampaignActionContext, getCampaignPeopleTable, setCampaignTableColumnValues, updateCampaignExperiment, updateCampaignLink, updateCampaignPlanItem, updateCampaignText } from "../server/campaign-edits.mjs";
+import { applySectorCorrection } from "../server/intelligence.mjs";
 import { archiveProjectConversationDays, getProjectConversationMemory } from "../server/conversation-memory.mjs";
 import { waitUntil } from "@vercel/functions";
 
@@ -104,7 +105,7 @@ export default async function handler(req, res) {
         const revision = await rewriteProspectInvitation({ workspace: actionWorkspace, invitation: newsletterContext.invitation, message }, userApiEnv);
         plan = {
           summary: "Update the saved prospect invitation.",
-          actions: [{ type: "update_invitation", targetId: newsletterContext.invitation.id, subject: revision.invitationSubject, body: revision.invitationBody, ctaLabel: revision.invitationCtaLabel, url: revision.invitationUrl, strategy: revision.invitationStrategy }],
+          actions: [{ type: "update_invitation", targetId: newsletterContext.invitation.id, subject: revision.invitationSubject, body: revision.invitationBody, ctaLabel: revision.invitationCtaLabel, url: revision.invitationUrl, strategy: revision.invitationStrategy, experiment: revision.experiment }],
         };
       } else {
         plan = await planProjectInterfaceActions({
@@ -163,6 +164,19 @@ async function executeInterfaceActions({ userId, projectId, runId, workspace, pl
         results.push({ type: action.type, status: "completed", detail: `Updated ${friendlyField(action.field)}.` });
         continue;
       }
+      if (action.type === "correct_sector_evidence") {
+        const category = String(action.category || "");
+        const statement = String(action.body || action.value || "").trim();
+        if (!category || !statement) throw new Error("The sector correction needs a category and a complete corrected fact.");
+        workspaceUpdate.sectorExpertise = applySectorCorrection(workspaceUpdate.sectorExpertise || workspace.sectorExpertise, {
+          id: String(action.targetId || ""),
+          category,
+          statement,
+          sourceTitle: "User correction",
+        });
+        results.push({ type: action.type, status: "completed", detail: "Saved the correction as verified Sector Expertise; future research cannot overwrite it." });
+        continue;
+      }
       if (action.type === "update_invitation") {
         const targetId = String(action.targetId || newsletterContext?.invitation?.id || "");
         if (!targetId) throw new Error("There is no editable prospect invitation in this project.");
@@ -172,6 +186,7 @@ async function executeInterfaceActions({ userId, projectId, runId, workspace, pl
           invitationCtaLabel: action.ctaLabel,
           invitationUrl: action.url,
           invitationStrategy: action.strategy,
+          experiment: action.experiment,
         });
         if (!Object.keys(changes).length) throw new Error("The instruction did not contain a concrete invitation change.");
         invitationAction = await updateOptinCampaign(userId, projectId, targetId, { ...changes, approvalConfirmed: true });
@@ -238,6 +253,13 @@ async function executeInterfaceActions({ userId, projectId, runId, workspace, pl
         if (!Object.keys(changes).length) throw new Error("The instruction did not contain a concrete post change.");
         campaignAction = await updateCampaignPlanItem(userId, projectId, targetId, action.itemIndex, changes);
         results.push({ type: action.type, status: "completed", detail: `Updated campaign item ${Number(action.itemIndex) + 1}; its visual preview and publishing payload now match.` });
+        continue;
+      }
+      if (action.type === "update_experiment") {
+        const targetId = String(action.targetId || runId || "");
+        if (!targetId) throw new Error("There is no active campaign experiment to edit.");
+        campaignAction = await updateCampaignExperiment(userId, projectId, targetId, action.field, action.value);
+        results.push({ type: action.type, status: "completed", detail: `Updated the experiment ${friendlyField(action.field)} and reopened it for review.` });
         continue;
       }
       if (action.type === "add_campaign_table_column") {
@@ -318,7 +340,7 @@ function friendlyField(field) {
 
 function mayRequestInterfaceAction(value) {
   const message = String(value || "").toLowerCase();
-  const subject = /\b(email|e-mail|newsletter|invitation|message|messaggio|campaign|campagna|copy|caption|subject|body|link|url|logo|brand|profile|positioning|manifesto|audience|sender|address|asset|video|image|name|description|segmentation|voice|guardrails?|notes?|issues?|colors?|palette|typography|photography|goal|conversion|analytics|website|demo|headline|preview|signature|cta|button|table|column|row|people|prospects?|leads?|contacts?|linkedin)\b/i.test(message);
+  const subject = /\b(email|e-mail|newsletter|invitation|message|messaggio|campaign|campagna|experiment|hypothesis|cohort|evidence|sector|industry|buyers?|objections?|competitors?|procurement|copy|caption|subject|body|link|url|logo|brand|profile|positioning|manifesto|audience|sender|address|asset|video|image|name|description|segmentation|voice|guardrails?|notes?|issues?|colors?|palette|typography|photography|goal|conversion|analytics|website|demo|headline|preview|signature|cta|button|table|column|row|people|prospects?|leads?|contacts?|linkedin)\b/i.test(message);
   const instruction = /\b(update|change|replace|rewrite|revise|fix|correct|edit|add|remove|use|save|create|make|set|move|swap|improve|redo|apply|start)\b/i.test(message);
   const rejection = /\b(wrong|awful|bad|terrible|shit|bullshit|useless|stupid|confusing|nothing happens|does not work|doesn't work|did not|didn't|don['’]t like|do not like|cazzo|merda|schifo)\b/i.test(message);
   return subject && (instruction || rejection);

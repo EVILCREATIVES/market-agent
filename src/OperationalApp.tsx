@@ -70,9 +70,9 @@ import { prepareLogo, prepareMaterial, type PreparedMaterial } from "./operation
 import { upload } from "@vercel/blob/client";
 import { apiFetch, getAccessToken } from "./auth";
 import BrandLogo from "./BrandLogo";
-import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, BillingStatus, BrandLogoVariant, ConnectionStatus, ContactImport, DeliveryJob, GeographyReport, GrowthObjective, GrowthReport, HealthState, MediaBudgetSummary, MediaJob, NewsletterDashboard, NewsletterDraft, NewsletterSubscriber, PrimaryConversion, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, ProspectConversionCampaign, RunAssetReference, RunStatus, SocialAnalyticsReport, SourceMediaAsset, TikTokPublishingOptions, YouTubePublishingOptions } from "./operational/types";
+import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, BillingStatus, BrandLogoVariant, ConnectionStatus, ContactImport, DeliveryJob, GeographyReport, GrowthObjective, GrowthReport, HealthState, MediaBudgetSummary, MediaJob, NewsletterDashboard, NewsletterDraft, NewsletterSubscriber, PrimaryConversion, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, ProspectConversionCampaign, RunAssetReference, RunStatus, SectorKnowledgeCategory, SocialAnalyticsReport, SourceMediaAsset, TikTokPublishingOptions, YouTubePublishingOptions } from "./operational/types";
 
-type Page = "agent" | "brain" | "issues" | "research" | "campaigns" | "calendar" | "content" | "analytics" | "integrations";
+type Page = "agent" | "brain" | "sector" | "issues" | "research" | "campaigns" | "calendar" | "content" | "analytics" | "integrations";
 type CampaignIntensity = "careful" | "assertive" | "aggressive";
 type ConnectionProvider = "google-analytics" | "google-gmail" | "mailchimp" | "shopify" | "linkedin" | "instagram" | "tiktok" | "youtube" | "x" | "discord" | "reddit";
 type ServiceLogoProvider = ConnectionProvider | "neon" | "google" | "anthropic";
@@ -134,13 +134,13 @@ function SourceServiceIcon({ url, compact = false }: { url: string; compact?: bo
 }
 
 const nav = [
-  { id: "agent" as const, label: "Agent", icon: LayoutDashboard },
   { id: "brain" as const, label: "Brand", icon: BrainCircuit },
-  { id: "research" as const, label: "Research", icon: Search },
+  { id: "sector" as const, label: "Sector expertise", icon: Globe2 },
+  { id: "research" as const, label: "Ideas", icon: Sparkles },
   { id: "campaigns" as const, label: "Campaigns", icon: Rocket },
   { id: "calendar" as const, label: "Calendar", icon: CalendarDays },
   { id: "content" as const, label: "Content library", icon: Library },
-  { id: "analytics" as const, label: "Growth", icon: ChartColumn },
+  { id: "analytics" as const, label: "Results", icon: ChartColumn },
   { id: "integrations" as const, label: "Integrations", icon: Settings2 },
   { id: "issues" as const, label: "Issues", icon: CircleAlert },
 ];
@@ -215,9 +215,9 @@ const emptyBilling = (): BillingStatus => ({
 export default function OperationalApp({ userId, userEmail, onSignOut }: { userId: string; userEmail: string; onSignOut: () => Promise<void> }) {
   const [state, setState] = useState<AppState>(() => loadState(userId));
   const [page, setPage] = useState<Page>(() => {
-    if (typeof window === "undefined") return "agent";
+    if (typeof window === "undefined") return "brain";
     const saved = window.localStorage.getItem(`market-agent:last-page:${userId}`) as Page | null;
-    return saved && nav.some((item) => item.id === saved) ? saved : "agent";
+    return saved && nav.some((item) => item.id === saved) ? saved : "brain";
   });
   const [mobileOpen, setMobileOpen] = useState(false);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
@@ -425,7 +425,11 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
     schedules: { ...current.schedules, [current.activeProjectId]: schedule },
   }));
   const addRun = (run: AgentRun) => {
-    setState((current) => ({ ...current, runs: [run, ...current.runs] }));
+    setState((current) => ({
+      ...current,
+      runs: [run, ...current.runs],
+      projects: run.sectorExpertise?.items?.length ? current.projects.map((project) => project.id === run.projectId ? { ...project, sectorExpertise: run.sectorExpertise!, updatedAt: new Date().toISOString() } : project) : current.projects,
+    }));
     setSelectedRunId(run.id);
   };
   const addProactiveIssues = (projectId: string, findings: IssueFindings | undefined) => {
@@ -513,7 +517,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
     setState((current) => ({ ...current, activeProjectId: projectId }));
     setProjectMenuOpen(false);
     setSelectedRunId(null);
-    setPage("agent");
+    setPage("brain");
   };
 
   const navigate = (next: Page) => { setPage(next); setMobileOpen(false); setSelectedRunId(null); };
@@ -582,12 +586,13 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
           {selectedRunId ? <RunDetail run={state.runs.find((run) => run.id === selectedRunId)!} workspace={activeProject} connections={connections} onBack={() => setSelectedRunId(null)} onConnect={() => navigate("integrations")} onStatus={updateRunStatus} onOutput={updateRunOutput} onCampaignUpdate={applyCampaignUpdate} onDelete={deleteRun} notify={notify} /> : <>
             {page === "agent" && <AgentHome workspace={activeProject} runs={projectRuns} health={{ ...health, agentConfigured: runtimeReady }} connections={connections} schedule={activeSchedule} automationReady={automationReady} onSchedule={updateSchedule} onRun={addRun} onIssuesFound={addProactiveIssues} onOpen={setSelectedRunId} onNavigate={navigate} notify={notify} />}
             {page === "brain" && <ProductBrain key={activeProject.id} userId={userId} workspace={activeProject} onSave={updateWorkspace} onOpenContentLibrary={() => navigate("content")} notify={notify} />}
+            {page === "sector" && <SectorExpertiseWorkspace workspace={activeProject} onSave={updateWorkspace} onRun={addRun} onOpen={setSelectedRunId} notify={notify} />}
             {page === "issues" && <IssuesCenter workspace={activeProject} onSave={updateWorkspace} onOpenBrand={() => navigate("brain")} notify={notify} />}
-            {page === "research" && <ResearchWorkspace workspace={activeProject} runs={projectRuns.filter((run) => ["research", "audience"].includes(run.action))} onRun={addRun} onOpen={setSelectedRunId} notify={notify} />}
-            {page === "campaigns" && <CampaignWorkspace workspace={activeProject} runs={campaignRuns} connections={connections} onSaveWorkspace={updateWorkspace} onOpen={setSelectedRunId} onStart={() => navigate("agent")} onConnect={() => navigate("integrations")} onGrowth={() => navigate("analytics")} notify={notify} />}
+            {page === "research" && <ResearchWorkspace workspace={activeProject} runs={projectRuns.filter((run) => Boolean(run.strategyPlan?.territories?.length) || ["research", "audience"].includes(run.action))} onRun={addRun} onOpen={setSelectedRunId} notify={notify} />}
+            {page === "campaigns" && <CampaignWorkspace workspace={activeProject} runs={campaignRuns} connections={connections} onSaveWorkspace={updateWorkspace} onOpen={setSelectedRunId} onStart={() => navigate("research")} onConnect={() => navigate("integrations")} onGrowth={() => navigate("analytics")} notify={notify} />}
             {page === "calendar" && <CalendarWorkspace workspace={activeProject} runs={campaignRuns} onOpen={setSelectedRunId} onOpenNewsletter={() => { window.sessionStorage.setItem(`market-agent:campaign-section:${activeProject.id}`, "newsletter"); navigate("campaigns"); }} />}
-            {page === "content" && <ContentLibrary userId={userId} workspace={activeProject} runs={projectRuns.filter((run) => run.action === "social")} mediaConfigured={apiCredentials.mediaReady} videoConfigured={apiCredentials.videoReady} onSave={updateWorkspace} onIssuesFound={addProactiveIssues} onOpen={setSelectedRunId} onStart={() => navigate("agent")} notify={notify} />}
-            {page === "analytics" && <AnalyticsDashboard workspace={activeProject} connections={connections} onSave={updateWorkspace} onConnect={() => navigate("integrations")} />}
+            {page === "content" && <ContentLibrary userId={userId} workspace={activeProject} runs={projectRuns.filter((run) => run.action === "social")} mediaConfigured={apiCredentials.mediaReady} videoConfigured={apiCredentials.videoReady} onSave={updateWorkspace} onIssuesFound={addProactiveIssues} onOpen={setSelectedRunId} onStart={() => navigate("research")} notify={notify} />}
+            {page === "analytics" && <AnalyticsDashboard workspace={activeProject} runs={projectRuns} connections={connections} onSave={updateWorkspace} onConnect={() => navigate("integrations")} />}
             {page === "integrations" && <OperationalIntegrations workspace={activeProject} projectId={activeProject.id} userEmail={userEmail} health={{ ...health, agentConfigured: runtimeReady, mediaConfigured: apiCredentials.mediaReady }} apiCredentials={apiCredentials} onApiCredentials={setApiCredentials} billing={billing} accessMode={accessMode} billingBusy={billingBusy} onSubscribe={() => void startManagedSubscription()} onCancelPlan={() => void cancelManagedPlan()} connections={connections} onConnections={setConnections} guideTarget={connectionGuideTarget} notify={notify} />}
           </>}
         </div>
@@ -933,7 +938,7 @@ function AgentHome({ workspace, runs, health, connections, schedule, automationR
     <AssistantRoutine schedule={schedule} automationReady={automationReady} connections={connections} onSchedule={onSchedule} />
     <section><div className="op-section-head"><div><span>Run a complete workflow</span><h2>Real work, saved to the workspace</h2></div></div><div className="op-action-grid">{(["research", "audience", "campaign", "social"] as AgentAction[]).map((action) => { const icons = { research: Globe2, audience: UsersRound, campaign: Rocket, social: MessageSquareText, chat: Bot }; const Icon = icons[action]; return <button key={action} onClick={() => requestRun(action)} disabled={Boolean(running)}><span><Icon size={19} /></span><div><strong>{actionMeta[action].title}</strong><p>{actionMeta[action].description}</p></div>{running === action ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />}</button>; })}</div></section>
     <section><div className="op-section-head"><div><span>Workspace record</span><h2>Recent work</h2></div><small>{runs.length} saved {runs.length === 1 ? "run" : "runs"}</small></div>{runs.length ? <div className="op-run-list">{runs.slice(0, 6).map((run) => <RunRow key={run.id} run={run} onOpen={onOpen} />)}</div> : <EmptyWorkspace onStart={() => onNavigate("brain")} />}</section>
-  </div>{pendingCampaign && <><button className="op-intensity-scrim" aria-label="Close campaign style question" onClick={() => setPendingCampaign(null)} /><aside className="op-intensity-panel"><header><span><Rocket size={18} /></span><div><small>One campaign decision</small><strong>How aggressive should this campaign be?</strong></div><button aria-label="Close" onClick={() => setPendingCampaign(null)}><X size={17} /></button></header><div className="op-intensity-body"><p>The agent will do the research, targeting, copy, sequence, and tracking. Choose the pace and pressure.</p><button className="aggressive" onClick={() => chooseIntensity("aggressive")}><span><strong>Aggressive</strong><em>Recommended for this goal</em></span><small>Large first wave, parallel channels, direct commercial language, strong calls to action, fast follow-up.</small><ArrowRight size={16} /></button><button onClick={() => chooseIntensity("assertive")}><span><strong>Assertive</strong></span><small>Meaningful volume, decisive messaging, and fast execution with regular review points.</small><ArrowRight size={16} /></button><button onClick={() => chooseIntensity("careful")}><span><strong>Careful</strong></span><small>Smaller waves, softer calls to action, and more validation before scaling.</small><ArrowRight size={16} /></button><div className="op-intensity-note"><ShieldCheck size={15} /><span>Aggressive changes speed and tactics—not truthfulness, consent, or opt-out rules.</span></div></div></aside></>}</>;
+  </div>{pendingCampaign && <><button className="op-intensity-scrim" aria-label="Close campaign style question" onClick={() => setPendingCampaign(null)} /><aside className="op-intensity-panel"><header><span><Rocket size={18} /></span><div><small>One campaign decision</small><strong>How aggressive should this campaign be?</strong></div><button aria-label="Close" onClick={() => setPendingCampaign(null)}><X size={17} /></button></header><div className="op-intensity-body"><p>The agent will do the research, targeting, copy, sequence, and tracking. Choose the pace and pressure.</p><button className="aggressive" onClick={() => chooseIntensity("aggressive")}><span><strong>Aggressive</strong><em>Recommended for this goal</em></span><small>Direct commercial language, strong calls to action, fast follow-up, and rapid iteration inside the same 20–30-person learning gate.</small><ArrowRight size={16} /></button><button onClick={() => chooseIntensity("assertive")}><span><strong>Assertive</strong></span><small>Decisive messaging and fast execution with regular review points.</small><ArrowRight size={16} /></button><button onClick={() => chooseIntensity("careful")}><span><strong>Careful</strong></span><small>Softer calls to action and more validation before the next small cohort.</small><ArrowRight size={16} /></button><div className="op-intensity-note"><ShieldCheck size={15} /><span>Aggressive changes the proposition and iteration speed—not the evidence gate, truthfulness, consent, or opt-out rules.</span></div></div></aside></>}</>;
 }
 
 function isCampaignRequest(action: AgentAction, direction: string) {
@@ -1648,7 +1653,11 @@ function InvitationWorkspace({ dashboard, workspace, working, feedback, mailbox,
   const [intervalMinutes, setIntervalMinutes] = useState(2);
   useEffect(() => setDraft(campaign ? invitationDraft(campaign) : null), [campaign?.id, campaign?.updatedAt]);
   const changed = Boolean(campaign && draft && ["invitationSubject", "invitationBody", "invitationStrategy", "invitationCtaLabel", "invitationUrl"].some((key) => draft[key as keyof typeof draft] !== campaign[key as keyof ProspectConversionCampaign]));
-  const invitation = campaign?.invitation || { total: 0, scheduled: 0, sent: 0, failed: 0, cancelled: 0, clicks: 0, uniqueClicks: 0, firstClickedAt: null, lastClickedAt: null, startsAt: null, endsAt: null, responses: [] };
+  const invitation = campaign?.invitation || { total: 0, scheduled: 0, sent: 0, failed: 0, cancelled: 0, clicks: 0, uniqueClicks: 0, confirmedConversions: 0, firstClickedAt: null, lastClickedAt: null, startsAt: null, endsAt: null, responses: [] };
+  const experimentMissing = missingExperimentFields(campaign?.experiment || null);
+  const experimentReady = experimentMissing.length === 0;
+  const cohortCount = experimentReady ? Math.min(prospectCount, campaign?.experiment?.cohortSize || 25) : 0;
+  const performance = invitationPerformanceDiagnosis(invitation);
   const save = () => campaign && draft ? onUpdate(campaign, draft) : Promise.resolve();
   const chooseGoal = (strategy: ProspectConversionCampaign["invitationStrategy"]) => setDraft((current) => current ? {
     ...current,
@@ -1660,8 +1669,9 @@ function InvitationWorkspace({ dashboard, workspace, working, feedback, mailbox,
   if (!campaign || !draft) return <section className="op-invitation-workspace op-invitation-empty"><div><small>INVITE NEW PEOPLE</small><h2>Let the agent prepare the invitation</h2><p>The agent uses the Brand, website, audience, and connected sender to create the complete editable email and preview. Nothing is sent without approval.</p></div><button onClick={() => void onCreate()} disabled={working === "create-optin"}><Sparkles size={15} />{working === "create-optin" ? "Preparing…" : "Prepare invitation"}</button></section>;
 
   return <section className="op-invitation-workspace">
-    <header><div><small>INVITE NEW PEOPLE</small><h2>Invitation email</h2><p>One workflow: add recipients, choose the goal, write and preview the email, test it, then approve delivery.</p></div><em>{prospectCount.toLocaleString()} recipient{prospectCount === 1 ? "" : "s"}</em></header>
+    <header><div><small>INVITE NEW PEOPLE</small><h2>Invitation experiment</h2><p>The agent selects a small relevant cohort, records the hypothesis and learning rules, then pauses before any expansion.</p></div><em>{cohortCount ? `${cohortCount} selected from ${prospectCount.toLocaleString()}` : `${prospectCount.toLocaleString()} eligible`}</em></header>
     {feedback && <div className="op-optin-feedback"><Check size={16} /><span>{feedback}</span></div>}
+    <ExperimentGate experiment={campaign.experiment} missing={experimentMissing} />
     <div className="op-invitation-builder">
       <div className="op-invitation-controls">
         <label><span>Agent-selected goal · change only if needed</span><select value={draft.invitationStrategy} onChange={(event) => chooseGoal(event.target.value as ProspectConversionCampaign["invitationStrategy"])}><option value="project_first">Visit website or try demo</option><option value="direct_signup" disabled={!subscriptionReady}>Subscribe{subscriptionReady ? "" : " — connect newsletter first"}</option><option value="custom">Another action</option></select></label>
@@ -1677,11 +1687,43 @@ function InvitationWorkspace({ dashboard, workspace, working, feedback, mailbox,
       <label><span>Start</span><input type="datetime-local" value={startAt} onChange={(event) => setStartAt(event.target.value)} /></label>
       <label><span>Spacing</span><select value={intervalMinutes} onChange={(event) => setIntervalMinutes(Number(event.target.value))}><option value={1}>1 minute</option><option value={2}>2 minutes</option><option value={3}>3 minutes</option><option value={5}>5 minutes</option></select></label>
       {!mailbox.canSend ? <button className="secondary" onClick={onConnect}>Connect mailbox</button> : <button className="secondary" disabled={working === `test-${campaign.id}`} onClick={() => void onTest(campaign, draft.invitationSubject, draft.invitationBody, draft.invitationUrl, draft.invitationCtaLabel)}><Send size={14} />{working === `test-${campaign.id}` ? "Sending test…" : `Send test to ${mailbox.accountEmail}`}</button>}
-      {invitation.scheduled > 0 ? <div className="op-invitation-pending-group"><span className="op-invitation-pending">{invitation.scheduled} still scheduled</span><button className="secondary" disabled={working === `pause-${campaign.id}`} onClick={() => void onPause(campaign)}>{working === `pause-${campaign.id}` ? "Pausing…" : "Pause remaining"}</button></div> : <button className="primary" disabled={changed || prospectCount < 1 || !mailbox.canSend || working === `invite-${campaign.id}`} onClick={() => void onSchedule(campaign, draft.invitationSubject, draft.invitationBody, draft.invitationUrl, draft.invitationCtaLabel, startAt, intervalMinutes, invitation.total > 0)}><Send size={14} />{invitation.total > 0 ? "Approve revised send" : `Approve ${prospectCount.toLocaleString()} invitations`}</button>}
+      {invitation.scheduled > 0 ? <div className="op-invitation-pending-group"><span className="op-invitation-pending">{invitation.scheduled} still scheduled</span><button className="secondary" disabled={working === `pause-${campaign.id}`} onClick={() => void onPause(campaign)}>{working === `pause-${campaign.id}` ? "Pausing…" : "Pause remaining"}</button></div> : <button className="primary" disabled={changed || prospectCount < 1 || !mailbox.canSend || !experimentReady || working === `invite-${campaign.id}`} onClick={() => void onSchedule(campaign, draft.invitationSubject, draft.invitationBody, draft.invitationUrl, draft.invitationCtaLabel, startAt, intervalMinutes, invitation.total > 0)}><Send size={14} />{!experimentReady ? "Experiment incomplete" : invitation.total > 0 ? "Approve revised cohort" : `Approve ${cohortCount.toLocaleString()}-person experiment`}</button>}
       {changed && <small className="op-invitation-save-note">Save the invitation before approving delivery.</small>}
     </footer>
-    {invitation.total > 0 && <section className="op-invitation-performance"><header><div><small>INVITATION PERFORMANCE</small><h3>From sender acceptance to website visit</h3></div><span>{invitation.scheduled > 0 ? `${invitation.scheduled} still scheduled` : "Batch finished"}</span></header><div className="op-invitation-history"><span><small>Approved</small><strong>{invitation.total}</strong></span><span><small>Accepted by Gmail</small><strong>{invitation.sent}</strong></span><span><small>Unique link visits</small><strong>{invitation.uniqueClicks || 0}</strong></span><span><small>Visit rate</small><strong>{invitation.sent ? formatPercent((invitation.uniqueClicks || 0) / invitation.sent) : "—"}</strong></span><span><small>Immediate failures</small><strong>{invitation.failed}</strong></span></div>{(invitation.responses || []).length > 0 && <div className="op-invitation-responses"><strong>Mailbox responses</strong>{invitation.responses.map((response) => <div key={`${response.email}-${response.occurredAt}`}><span><b>{response.email}</b><small>{response.subject || (response.kind === "bounce" ? "Delivery failure" : response.kind === "auto_reply" ? "Automatic reply" : "Reply received")}</small></span><em className={response.kind}>{response.kind === "bounce" ? "Cancelled" : response.kind === "auto_reply" ? `Paused${response.holdUntil ? ` until ${new Date(response.holdUntil).toLocaleDateString()}` : ""}` : "Follow-ups stopped"}</em></div>)}</div>}<p>{mailbox.canMonitor ? "Delivery failures, automatic replies, and human replies are monitored from Gmail metadata. Message bodies are never read." : mailbox.monitoringApprovalStatus === "pending" ? "Gmail accepted these sends. Reply and delivery-failure monitoring will become available after Google approves the mailbox metadata permission." : "Gmail acceptance is not final delivery confirmation; a recipient server can reject the message later."} Link visits are counted without storing IP addresses. Email security scanners can occasionally trigger a visit.</p></section>}
+    {invitation.total > 0 && <section className="op-invitation-performance"><header><div><small>INVITATION PERFORMANCE</small><h3>What happened and what to do next</h3></div><span>{invitation.scheduled > 0 ? `${invitation.scheduled} still scheduled` : "Batch finished"}</span></header><div className="op-invitation-history"><span><small>Approved</small><strong>{invitation.total}</strong></span><span><small>Accepted by Gmail</small><strong>{invitation.sent}</strong></span><span><small>Tracked recipient links</small><strong>{invitation.uniqueClicks || 0}</strong></span><span><small>Link activity rate</small><strong>{invitation.sent ? formatPercent((invitation.uniqueClicks || 0) / invitation.sent) : "—"}</strong></span><span><small>Confirmed after invite</small><strong>{invitation.confirmedConversions || 0}</strong></span><span><small>Visit to confirmation</small><strong>{invitation.uniqueClicks ? formatPercent((invitation.confirmedConversions || 0) / invitation.uniqueClicks) : "—"}</strong></span></div><div className={`op-invitation-diagnosis ${performance.tone}`}><span>{performance.tone === "good" ? <Check size={18} /> : <CircleAlert size={18} />}</span><div><small>AGENT DIAGNOSIS</small><strong>{performance.title}</strong><p>{performance.detail}</p><b>{performance.next}</b></div></div>{(invitation.responses || []).length > 0 && <div className="op-invitation-responses"><strong>Mailbox responses</strong>{invitation.responses.map((response) => <div key={`${response.email}-${response.occurredAt}`}><span><b>{response.email}</b><small>{response.subject || (response.kind === "bounce" ? "Delivery failure" : response.kind === "auto_reply" ? "Automatic reply" : "Reply received")}</small></span><em className={response.kind}>{response.kind === "bounce" ? "Cancelled" : response.kind === "auto_reply" ? `Paused${response.holdUntil ? ` until ${new Date(response.holdUntil).toLocaleDateString()}` : ""}` : "Follow-ups stopped"}</em></div>)}</div>}<p>{mailbox.canMonitor ? "Delivery failures, automatic replies, and human replies are monitored from Gmail metadata. Message bodies are never read." : mailbox.monitoringApprovalStatus === "pending" ? "Gmail accepted these sends. Reply and delivery-failure monitoring will become available after Google approves the mailbox metadata permission." : "Gmail acceptance is not final delivery confirmation; a recipient server can reject the message later."} Tracked link activity does not store IP addresses and may include email-security scanners.</p></section>}
+    {campaign.learning && <section className="op-learning-conclusion"><small>EXPERIMENT LEARNING</small><strong>Conclusion saved to Results and future strategy</strong><p>{campaign.learning.whatHappened}</p><p><b>Meaning:</b> {campaign.learning.meaning}</p><p><b>Next:</b> {campaign.learning.nextTest}</p></section>}
   </section>;
+}
+
+function invitationPerformanceDiagnosis(invitation: ProspectConversionCampaign["invitation"]) {
+  const sent = Math.max(0, Number(invitation.sent || 0));
+  const visits = Math.max(0, Number(invitation.uniqueClicks || 0));
+  const conversions = Math.max(0, Number(invitation.confirmedConversions || 0));
+  if (invitation.scheduled > 0) return {
+    tone: "attention",
+    title: "The campaign is still running.",
+    detail: `${invitation.scheduled} approved email${invitation.scheduled === 1 ? " is" : "s are"} still scheduled, so the final result is not available yet.`,
+    next: "Do not approve another batch until the current schedule finishes.",
+  };
+  if (!sent) return { tone: "attention", title: "No invitation has been accepted for delivery.", detail: "There is no campaign outcome to evaluate yet.", next: "Resolve delivery first; changing the message would not address this problem." };
+  if (conversions > 0) return {
+    tone: "good",
+    title: `${conversions} invited ${conversions === 1 ? "person has" : "people have"} confirmed.`,
+    detail: `${visits} recipient link${visits === 1 ? "" : "s"} registered activity from ${sent} Gmail-accepted messages.`,
+    next: "Use the converting audience and message as the baseline for the next small test.",
+  };
+  if (visits > 0) return {
+    tone: "attention",
+    title: "The email generated interest, but the next step did not convert.",
+    detail: `${visits} recipient link${visits === 1 ? "" : "s"} registered activity, but no invited address confirmed afterward. Some activity may be security scanners, so this is directional—not proof that every visit was human.`,
+    next: "Do not resend the same campaign. Verify the exact destination and subscription path, strengthen the offer, then test revised copy with a small segment.",
+  };
+  return {
+    tone: "attention",
+    title: "The message or audience did not create measurable interest.",
+    detail: `${sent} messages were accepted by Gmail, but no recipient link registered activity and no invited address confirmed.`,
+    next: "Stop the current approach. Rework the audience, subject, and value proposition before approving another send.",
+  };
 }
 
 function invitationDraft(campaign: ProspectConversionCampaign) {
@@ -2962,7 +3004,7 @@ const analyticsTabs: Array<{ id: AnalyticsTab; label: string }> = [
   { id: "reddit", label: "Reddit" },
 ];
 
-function AnalyticsDashboard({ workspace, connections, onSave, onConnect }: { workspace: ProductWorkspace; connections: ConnectionStatus; onSave: (workspace: ProductWorkspace) => void; onConnect: () => void }) {
+function AnalyticsDashboard({ workspace, runs, connections, onSave, onConnect }: { workspace: ProductWorkspace; runs: AgentRun[]; connections: ConnectionStatus; onSave: (workspace: ProductWorkspace) => void; onConnect: () => void }) {
   const [range, setRange] = useState("28daysAgo");
   const [tab, setTab] = useState<AnalyticsTab>("overview");
   const inferredGrowth = useMemo(() => inferProjectGrowthPlan(workspace), [workspace]);
@@ -2978,7 +3020,7 @@ function AnalyticsDashboard({ workspace, connections, onSave, onConnect }: { wor
       return <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}><i className={connected ? "connected" : ""} />{item.label}</button>;
     })}</nav>
     {tab === "overview"
-      ? <GrowthOverviewPanel workspace={workspace} suggestedGoal={inferredGrowth} range={range} onSave={onSave} onConnect={onConnect} />
+      ? <GrowthOverviewPanel workspace={workspace} runs={runs} suggestedGoal={inferredGrowth} range={range} onSave={onSave} onConnect={onConnect} />
       : tab === "website"
         ? <WebsiteAnalyticsPanel projectId={workspace.id} connection={connections.analytics} range={range} onConnect={onConnect} />
         : tab === "newsletter"
@@ -2987,7 +3029,7 @@ function AnalyticsDashboard({ workspace, connections, onSave, onConnect }: { wor
   </div>;
 }
 
-function GrowthOverviewPanel({ workspace, suggestedGoal, range, onSave, onConnect }: { workspace: ProductWorkspace; suggestedGoal: ProductWorkspace["growth"]; range: string; onSave: (workspace: ProductWorkspace) => void; onConnect: () => void }) {
+function GrowthOverviewPanel({ workspace, runs, suggestedGoal, range, onSave, onConnect }: { workspace: ProductWorkspace; runs: AgentRun[]; suggestedGoal: ProductWorkspace["growth"]; range: string; onSave: (workspace: ProductWorkspace) => void; onConnect: () => void }) {
   const [report, setReport] = useState<GrowthReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -3022,9 +3064,14 @@ function GrowthOverviewPanel({ workspace, suggestedGoal, range, onSave, onConnec
   const changeObjective = (objective: GrowthObjective) => setDraft((current) => ({ ...current, objective, primaryConversion: recommendedConversion(objective, suggestedGoal.primaryConversion), analyticsEvent: "" }));
   const goal = report?.goal || (workspace.growth?.objective ? workspace.growth : suggestedGoal);
   const funnelMax = Math.max(1, ...(report?.funnel || []).map((item) => Number(item.value || 0)));
+  const learnedExperiments = [
+    ...runs.filter((run) => run.learningConclusion).map((run) => ({ id: run.id, title: run.title, learning: run.learningConclusion! })),
+    ...(report?.experimentLearnings || []),
+  ].filter((item, index, all) => item.learning && all.findIndex((candidate) => candidate.id === item.id) === index).slice(0, 20);
   return <>
     <section className="op-growth-goal"><div className="op-growth-goal__icon"><Rocket size={21} /></div><div><small>{goal.selectedBy === "assistant" ? "ASSISTANT-SELECTED PROJECT GOAL" : "PROJECT GOAL"}</small><h2>{growthObjectiveLabel(goal.objective)}</h2><p>{goal.rationale}</p><span>Primary conversion: <strong>{primaryConversionLabel(goal.primaryConversion)}</strong>{goal.analyticsEvent ? ` · measured as ${goal.analyticsEvent}` : " · matching website event not detected yet"}{goal.targetValue > 0 ? ` · target ${formatMetric(goal.targetValue)} per ${goal.targetPeriodDays} days` : ""}</span></div><button onClick={() => setEditing((value) => !value)}>{editing ? "Close" : "Change"}</button></section>
     {editing && <section className="op-growth-goal-editor"><label><span>Growth objective</span><select value={draft.objective} onChange={(event) => changeObjective(event.target.value as GrowthObjective)}><option value="visibility">Qualified visibility</option><option value="leads">Qualified leads</option><option value="sales">Sales</option><option value="audience">Audience growth</option><option value="newsletter">Newsletter growth</option></select></label><label><span>Primary conversion</span><select value={draft.primaryConversion} onChange={(event) => setDraft((current) => ({ ...current, primaryConversion: event.target.value as PrimaryConversion, analyticsEvent: "" }))}><option value="contact_form">Contact or enquiry</option><option value="demo_request">Demo request</option><option value="newsletter_signup">Newsletter registration</option><option value="purchase">Purchase</option><option value="reply">Direct reply</option><option value="custom">Another Analytics event</option></select></label><label><span>Analytics event</span><select value={draft.analyticsEvent} onChange={(event) => setDraft((current) => ({ ...current, analyticsEvent: event.target.value }))}><option value="">Let the assistant match it</option>{report?.keyEvents.map((event) => <option key={event.eventName} value={event.eventName}>{event.eventName} · {formatMetric(event.count)}</option>)}</select></label><label><span>Optional target</span><div><input type="number" min="0" value={draft.targetValue || ""} placeholder="No target" onChange={(event) => setDraft((current) => ({ ...current, targetValue: Math.max(0, Number(event.target.value || 0)) }))} /><select value={draft.targetPeriodDays} onChange={(event) => setDraft((current) => ({ ...current, targetPeriodDays: Number(event.target.value) }))}><option value={30}>per 30 days</option><option value={60}>per 60 days</option><option value={90}>per 90 days</option></select></div></label><button onClick={saveGoal}>Save change</button></section>}
+    {learnedExperiments.length > 0 && <section className="op-results-learning"><header><div><small>PERMANENT PROJECT LEARNING</small><h2>What completed experiments changed</h2></div><span>{learnedExperiments.length} conclusion{learnedExperiments.length === 1 ? "" : "s"}</span></header><div>{learnedExperiments.map((experiment) => <article key={experiment.id}><small>{new Date(experiment.learning.concludedAt).toLocaleDateString()}</small><h3>{experiment.title}</h3><p>{experiment.learning.whatHappened}</p><p><b>Meaning:</b> {experiment.learning.meaning}</p><strong>Next test: {experiment.learning.nextTest}</strong></article>)}</div></section>}
     {error && <div className="op-analytics-error"><CircleAlert size={17} />{error}<button onClick={onConnect}>Manage connections</button></div>}
     {loading && !report ? <div className="op-analytics-loading"><LoaderCircle className="spin" size={22} /> Reading live growth signals…</div> : report && <>
       <section className="op-growth-metrics">{report.metrics.map((metric) => <article key={metric.key}><header><small>{metric.label}</small>{metric.key === "visibility" && metric.change == null ? <em className="op-growth-delta neutral">Current period</em> : <GrowthDelta change={metric.change} percent={metric.changePercent} />}</header><strong>{metric.key === "audience" && metric.change != null ? formatSignedMetric(metric.change) : formatMetric(metric.value)}</strong><span>{metric.key === "audience" && metric.change != null ? "net change" : metric.unit}</span><p>{metric.note}</p><footer>{metric.source}</footer></article>)}</section>
@@ -3510,26 +3557,31 @@ function CampaignWorkspace({ workspace, runs, connections, onSaveWorkspace, onOp
   };
 
   const scheduleOptinInvitations = async (campaign: ProspectConversionCampaign, subject: string, body: string, invitationUrl: string, invitationCtaLabel: string, startAt: string, intervalMinutes: number, repeat = false) => {
-    const recipientCount = dashboard?.prospectInvitationRecipientCount || 0;
+    const eligibleCount = dashboard?.prospectInvitationRecipientCount || 0;
+    const cohortCount = Math.min(eligibleCount, Math.max(0, Math.min(30, Number(campaign.experiment?.cohortSize) || 0)));
+    if (cohortCount < 20) {
+      notify("This invitation needs a complete experiment and at least 20 eligible prospects before it can be approved.");
+      return;
+    }
     const start = new Date(startAt);
     if (!Number.isFinite(start.getTime())) {
       notify("Choose when the invitation campaign should start.");
       return;
     }
     const confirmation = repeat
-      ? `Send the revised invitation again to ${recipientCount.toLocaleString()} prospect${recipientCount === 1 ? "" : "s"}, starting ${start.toLocaleString()}? Previously contacted prospects may receive this new version. This requires explicit approval and will not alter prior messages.`
-      : `Approve ${recipientCount.toLocaleString()} individual invitation email${recipientCount === 1 ? "" : "s"} from ${connections.gmail.accountEmail || "the connected mailbox"}, starting ${start.toLocaleString()}? Each prospect receives one private message; addresses are never shared.`;
+      ? `Send the revised experiment again to a ${cohortCount}-person cohort selected from ${eligibleCount.toLocaleString()} eligible prospects, starting ${start.toLocaleString()}? Previously contacted prospects may receive this new version. This requires explicit approval and will not alter prior messages.`
+      : `Approve a ${cohortCount}-person experiment selected from ${eligibleCount.toLocaleString()} eligible prospects, sent from ${connections.gmail.accountEmail || "the connected mailbox"} starting ${start.toLocaleString()}? Each prospect receives one private message; addresses are never shared.`;
     if (!window.confirm(confirmation)) return;
     setWorking(`invite-${campaign.id}`);
-    setOptinFeedback(`Scheduling ${recipientCount.toLocaleString()} individual invitations from ${connections.gmail.accountEmail}…`);
+    setOptinFeedback(`Selecting and scheduling the ${cohortCount}-person experiment from ${connections.gmail.accountEmail}…`);
     try {
       const response = await apiFetch("/api/newsletters", { method: "POST", body: JSON.stringify({ action: "schedule-optin-invitations", projectId, id: campaign.id, subject, body, invitationUrl, invitationCtaLabel, startAt: start.toISOString(), intervalMinutes, resend: repeat, repeatConfirmed: repeat, approvalConfirmed: true }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "The invitation campaign could not be scheduled.");
       setDashboard((current) => current ? { ...current, conversionCampaigns: current.conversionCampaigns.map((item) => item.id === campaign.id ? { ...item, invitation: data.invitation } : item) } : current);
-      setOptinFeedback(`${Number(data.invitation?.total || data.recipientCount || 0).toLocaleString()} individual invitations approved and scheduled. The first messages will leave from ${data.invitation?.sender || connections.gmail.accountEmail}.`);
+      setOptinFeedback(`${Number(data.invitation?.cohortSize || data.invitation?.inserted || cohortCount).toLocaleString()} experiment invitations approved and scheduled. The first messages will leave from ${data.invitation?.sender || connections.gmail.accountEmail}.`);
       await refreshDeliveryJobs();
-      notify("Invitation campaign approved and scheduled.");
+      notify("Invitation experiment approved and scheduled.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "The invitation campaign could not be scheduled.";
       setOptinFeedback(`Nothing was sent: ${message}`);
@@ -3874,47 +3926,91 @@ function RunLibrary({ title, description, empty, runs, onOpen, onStart }: { titl
   return <div className="op-stack"><div className="op-heading"><div className="op-eyebrow">Saved workspace records</div><h1>{title}</h1><p>{description}</p></div>{runs.length ? <div className="op-run-list">{runs.map((run) => <RunRow key={run.id} run={run} onOpen={onOpen} />)}</div> : <div className="op-empty"><span><FileText size={23} /></span><h2>{empty}</h2><p>Run the agent to create the first real record.</p><button onClick={onStart}><Sparkles size={15} /> Open agent</button></div>}</div>;
 }
 
-function ResearchWorkspace({ workspace, runs, onRun, onOpen, notify }: { workspace: ProductWorkspace; runs: AgentRun[]; onRun: (run: AgentRun) => void; onOpen: (id: string) => void; notify: (message: string) => void }) {
-  const [working, setWorking] = useState("");
-  const planned = runs.filter((run) => run.researchPlan?.opportunities?.length);
-  const previous = runs.filter((run) => !run.researchPlan?.opportunities?.length);
-  const createRun = async (action: "research" | "campaign", prompt: string, key: string) => {
-    setWorking(key);
+const sectorCategoryLabels: Record<SectorKnowledgeCategory, string> = {
+  industry_business_model: "Industry and business model",
+  customer_segments: "Customer segments and buyer roles",
+  decision_process: "Decision process and procurement cycle",
+  problems_objections_triggers: "Problems, objections and triggers",
+  competitors_alternatives: "Competitors and alternatives",
+  terminology_conventions: "Terminology and communication conventions",
+  regulations_risks_proof: "Regulations, risks and proof requirements",
+  seasonality_events_signals: "Seasonality, events and current signals",
+};
+
+function SectorExpertiseWorkspace({ workspace, onSave, onRun, onOpen, notify }: { workspace: ProductWorkspace; onSave: (workspace: ProductWorkspace) => void; onRun: (run: AgentRun) => void; onOpen: (id: string) => void; notify: (message: string) => void }) {
+  const [working, setWorking] = useState(false);
+  const [editingId, setEditingId] = useState("");
+  const [correction, setCorrection] = useState("");
+  const expertise = workspace.sectorExpertise || { summary: "", items: [], missingKnowledge: [], refreshedAt: "" };
+  const groups = (Object.keys(sectorCategoryLabels) as SectorKnowledgeCategory[]).map((category) => ({ category, items: expertise.items.filter((item) => item.category === category) }));
+  const verified = expertise.items.filter((item) => item.verificationStatus === "verified" || item.userCorrected).length;
+  const refresh = async () => {
+    setWorking(true);
     try {
-      const response = await apiFetch("/api/agent", { method: "POST", body: JSON.stringify({ action, prompt, workspace, projectId: workspace.id, useWeb: true, mode: "single", intensity: "assertive" }) });
+      const response = await apiFetch("/api/agent", { method: "POST", body: JSON.stringify({ action: "research", prompt: "Refresh the persistent sector expertise. Find material gaps, verify outdated evidence, preserve every user correction, and ask only questions whose answer would materially change strategy.", workspace, projectId: workspace.id, useWeb: true, mode: "single", intensity: "assertive" }) });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || (action === "research" ? "Research could not be completed." : "The campaign draft could not be created."));
+      if (!response.ok) throw new Error(data.error || "Sector expertise could not be refreshed.");
       onRun(data.run as AgentRun);
-      notify(action === "research" ? "Research completed as campaign opportunities." : "Campaign draft created from this opportunity. Nothing was published.");
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "The work could not be completed.");
-    } finally {
-      setWorking("");
-    }
+      notify("Sector expertise refreshed with dated, sourced evidence.");
+    } catch (error) { notify(error instanceof Error ? error.message : "Sector expertise could not be refreshed."); }
+    finally { setWorking(false); }
   };
-  const refresh = () => createRun("research", "Find the three strongest current campaign opportunities for this brand. Exclude generic news. For each opportunity provide the exact message, required or reusable assets, audience, channel, timing, primary conversion, and measurement plan.", "research");
-  const buildCampaign = (run: AgentRun, index: number) => {
-    const opportunity = run.researchPlan?.opportunities?.[index];
-    if (!opportunity) return;
-    const prompt = `Build an executable campaign from this approved research opportunity. Preserve the core message and measurement goal, select or specify the exact assets, and create visual editable channel previews and a dated schedule.\n\nOPPORTUNITY\n${JSON.stringify(opportunity, null, 2)}`;
-    void createRun("campaign", prompt, `${run.id}-${index}`);
+  const saveCorrection = (id: string) => {
+    const statement = correction.trim();
+    if (!statement) return;
+    const now = new Date().toISOString();
+    onSave({
+      ...workspace,
+      sectorExpertise: {
+        ...expertise,
+        items: expertise.items.map((item) => item.id === id ? { ...item, statement, sourceTitle: "User correction", sourceUrl: "", observedAt: now, confidence: "high", verificationStatus: "verified", userCorrected: true } : item),
+        refreshedAt: now,
+      },
+      updatedAt: now,
+    });
+    setEditingId("");
+    setCorrection("");
+    notify("Correction saved as the project’s highest-priority evidence.");
+  };
+  return <div className="op-stack op-sector-workspace">
+    <div className="op-heading op-sector-heading"><div><div className="op-eyebrow">Persistent project intelligence</div><h1>Sector expertise</h1><p>The agent’s working knowledge of the industry, buyers, alternatives, risks, proof requirements, and market timing. Every claim keeps its source, date, confidence, and verification state.</p></div><button onClick={() => void refresh()} disabled={working}>{working ? <LoaderCircle className="spin" size={15} /> : <Search size={15} />}{working ? "Researching…" : expertise.items.length ? "Refresh evidence" : "Build expertise"}</button></div>
+    <section className="op-sector-summary"><article><small>Evidence items</small><strong>{expertise.items.length}</strong><span>saved for this project</span></article><article><small>Verified</small><strong>{verified}</strong><span>directly supported or corrected</span></article><article><small>Coverage</small><strong>{groups.filter((group) => group.items.length).length}/8</strong><span>decision areas represented</span></article><article><small>Last refreshed</small><strong>{expertise.refreshedAt ? new Date(expertise.refreshedAt).toLocaleDateString() : "—"}</strong><span>evidence is refreshed proactively</span></article></section>
+    {expertise.summary && <section className="op-sector-overview"><small>SECTOR MODEL</small><p>{expertise.summary}</p></section>}
+    {expertise.items.length ? <div className="op-sector-grid">{groups.map((group) => <section key={group.category} className={!group.items.length ? "empty" : ""}><header><span>{sectorCategoryLabels[group.category]}</span><em>{group.items.length}</em></header>{group.items.length ? group.items.map((item) => <article key={item.id} className={item.userCorrected ? "corrected" : ""}><p>{item.statement}</p><footer><span className={`verification-${item.verificationStatus}`}>{item.userCorrected ? "User verified" : item.verificationStatus.replaceAll("_", " ")}</span><span>{item.confidence} confidence</span><time>{item.observedAt ? new Date(item.observedAt).toLocaleDateString() : "No date"}</time></footer><div className="op-sector-source">{item.sourceUrl ? <a href={item.sourceUrl} target="_blank" rel="noreferrer">{item.sourceTitle || "Open source"}<ArrowRight size={11} /></a> : <span>{item.sourceTitle || "Source needs review"}</span>}<button className="secondary" onClick={() => { setEditingId(item.id); setCorrection(item.statement); }}>Correct</button></div>{editingId === item.id && <div className="op-sector-correction"><textarea value={correction} onChange={(event) => setCorrection(event.target.value)} /><div><button className="secondary" onClick={() => setEditingId("")}>Cancel</button><button onClick={() => saveCorrection(item.id)} disabled={!correction.trim()}>Save correction</button></div></div>}</article>) : <p>No supported evidence yet. The next refresh will research this decision area.</p>}</section>)}</div> : <div className="op-empty"><span><Globe2 size={23} /></span><h2>No sector expertise yet</h2><p>Build it before creating another campaign. The agent will read the project sources, research credible external evidence, and separate verified facts from hypotheses.</p><button onClick={() => void refresh()} disabled={working}><Sparkles size={15} /> Build sector expertise</button></div>}
+    {expertise.missingKnowledge.length > 0 && <section className="op-sector-gaps"><header><CircleAlert size={17} /><div><small>MATERIAL UNKNOWNS</small><strong>Only questions that could change strategy</strong></div></header><ul>{expertise.missingKnowledge.map((item) => <li key={item}>{item}</li>)}</ul></section>}
+  </div>;
+}
+
+function ResearchWorkspace({ workspace, runs, onRun, onOpen, notify }: { workspace: ProductWorkspace; runs: AgentRun[]; onRun: (run: AgentRun) => void; onOpen: (id: string) => void; notify: (message: string) => void }) {
+  const [working, setWorking] = useState(false);
+  const planned = runs.filter((run) => run.strategyPlan?.territories?.length);
+  const previous = runs.filter((run) => !run.strategyPlan?.territories?.length);
+  const refresh = async () => {
+    setWorking(true);
+    try {
+      const response = await apiFetch("/api/agent", { method: "POST", body: JSON.stringify({ action: "campaign", prompt: "Generate several genuinely different campaign territories from the saved sector expertise. Reject anything generic. Do not send or publish anything.", workspace, projectId: workspace.id, useWeb: true, mode: "single", intensity: "assertive" }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Campaign territories could not be created.");
+      onRun(data.run as AgentRun);
+      notify("Sector-grounded territories created. Nothing was published.");
+    } catch (error) { notify(error instanceof Error ? error.message : "Campaign territories could not be created."); }
+    finally { setWorking(false); }
   };
   return <div className="op-stack op-research-workspace">
-    <div className="op-heading op-research-heading"><div><div className="op-eyebrow">Campaign intelligence</div><h1>Research that creates action</h1><p>Only signals that matter to {workspace.name || "this brand"}. Every opportunity includes the message, assets, channels, timing, and tracking needed to turn it into a campaign.</p></div><button onClick={() => void refresh()} disabled={Boolean(working)}>{working === "research" ? <LoaderCircle className="spin" size={15} /> : <Search size={15} />}{working === "research" ? "Researching…" : "Find new opportunities"}</button></div>
+    <div className="op-heading op-research-heading"><div><div className="op-eyebrow">Strategic brainstorming</div><h1>Ideas worth testing</h1><p>Several meaningfully different territories grounded in {workspace.name || "this project"}’s sector, buyer tensions, proof requirements, and current evidence. Generic ideas are rejected before they appear here.</p></div><button onClick={() => void refresh()} disabled={working}>{working ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}{working ? "Building territories…" : "Generate new territories"}</button></div>
     {planned.length ? <div className="op-research-runs">{planned.map((run) => <section className="op-research-run" key={run.id}>
-      <header><div><small>{new Date(run.createdAt).toLocaleString()}</small><h2>{run.researchPlan?.summary || run.title}</h2></div><button className="secondary" onClick={() => onOpen(run.id)}>Open full evidence <ArrowRight size={13} /></button></header>
-      <div className="op-opportunity-grid">{run.researchPlan?.opportunities.map((opportunity, index) => <article className="op-opportunity-card" key={`${run.id}-${index}`}>
-        <header><div><small>CAMPAIGN OPPORTUNITY {index + 1}</small><h3>{opportunity.title}</h3></div><em className={`confidence-${opportunity.confidence}`}>{opportunity.confidence}</em></header>
-        <div className="op-opportunity-signal"><strong>Signal</strong><p>{opportunity.signal}</p><span>{opportunity.whyItMatters}</span></div>
-        <dl><div><dt>Audience</dt><dd>{opportunity.audience}</dd></div><div><dt>Campaign</dt><dd>{opportunity.campaignIdea}</dd></div><div><dt>Timing</dt><dd>{opportunity.timing}</dd></div></dl>
-        <section className="op-opportunity-message"><small>EXACT MESSAGE</small><p>{opportunity.exactMessage}</p></section>
-        <div className="op-opportunity-build"><section><strong>Assets</strong><ul>{opportunity.assets.map((asset) => <li key={asset}><ImageIcon size={13} />{asset}</li>)}</ul></section><section><strong>Channels</strong><div>{opportunity.channels.map((channel) => <span key={channel}>{channel}</span>)}</div></section></div>
-        <section className="op-opportunity-tracking"><header><strong>Tracking</strong><span>Primary conversion · {opportunity.primaryConversion}</span></header><div>{opportunity.tracking.map((item) => <div key={`${item.metric}-${item.source}`}><strong>{item.metric}</strong><span>{item.source}</span><em>{item.target}</em></div>)}</div></section>
-        {opportunity.evidence.length > 0 && <details className="op-opportunity-evidence"><summary>{opportunity.evidence.length} supporting {opportunity.evidence.length === 1 ? "source" : "sources"}</summary>{opportunity.evidence.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.title || source.url}<ArrowRight size={11} /></a>)}</details>}
-        <button className="op-opportunity-action" disabled={Boolean(working)} onClick={() => buildCampaign(run, index)}>{working === `${run.id}-${index}` ? <LoaderCircle className="spin" size={14} /> : <Rocket size={14} />}{working === `${run.id}-${index}` ? "Building campaign…" : "Build this campaign"}</button>
+      <header><div><small>{new Date(run.createdAt).toLocaleString()}</small><h2>{run.strategyPlan?.summary || run.title}</h2></div><button className="secondary" onClick={() => onOpen(run.id)}>Open experiment <ArrowRight size={13} /></button></header>
+      <div className="op-opportunity-grid">{run.strategyPlan?.territories.map((territory, index) => <article className={`op-opportunity-card ${run.strategyPlan?.selectedTerritoryId === territory.id ? "selected" : ""}`} key={territory.id}>
+        <header><div><small>{run.strategyPlan?.selectedTerritoryId === territory.id ? "RECOMMENDED TERRITORY" : `TERRITORY ${index + 1}`}</small><h3>{territory.title}</h3></div><em className={`critic-${territory.criticVerdict}`}>{territory.criticVerdict}</em></header>
+        <div className="op-opportunity-signal"><strong>Sector insight</strong><p>{territory.sectorInsight}</p><span>{territory.audienceTension}</span></div>
+        <dl><div><dt>Proposition</dt><dd>{territory.strategicProposition}</dd></div><div><dt>Creative concept</dt><dd>{territory.creativeConcept}</dd></div><div><dt>Offer and proof</dt><dd>{territory.offer}<br />{territory.requiredProof}</dd></div><div><dt>Conversion path</dt><dd>{territory.conversionPath}</dd></div></dl>
+        <section className="op-opportunity-message"><small>EXPERIMENT DESIGN</small><p>{territory.experimentDesign}</p></section>
+        <div className="op-opportunity-build"><section><strong>Why it may fail</strong><ul>{territory.failureReasons.map((reason) => <li key={reason}><CircleAlert size={13} />{reason}</li>)}</ul></section><section><strong>Channels</strong><div>{territory.channels.map((channel) => <span key={channel}>{channel}</span>)}</div></section></div>
+        <details className="op-opportunity-evidence"><summary>{territory.evidence.length} supporting {territory.evidence.length === 1 ? "source" : "sources"}</summary>{territory.evidence.map((source, evidenceIndex) => /^https?:\/\//i.test(source.url) ? <a key={`${territory.id}-${source.url}`} href={source.url} target="_blank" rel="noreferrer">{source.title || source.url}<ArrowRight size={11} /></a> : <span key={`${territory.id}-correction-${evidenceIndex}`}>{source.title || "User correction"}</span>)}</details>
       </article>)}</div>
-    </section>)}</div> : <div className="op-empty"><span><Search size={23} /></span><h2>No actionable opportunity yet</h2><p>Run research and Market Agent will discard irrelevant news, then return campaign-ready opportunities with exact copy, assets, and measurement.</p><button onClick={() => void refresh()} disabled={Boolean(working)}><Sparkles size={15} /> Find opportunities</button></div>}
-    {previous.length > 0 && <section className="op-legacy-research"><div className="op-section-head"><div><span>Earlier format</span><h2>Previous research reports</h2></div><small>{previous.length}</small></div><p>These older records were saved as reports. Open them for evidence, or run new research to get actionable campaign briefs.</p><div className="op-run-list">{previous.map((run) => <RunRow key={run.id} run={run} onOpen={onOpen} />)}</div></section>}
+      {run.experimentPlan && <section className="op-idea-experiment"><small>INITIAL TEST</small><strong>{run.experimentPlan.hypothesis}</strong><p>{run.experimentPlan.cohortSize} carefully selected prospects · Outcome: {run.experimentPlan.businessOutcome}</p><button onClick={() => onOpen(run.id)}>Review full experiment <ArrowRight size={13} /></button></section>}
+    </section>)}</div> : <div className="op-empty"><span><Sparkles size={23} /></span><h2>No strategic territory yet</h2><p>Build sector expertise first. The strategy loop will then research, diverge, challenge weak ideas, and return only experiments that can explain why this audience, why this idea, why now, and what will be learned.</p><button onClick={() => void refresh()} disabled={working}><Sparkles size={15} /> Generate territories</button></div>}
+    {previous.length > 0 && <section className="op-legacy-research"><div className="op-section-head"><div><span>Earlier format</span><h2>Previous records</h2></div><small>{previous.length}</small></div><p>These records predate the sector-expert strategy gate and remain available for reference.</p><div className="op-run-list">{previous.map((run) => <RunRow key={run.id} run={run} onOpen={onOpen} />)}</div></section>}
   </div>;
 }
 
@@ -4314,6 +4410,8 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
   };
   const saveEdit = () => { onOutput(run.id, output); setEditing(false); notify("Changes saved."); };
   const distributionRun = run.action === "campaign" || run.action === "social" || run.action === "chat";
+  const experimentMissing = distributionRun ? missingExperimentFields(run.experimentPlan) : [];
+  const experimentReady = !distributionRun || experimentMissing.length === 0;
   const campaignIssues = [
     ...(run.issueFindings?.high || []).map((text) => ({ severity: "high" as const, text })),
     ...(run.issueFindings?.attention || []).map((text) => ({ severity: "attention" as const, text })),
@@ -4328,6 +4426,7 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
     <button className="op-back" onClick={onBack}><ArrowLeft size={15} /> Back to workspace</button>
     <section className="op-run-detail">
       <header><div><div className="op-eyebrow">{actionMeta[run.action].title} · {new Date(run.createdAt).toLocaleString()}</div><h1>{run.title}</h1><p>{run.prompt || actionMeta[run.action].description}</p></div><div><span className={`op-review-state ${run.status === "Approved" ? "approved" : ""}`}>{run.status === "Approved" && <Check size={13} />}{run.status}</span><button className="op-more" onClick={() => { if (window.confirm("Delete this campaign and cancel every unpublished scheduled item? Already published posts remain on their platforms.")) void onDelete(run.id); }}><Trash2 size={16} /></button></div></header>
+      {distributionRun && <ExperimentGate experiment={run.experimentPlan} missing={experimentMissing} />}
       {distributionRun && <CampaignCreativePreview run={run} workspace={workspace} saving={deliveryWorking} onEdit={updateCampaignCreative} />}
       {distributionRun && (run.assetReferences || []).length > 0 && <section className="op-campaign-assets"><div><small>CAMPAIGN ASSETS</small><strong>Selected by the project agent</strong><p>These files remain in the Content Library and are linked here for this campaign.</p></div><div>{run.assetReferences?.map((asset) => <article key={asset.id}><span>{asset.kind === "image" ? <ImageIcon size={16} /> : asset.kind === "video" ? <Video size={16} /> : <FileText size={16} />}</span><div><strong>{asset.name}</strong><p>{asset.summary}</p><small>{asset.routingRationale}</small></div></article>)}</div></section>}
       {distributionRun && campaignIssues.length > 0 && <section className="op-campaign-issues"><div><small>CAMPAIGN CHECKS</small><strong>{campaignIssues.length} {campaignIssues.length === 1 ? "item" : "items"} to review before publishing</strong><p>These apply only to this campaign and do not appear in the project Issues panel.</p></div><ul>{campaignIssues.map((issue, index) => <li className={issue.severity} key={`${issue.severity}-${index}`}><CircleAlert size={15} /><span>{issue.text}</span></li>)}</ul></section>}
@@ -4336,10 +4435,11 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
       {distributionRun && operationalChannels.length > 0 && <section className="op-delivery-queue">
         <div className="op-section-title">
           <div><small>CAMPAIGN DELIVERY</small><h2>Review once, then run automatically</h2><p>Review the complete calendar and approve it once. Market Agent publishes each unchanged item on its approved date without asking again.</p></div>
-          {run.status === "Approved" && deliveryJobs.length === 0 && <button onClick={() => void prepareDelivery()} disabled={deliveryWorking === "prepare"}>{deliveryWorking === "prepare" ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}{deliveryWorking === "prepare" ? "Preparing…" : "Prepare actions"}</button>}
+          {run.status === "Approved" && deliveryJobs.length === 0 && <button onClick={() => void prepareDelivery()} disabled={deliveryWorking === "prepare" || !experimentReady}>{deliveryWorking === "prepare" ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}{!experimentReady ? "Experiment incomplete" : deliveryWorking === "prepare" ? "Preparing…" : "Prepare actions"}</button>}
         </div>
+        {!experimentReady && <div className="op-delivery-empty"><CircleAlert size={16} /> Execution is locked until the experiment can explain why this audience, why this idea, why now, the supporting evidence, and what it will learn.</div>}
         {run.status !== "Approved" && <div className="op-delivery-empty"><CircleAlert size={16} /> Mark this work approved before creating external actions.</div>}
-        {awaitingDeliveryJobs.length > 0 && <div className={`op-campaign-schedule-approval ${deliveryCoverage.missing > 0 ? "incomplete" : ""}`}><div><small>{deliveryCoverage.missing > 0 ? "CAMPAIGN INCOMPLETE" : "ONE APPROVAL FOR THE CAMPAIGN"}</small><strong>{deliveryCoverage.missing > 0 ? `${deliveryCoverage.prepared} of ${deliveryCoverage.expected} planned items ready` : `${awaitingDeliveryJobs.length} item${awaitingDeliveryJobs.length === 1 ? "" : "s"} ready across ${new Set(awaitingDeliveryJobs.map((job) => job.channel)).size} channel${new Set(awaitingDeliveryJobs.map((job) => job.channel)).size === 1 ? "" : "s"}`}</strong><p>{deliveryCoverage.missing > 0 ? `${deliveryCoverage.missing} planned item${deliveryCoverage.missing === 1 ? " still needs" : "s still need"} final copy or an approved asset. The app will not call a partial queue a full campaign.` : "Dates remain editable below. Starting the campaign activates delivery, link, channel, and conversion tracking. Paid media still requires separate budget approval."}</p></div><button onClick={() => void approveCampaignSchedule()} disabled={Boolean(deliveryWorking) || deliveryCoverage.missing > 0}>{deliveryWorking === "approve-campaign" ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />} {deliveryCoverage.missing > 0 ? "Complete campaign first" : "Approve schedule & start"}</button></div>}
+        {awaitingDeliveryJobs.length > 0 && <div className={`op-campaign-schedule-approval ${deliveryCoverage.missing > 0 || !experimentReady ? "incomplete" : ""}`}><div><small>{!experimentReady ? "EXPERIMENT INCOMPLETE" : deliveryCoverage.missing > 0 ? "CAMPAIGN INCOMPLETE" : "ONE APPROVAL FOR THE EXPERIMENT"}</small><strong>{!experimentReady ? "Execution remains locked" : deliveryCoverage.missing > 0 ? `${deliveryCoverage.prepared} of ${deliveryCoverage.expected} planned items ready` : `${awaitingDeliveryJobs.length} item${awaitingDeliveryJobs.length === 1 ? "" : "s"} ready across ${new Set(awaitingDeliveryJobs.map((job) => job.channel)).size} channel${new Set(awaitingDeliveryJobs.map((job) => job.channel)).size === 1 ? "" : "s"}`}</strong><p>{!experimentReady ? `Missing: ${experimentMissing.join(", ")}.` : deliveryCoverage.missing > 0 ? `${deliveryCoverage.missing} planned item${deliveryCoverage.missing === 1 ? " still needs" : "s still need"} final copy or an approved asset. The app will not call a partial queue a full campaign.` : "Dates remain editable below. Starting the experiment activates delivery, link, channel, and conversion tracking. It pauses at the recorded learning gate."}</p></div><button onClick={() => void approveCampaignSchedule()} disabled={Boolean(deliveryWorking) || deliveryCoverage.missing > 0 || !experimentReady}>{deliveryWorking === "approve-campaign" ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />} {!experimentReady ? "Complete experiment first" : deliveryCoverage.missing > 0 ? "Complete campaign first" : "Approve experiment & start"}</button></div>}
         {scheduledDeliveryJobs.length > 0 && <div className="op-campaign-schedule-approval scheduled"><div><small>AUTOMATIC PUBLISHING ACTIVE</small><strong>{scheduledDeliveryJobs.length} future item{scheduledDeliveryJobs.length === 1 ? "" : "s"} approved</strong><p>The cloud scheduler will publish these exact items on their dates. Changes and new items require approval again.</p></div><button className="secondary" onClick={() => void pauseCampaignSchedule()} disabled={Boolean(deliveryWorking)}>{deliveryWorking === "pause-campaign" ? <LoaderCircle className="spin" size={14} /> : <CircleAlert size={14} />} Pause future posts</button></div>}
         {followupEmailJobs.length > 1 && <BulkEmailApprovalSummary jobs={followupEmailJobs} sender={connections.gmail.accountEmail} />}
         {visibleDeliveryJobs.length > 0 && <div className="op-delivery-list">{visibleDeliveryJobs.map((job) => <DeliveryApprovalCard
@@ -4360,13 +4460,57 @@ function RunDetail({ run, workspace, connections, onBack, onConnect, onStatus, o
       <div className="op-detail-grid">
         <article className="op-output-card">{editing ? <textarea value={output} onChange={(e) => setOutput(e.target.value)} /> : <MarkdownLite value={run.output} hideAction={distributionRun} hideTracking={distributionRun} />}</article>
         <aside>
-          <div className="op-review-card"><strong>Review control</strong><p>{distributionRun ? "Approval adds this proposal to Campaigns and prepares its tracking identity. Tracking becomes active when the campaign schedule starts; approval alone publishes nothing." : "Approval saves your decision. It does not send or publish anything."}</p>{editing ? <><button onClick={saveEdit}><Save size={14} /> Save changes</button><button className="secondary" onClick={() => { setOutput(run.output); setEditing(false); }}>Cancel</button></> : <button className="secondary" onClick={() => setEditing(true)}>Edit output</button>}{run.status === "Draft" ? <button onClick={() => { onStatus(run.id, "Approved"); notify(distributionRun ? "Approved and added to Campaigns. Tracking is ready and will start when the campaign starts; nothing was published." : "Approved and saved. Nothing was published."); }}><Check size={14} /> Mark approved</button> : <button className="secondary" onClick={() => onStatus(run.id, "Draft")}>Return to draft</button>}</div>
+          <div className="op-review-card"><strong>Review control</strong><p>{distributionRun ? experimentReady ? "Approval adds this experiment to Campaigns and prepares its tracking identity. Tracking starts with the approved schedule; approval alone publishes nothing." : "Approval and execution remain locked until the experiment has a supported hypothesis, outcome, cohort and learning rules." : "Approval saves your decision. It does not send or publish anything."}</p>{editing ? <><button onClick={saveEdit}><Save size={14} /> Save changes</button><button className="secondary" onClick={() => { setOutput(run.output); setEditing(false); }}>Cancel</button></> : <button className="secondary" onClick={() => setEditing(true)}>Edit output</button>}{run.status === "Draft" ? <button disabled={!experimentReady} onClick={() => { onStatus(run.id, "Approved"); notify(distributionRun ? "Experiment approved and added to Campaigns. Nothing was published." : "Approved and saved. Nothing was published."); }}><Check size={14} /> {experimentReady ? "Mark approved" : "Complete experiment first"}</button> : <button className="secondary" onClick={() => onStatus(run.id, "Draft")}>Return to draft</button>}</div>
+          {run.learningConclusion && <div className="op-learning-conclusion"><small>EXPERIMENT LEARNING</small><strong>Conclusion saved to project knowledge</strong><p>{run.learningConclusion.whatHappened}</p><p><b>Meaning:</b> {run.learningConclusion.meaning}</p><p><b>Next:</b> {run.learningConclusion.nextTest}</p></div>}
           {run.sources.length > 0 && <RunSources sources={run.sources} />}
           <div className="op-run-meta"><span>Analysis</span><strong>{String(run.model || "").toLowerCase().includes("panel") ? "Balanced review" : "Standard review"}</strong>{run.intensity && <><span>Campaign style</span><strong>{run.intensity[0].toUpperCase() + run.intensity.slice(1)}</strong></>}</div>
         </aside>
       </div>
     </section>
   </div>;
+}
+
+const experimentFieldLabels: Record<string, string> = {
+  hypothesis: "hypothesis",
+  audienceSegment: "audience segment",
+  variant: "message or creative variant",
+  businessOutcome: "business outcome",
+  minimumEvidence: "minimum evidence",
+  stopRule: "stop rule",
+  reviseRule: "revise rule",
+  continueRule: "continue rule",
+  whyAudience: "why this audience",
+  whyIdea: "why this idea",
+  whyNow: "why now",
+  evidenceRationale: "supporting evidence",
+  learningGoal: "learning goal",
+  cohortSize: "20–30-person cohort",
+  evidence: "dated source evidence",
+};
+
+function missingExperimentFields(experiment: AgentRun["experimentPlan"]) {
+  if (!experiment) return Object.values(experimentFieldLabels);
+  const missing = Object.keys(experimentFieldLabels).filter((key) => {
+    if (key === "cohortSize") return experiment.cohortSize < 20 || experiment.cohortSize > 30;
+    if (key === "evidence") return !experiment.evidence?.some((item) => item.claim && (item.url || (item.verificationStatus === "verified" && /^user correction$/i.test(item.title))));
+    return !String(experiment[key as keyof typeof experiment] || "").trim();
+  });
+  return missing.map((key) => experimentFieldLabels[key]);
+}
+
+function ExperimentGate({ experiment, missing }: { experiment: AgentRun["experimentPlan"] | ProspectConversionCampaign["experiment"]; missing: string[] }) {
+  if (!experiment) return <section className="op-experiment-gate blocked"><header><span><CircleAlert size={18} /></span><div><small>EXECUTION LOCKED</small><h2>No experiment has been defined</h2><p>This older campaign remains available for reference, but it cannot be approved or sent until the agent rebuilds it with a hypothesis, evidence, a small cohort, and learning rules.</p></div></header></section>;
+  return <section className={`op-experiment-gate ${missing.length ? "blocked" : "ready"}`}>
+    <header><span>{missing.length ? <CircleAlert size={18} /> : <Check size={18} />}</span><div><small>{missing.length ? "EXECUTION LOCKED" : "EXPERIMENT READY FOR REVIEW"}</small><h2>{experiment.hypothesis}</h2><p>{missing.length ? `Still missing: ${missing.join(", ")}.` : `${experiment.cohortSize} carefully selected prospects · ${experiment.businessOutcome}`}</p></div></header>
+    <div className="op-experiment-why"><article><small>WHY THIS AUDIENCE</small><p>{experiment.whyAudience}</p></article><article><small>WHY THIS IDEA</small><p>{experiment.whyIdea}</p></article><article><small>WHY NOW</small><p>{experiment.whyNow}</p></article><article><small>WHAT IT WILL LEARN</small><p>{experiment.learningGoal}</p></article></div>
+    <div className="op-experiment-rules"><article><small>STOP</small><p>{experiment.stopRule}</p></article><article><small>REVISE</small><p>{experiment.reviseRule}</p></article><article><small>CONTINUE</small><p>{experiment.continueRule}</p></article></div>
+    <details><summary>{experiment.evidence.length} supporting source{experiment.evidence.length === 1 ? "" : "s"} and proof rationale</summary><p>{experiment.evidenceRationale}</p>{experiment.evidence.map((item, index) => {
+      const content = <span><strong>{item.title}</strong><small>{item.verificationStatus.replaceAll("_", " ")} · {item.confidence} confidence · {new Date(item.observedAt).toLocaleDateString()}</small></span>;
+      return item.url
+        ? <a key={`${item.url}-${index}`} href={item.url} target="_blank" rel="noreferrer">{content}<ArrowRight size={13} /></a>
+        : <div className="op-experiment-user-evidence" key={`user-evidence-${index}`}>{content}</div>;
+    })}</details>
+  </section>;
 }
 
 function CampaignTrackingPanel({ run, workspace, jobs, tracking, growth, analyticsConnected }: { run: AgentRun; workspace: ProductWorkspace; jobs: DeliveryJob[]; tracking: CampaignDeliveryTracking; growth: GrowthReport | null; analyticsConnected: boolean }) {

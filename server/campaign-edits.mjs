@@ -24,6 +24,7 @@ export async function getCampaignActionContext(userId, projectId, runId, env = p
     title: run.title || "Campaign",
     status: run.status || "Draft",
     output: String(run.output || "").slice(0, 30_000),
+    experimentPlan: run.experimentPlan && typeof run.experimentPlan === "object" ? run.experimentPlan : null,
     items: (run.campaignPlan?.items || []).slice(0, 30).map((item, index) => ({ index, channel: item.channel, subject: item.subject || "", text: String(item.text || "").slice(0, 4_000), scheduledAt: item.scheduledAt || "" })),
   };
 }
@@ -292,6 +293,41 @@ export async function updateCampaignPlanItem(userId, projectId, runId, itemIndex
     updatedJob = savedJob.rows[0] || null;
   }
   return { run: updated, revision, job: updatedJob };
+}
+
+export async function updateCampaignExperiment(userId, projectId, runId, field, rawValue, env = process.env) {
+  const key = String(field || "").replace(/^experiment\./, "");
+  const allowed = ["hypothesis", "audienceSegment", "variant", "businessOutcome", "minimumEvidence", "stopRule", "reviseRule", "continueRule", "cohortSize", "whyAudience", "whyIdea", "whyNow", "evidenceRationale", "learningGoal"];
+  if (!runId || !allowed.includes(key)) throw campaignEditError("Choose an editable experiment field.", 400);
+  const database = getPool(env);
+  const [runResult, jobsResult] = await Promise.all([
+    database.query("SELECT data FROM market_agent_runs WHERE user_id = $1 AND project_id = $2 AND id = $3 LIMIT 1", [userId, projectId, runId]),
+    database.query("SELECT id, status FROM market_agent_delivery_jobs WHERE user_id = $1 AND project_id = $2 AND run_id = $3", [userId, projectId, runId]).catch(() => ({ rows: [] })),
+  ]);
+  const run = runResult.rows[0]?.data;
+  if (!run) throw campaignEditError("The campaign could not be found.", 404);
+  if (jobsResult.rows.some((job) => ["running", "submitted", "complete"].includes(job.status))) throw campaignEditError("This experiment has already started. Preserve its evidence and create a revised experiment instead.", 409);
+  const value = key === "cohortSize" ? Math.round(Number(rawValue)) : String(rawValue || "").trim().slice(0, 4_000);
+  if (key === "cohortSize" && (!Number.isFinite(value) || value < 20 || value > 30)) throw campaignEditError("The initial experiment cohort must contain 20–30 prospects.", 400);
+  if (key !== "cohortSize" && !value) throw campaignEditError("The experiment field cannot be empty.", 400);
+  const updated = {
+    ...run,
+    status: run.status === "Approved" ? "Draft" : run.status,
+    experimentPlan: { ...(run.experimentPlan || {}), [key]: value },
+    learningConclusion: null,
+  };
+  const revision = await persistCampaignRun(userId, projectId, runId, updated, env);
+  await database.query(
+    `UPDATE market_agent_delivery_jobs
+        SET status = CASE WHEN status = 'scheduled' THEN 'awaiting_approval' ELSE status END,
+            approved_at = CASE WHEN status = 'scheduled' THEN NULL ELSE approved_at END,
+            next_attempt_at = CASE WHEN status = 'scheduled' THEN NULL ELSE next_attempt_at END,
+            error = CASE WHEN status = 'scheduled' THEN 'Experiment changed; approve the revised campaign.' ELSE error END,
+            updated_at = NOW()
+      WHERE user_id = $1 AND project_id = $2 AND run_id = $3 AND status IN ('scheduled','awaiting_approval')`,
+    [userId, projectId, runId],
+  ).catch(() => undefined);
+  return { run: updated, revision, field: key };
 }
 
 async function persistCampaignRun(userId, projectId, runId, updated, env) {

@@ -12,6 +12,7 @@ import { loadUserApiEnv } from "./user-api-credentials.mjs";
 import { unresolvedEmailPlaceholders } from "./email-content.mjs";
 import { listGmailResponseEvents } from "./gmail-monitor.mjs";
 import { enqueueBackgroundWakes } from "./background-queue.mjs";
+import { assertExperimentReady } from "./intelligence.mjs";
 
 let deliveryTableReady = false;
 
@@ -213,6 +214,7 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
   const connections = await getConnectionStatus(userId, projectId, env);
   if (!connections.gmail?.canSend) throw deliveryError("Connect this project's mailbox and approve sending access before scheduling invitations.", 409);
   if (!campaign?.id || campaign?.status !== "active") throw deliveryError("Activate the invitation before scheduling its email.", 409);
+  const experiment = assertExperimentReady({ experimentPlan: campaign.experiment });
   const signupUrl = String(campaign.publicUrl || "").trim();
   const { state } = await loadStateForUser(userId, env);
   const workspace = state.projects.find((item) => item.id === projectId) || {};
@@ -232,7 +234,6 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
     if (/^[^\s@<>;,]+@[^\s@<>;,]+\.[^\s@<>;,]+$/.test(email) && !unique.has(email)) unique.set(email, { ...recipient, email });
   }
   if (!unique.size) throw deliveryError("There are no eligible staged prospects to invite.", 409);
-  if (unique.size > 1_000) throw deliveryError("Invitation campaigns are limited to 1,000 individual recipients at a time.", 400);
   const runId = prospectInvitationRunId(campaign.id);
   const approvalId = randomUUID();
   const repeatSend = input?.resend === true && input?.repeatConfirmed === true;
@@ -242,6 +243,7 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
   }
   const client = await getPool(env).connect();
   let inserted = 0;
+  let selectedCount = 0;
   const wakes = [];
   try {
     await client.query("BEGIN");
@@ -250,9 +252,11 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
       [userId, projectId],
     );
     const suppressed = new Set(suppressionResult.rows.map((row) => String(row.email || "").toLowerCase()));
+    const selectedRecipients = selectProspectExperimentCohort(Array.from(unique.values()).filter((recipient) => !suppressed.has(recipient.email)), experiment.cohortSize);
+    selectedCount = selectedRecipients.length;
+    if (!selectedCount) throw deliveryError("The experiment has no eligible prospects after suppression and cohort selection.", 409);
     let index = 0;
-    for (const recipient of unique.values()) {
-      if (suppressed.has(recipient.email)) continue;
+    for (const recipient of selectedRecipients) {
       const scheduledAt = new Date(requestedStart.getTime() + index * intervalMinutes * 60_000).toISOString();
       const personalizedSubject = personalizeInvitationTemplate(subjectTemplate, recipient, invitationUrl);
       const personalizedBody = personalizeInvitationTemplate(bodyTemplate, recipient, invitationUrl);
@@ -294,7 +298,16 @@ export async function scheduleProspectInvitations(userId, projectId, campaign, r
   }
   await enqueueBackgroundWakes(wakes, env);
   const summary = await getProspectInvitationStats(userId, projectId, campaign.id, env);
-  return { runId, inserted, sender: connections.gmail.accountEmail, intervalMinutes, ...summary };
+  return { runId, inserted, eligible: unique.size, cohortSize: selectedCount, sender: connections.gmail.accountEmail, intervalMinutes, ...summary };
+}
+
+export function selectProspectExperimentCohort(recipients, cohortSize) {
+  const score = (recipient) => Number(Boolean(String(recipient?.company || "").trim())) * 3
+    + Number(Boolean(String(recipient?.firstName || "").trim())) * 2
+    + Number(Boolean(String(recipient?.lastName || "").trim()));
+  return [...(Array.isArray(recipients) ? recipients : [])]
+    .sort((left, right) => score(right) - score(left) || String(left.email || "").localeCompare(String(right.email || "")))
+    .slice(0, Math.max(20, Math.min(30, Number(cohortSize) || 25)));
 }
 
 export async function sendProspectInvitationTest(userId, projectId, campaign, input = {}, userApiEnv = {}, env = process.env) {
@@ -318,7 +331,8 @@ export async function sendProspectInvitationTest(userId, projectId, campaign, in
 export async function getProspectInvitationStats(userId, projectId, campaignId, env = process.env) {
   await ensureDeliveryTable(env);
   const runId = prospectInvitationRunId(campaignId);
-  const result = await getPool(env).query(
+  const database = getPool(env);
+  const [result, conversionResult] = await Promise.all([database.query(
     `SELECT COUNT(*)::int AS total,
       COUNT(*) FILTER (WHERE status IN ('scheduled','running','submitted'))::int AS scheduled,
       COUNT(*) FILTER (WHERE status = 'complete')::int AS sent,
@@ -333,7 +347,23 @@ export async function getProspectInvitationStats(userId, projectId, campaignId, 
      FROM market_agent_delivery_jobs
      WHERE user_id = $1 AND project_id = $2 AND run_id = $3 AND channel = 'gmail'`,
     [userId, projectId, runId],
-  );
+  ), database.query(
+    `SELECT COUNT(DISTINCT LOWER(subscribers.email))::int AS confirmed_conversions
+       FROM market_agent_subscribers subscribers
+       JOIN market_agent_delivery_jobs jobs
+         ON jobs.user_id = subscribers.user_id
+        AND jobs.project_id = subscribers.project_id
+        AND LOWER(jobs.payload->>'recipient') = LOWER(subscribers.email)
+      WHERE jobs.user_id = $1
+        AND jobs.project_id = $2
+        AND jobs.run_id = $3
+        AND jobs.channel = 'gmail'
+        AND jobs.status = 'complete'
+        AND subscribers.status = 'confirmed'
+        AND subscribers.confirmed_at IS NOT NULL
+        AND subscribers.confirmed_at >= COALESCE(jobs.completed_at, jobs.created_at)`,
+    [userId, projectId, runId],
+  ).catch(() => ({ rows: [{ confirmed_conversions: 0 }] }))]);
   const row = result.rows[0] || {};
   const responses = await listGmailResponseEvents(userId, projectId, runId, env);
   return {
@@ -344,6 +374,7 @@ export async function getProspectInvitationStats(userId, projectId, campaignId, 
     cancelled: Number(row.cancelled || 0),
     clicks: Number(row.clicks || 0),
     uniqueClicks: Number(row.unique_clicks || 0),
+    confirmedConversions: Number(conversionResult.rows[0]?.confirmed_conversions || 0),
     firstClickedAt: row.first_clicked_at ? new Date(row.first_clicked_at).toISOString() : null,
     lastClickedAt: row.last_clicked_at ? new Date(row.last_clicked_at).toISOString() : null,
     startsAt: row.starts_at ? new Date(row.starts_at).toISOString() : null,
@@ -382,7 +413,7 @@ async function refreshSubmittedTikTokJobs(userId, projectId, runId, env) {
   const runFilter = runId ? " AND run_id = $3" : "";
   if (runId) values.push(runId);
   const result = await getPool(env).query(
-    `SELECT id, project_id, external_id FROM market_agent_delivery_jobs
+    `SELECT id, project_id, run_id, external_id FROM market_agent_delivery_jobs
       WHERE user_id = $1 AND project_id = $2${runFilter}
         AND channel = 'tiktok' AND status = 'submitted'
         AND updated_at < NOW() - INTERVAL '5 seconds'
@@ -396,8 +427,10 @@ async function refreshSubmittedTikTokJobs(userId, projectId, runId, env) {
         await getPool(env).query("UPDATE market_agent_delivery_jobs SET result = $3::jsonb, updated_at = NOW() WHERE id = $1 AND user_id = $2", [row.id, userId, JSON.stringify(providerResult)]);
       } else if (providerResult.status === "complete") {
         await getPool(env).query("UPDATE market_agent_delivery_jobs SET status = 'complete', result = $3::jsonb, completed_at = NOW(), updated_at = NOW() WHERE id = $1 AND user_id = $2", [row.id, userId, JSON.stringify(providerResult)]);
+        await finalizeCampaignLearningIfComplete(userId, row.project_id, row.run_id, env).catch(() => undefined);
       } else {
         await getPool(env).query("UPDATE market_agent_delivery_jobs SET status = 'failed', result = $3::jsonb, error = $4, updated_at = NOW() WHERE id = $1 AND user_id = $2", [row.id, userId, JSON.stringify(providerResult), providerResult.failReason ? `TikTok could not publish this item: ${providerResult.failReason}` : "TikTok could not publish this item."]);
+        await finalizeCampaignLearningIfComplete(userId, row.project_id, row.run_id, env).catch(() => undefined);
       }
     } catch {
       // Keep the job submitted; a later user refresh can retry the provider status check.
@@ -414,6 +447,7 @@ export async function prepareDeliveryJobs(userId, projectId, runId, userApiEnv, 
   const workspace = state.projects.find((item) => item.id === projectId);
   if (!run || !workspace) throw deliveryError("The approved project work could not be found.", 404);
   if (run.status !== "Approved") throw deliveryError("Approve the saved work before preparing external actions.", 409);
+  const experiment = assertExperimentReady(run);
   const connections = await getConnectionStatus(userId, projectId, env);
   let channels = operationalChannels(connections).filter((channel) => channelAllowedForAccess(channel, userApiEnv));
   if (!channels.length) throw deliveryError("Connect an operational email or social channel first.", 409);
@@ -441,7 +475,7 @@ export async function prepareDeliveryJobs(userId, projectId, runId, userApiEnv, 
   if (!safeItems.length && channels.includes("gmail")) {
     const followup = approvedProspectFollowupTemplate(run);
     if (followup) {
-      const recipients = await listEligibleProspectFollowupRecipients(userId, projectId, env);
+      const recipients = (await listEligibleProspectFollowupRecipients(userId, projectId, env)).slice(0, experiment.cohortSize);
       if (!recipients.length) throw deliveryError("No eligible recipients remain from the original invitation campaign. Opt-outs, replies, delivery failures, paused contacts, and existing subscribers were excluded.", 409);
       const startAt = Date.now() + 20 * 60_000;
       safeItems = recipients.map((recipient, index) => {
@@ -491,6 +525,7 @@ export async function prepareDeliveryJobs(userId, projectId, runId, userApiEnv, 
       ? "The approved campaign does not contain final Instagram copy that can be queued. Ask the project assistant to prepare the final Instagram caption, approve it, then prepare actions again."
       : "Instagram is connected, but this project has no reusable public campaign image or video. Generate or approve an asset in Content, then prepare actions again.", 409);
   }
+  safeItems = limitDeliveryExperimentCohort(safeItems, experiment.cohortSize);
   for (let index = 0; index < safeItems.length; index += 1) {
     const item = safeItems[index];
     const idempotencyKey = createHash("sha256").update(`${userId}:${projectId}:${runId}:${index}:${item.channel}`).digest("hex");
@@ -503,6 +538,19 @@ export async function prepareDeliveryJobs(userId, projectId, runId, userApiEnv, 
     );
   }
   return listDeliveryJobs(userId, projectId, runId, env);
+}
+
+export function limitDeliveryExperimentCohort(items, cohortSize) {
+  const limit = Math.max(20, Math.min(30, Number(cohortSize) || 25));
+  const allowedRecipients = new Set();
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    if (item?.channel !== "gmail" || !item?.recipient) return true;
+    const recipient = String(item.recipient).trim().toLowerCase();
+    if (allowedRecipients.has(recipient)) return true;
+    if (allowedRecipients.size >= limit) return false;
+    allowedRecipients.add(recipient);
+    return true;
+  });
 }
 
 export async function getDeliveryPublishingOptions(userId, id, env = process.env) {
@@ -528,6 +576,8 @@ export async function executeDeliveryJob(userId, id, userApiEnv, approval = {}, 
     const result = await client.query("SELECT * FROM market_agent_delivery_jobs WHERE id = $1 AND user_id = $2 FOR UPDATE", [id, userId]);
     row = result.rows[0];
     if (!row) throw deliveryError("The delivery item was not found.", 404);
+    const campaignRun = await client.query("SELECT data FROM market_agent_runs WHERE user_id = $1 AND project_id = $2 AND id = $3 LIMIT 1", [userId, row.project_id, row.run_id]);
+    if (campaignRun.rows[0]?.data) assertExperimentReady(campaignRun.rows[0].data);
     if (!channelAllowedForAccess(row.channel, userApiEnv)) {
       throw deliveryError("This delivery channel is not included in the current access level.", 403);
     }
@@ -563,6 +613,8 @@ export async function approveDeliveryCampaign(userId, projectId, runId, items = 
   try {
     await client.query("BEGIN");
     const runResult = await client.query("SELECT data FROM market_agent_runs WHERE user_id = $1 AND project_id = $2 AND id = $3 LIMIT 1", [userId, projectId, runId]);
+    if (!runResult.rows[0]?.data) throw deliveryError("The approved campaign could not be found.", 404);
+    assertExperimentReady(runResult.rows[0].data);
     const expected = campaignPublicationTarget(runResult.rows[0]?.data);
     const preparedResult = await client.query("SELECT COUNT(*)::int AS count FROM market_agent_delivery_jobs WHERE user_id = $1 AND project_id = $2 AND run_id = $3 AND status <> 'cancelled'", [userId, projectId, runId]);
     const prepared = Number(preparedResult.rows[0]?.count || 0);
@@ -615,6 +667,9 @@ export async function approveTrustedDeliveryJobs(userId, projectId, runId, trust
   const wakes = [];
   try {
     await client.query("BEGIN");
+    const campaignRun = await client.query("SELECT data FROM market_agent_runs WHERE user_id = $1 AND project_id = $2 AND id = $3 LIMIT 1", [userId, projectId, runId]);
+    if (!campaignRun.rows[0]?.data) throw deliveryError("The approved campaign could not be found.", 404);
+    assertExperimentReady(campaignRun.rows[0].data);
     const rows = await client.query(
       `SELECT * FROM market_agent_delivery_jobs
         WHERE user_id = $1 AND project_id = $2 AND run_id = $3 AND status = 'awaiting_approval'
@@ -721,6 +776,11 @@ export async function runScheduledDeliveryJobs(env = process.env, limit = 10) {
   const results = [];
   for (const row of due.rows) {
     try {
+      const gate = await scheduledExperimentGate(row, env);
+      if (!gate.allowed) {
+        results.push({ id: row.id, userId: row.user_id, status: "awaiting_approval", error: gate.reason });
+        continue;
+      }
       const userApiEnv = await loadUserApiEnv(row.user_id, env);
       if (!channelAllowedForAccess(row.channel, userApiEnv)) throw deliveryError("This delivery channel is no longer included in the current access level.", 403);
       const result = await completeDeliveryExecution(row, row.user_id, env);
@@ -728,6 +788,7 @@ export async function runScheduledDeliveryJobs(env = process.env, limit = 10) {
     } catch (error) {
       const errorMessage = safeError(error);
       const failed = await recordDeliveryFailure(row, errorMessage, env);
+      await finalizeCampaignLearningIfComplete(row.user_id, row.project_id, row.run_id, env).catch(() => undefined);
       results.push({ id: row.id, userId: row.user_id, status: failed.status, error: errorMessage });
     }
   }
@@ -759,13 +820,67 @@ export async function runScheduledDeliveryJob(id, env = process.env) {
     return { job: current.rows[0] ? serializeDeliveryJob(current.rows[0]) : null };
   }
   try {
+    const gate = await scheduledExperimentGate(row, env);
+    if (!gate.allowed) return { job: serializeDeliveryJob({ ...row, status: "awaiting_approval", error: gate.reason }) };
     const userApiEnv = await loadUserApiEnv(row.user_id, env);
     if (!channelAllowedForAccess(row.channel, userApiEnv)) throw deliveryError("This delivery channel is no longer included in the current access level.", 403);
     return completeDeliveryExecution(row, row.user_id, env);
   } catch (error) {
     const failed = await recordDeliveryFailure(row, safeError(error), env);
+    await finalizeCampaignLearningIfComplete(row.user_id, row.project_id, row.run_id, env).catch(() => undefined);
     return { job: serializeDeliveryJob(failed) };
   }
+}
+
+async function scheduledExperimentGate(row, env) {
+  const database = getPool(env);
+  const campaignType = String(row?.payload?.campaignType || "");
+  if (campaignType === "prospect_invitation") {
+    const optin = await database.query(
+      "SELECT experiment FROM market_agent_optin_campaigns WHERE id = $1 AND user_id = $2 AND project_id = $3 LIMIT 1",
+      [String(row?.payload?.campaignId || ""), row.user_id, row.project_id],
+    );
+    let readiness;
+    try {
+      readiness = assertExperimentReady({ experimentPlan: optin.rows[0]?.experiment });
+    } catch (error) {
+      const reason = error?.message || "The invitation needs a complete experiment hypothesis before execution.";
+      await pauseRowsForLearningGate(row, reason, env);
+      return { allowed: false, reason };
+    }
+    const completed = await database.query(
+      "SELECT COUNT(*)::int AS count FROM market_agent_delivery_jobs WHERE user_id = $1 AND project_id = $2 AND run_id = $3 AND channel = 'gmail' AND status = 'complete'",
+      [row.user_id, row.project_id, row.run_id],
+    );
+    if (Number(completed.rows[0]?.count || 0) < readiness.cohortSize) return { allowed: true, reason: "" };
+    const reason = `The ${readiness.cohortSize}-person learning cohort is complete. Review the evidence before continuing.`;
+    await pauseRowsForLearningGate(row, reason, env);
+    return { allowed: false, reason };
+  }
+  const campaign = await database.query("SELECT data FROM market_agent_runs WHERE user_id = $1 AND project_id = $2 AND id = $3 LIMIT 1", [row.user_id, row.project_id, row.run_id]);
+  if (!campaign.rows[0]?.data) {
+    const reason = "The campaign experiment could not be verified. Delivery was paused without publishing.";
+    await pauseRowsForLearningGate(row, reason, env);
+    return { allowed: false, reason };
+  }
+  try {
+    assertExperimentReady(campaign.rows[0].data);
+    return { allowed: true, reason: "" };
+  } catch (error) {
+    const reason = error?.message || "The campaign needs a complete experiment hypothesis before execution.";
+    await pauseRowsForLearningGate(row, reason, env);
+    return { allowed: false, reason };
+  }
+}
+
+async function pauseRowsForLearningGate(row, reason, env) {
+  await getPool(env).query(
+    `UPDATE market_agent_delivery_jobs
+      SET status = 'awaiting_approval', approved_at = NULL, next_attempt_at = NULL,
+          payload = payload - 'campaignApprovalId', error = $4, updated_at = NOW()
+      WHERE user_id = $1 AND project_id = $2 AND run_id = $3 AND status IN ('scheduled','running')`,
+    [row.user_id, row.project_id, row.run_id, String(reason || "Learning review required").slice(0, 1_000)],
+  );
 }
 
 async function completeDeliveryExecution(row, userId, env) {
@@ -797,11 +912,92 @@ async function completeDeliveryExecution(row, userId, env) {
         WHERE id = $1 AND user_id = $2 RETURNING *`,
       [row.id, userId, status, String(result.externalId || ""), JSON.stringify(result)],
     );
+    await finalizeCampaignLearningIfComplete(userId, row.project_id, row.run_id, env).catch(() => undefined);
     return { job: serializeDeliveryJob(updated.rows[0]) };
   } catch (error) {
     const failed = await recordDeliveryFailure(row, safeError(error), env);
+    await finalizeCampaignLearningIfComplete(row.user_id, row.project_id, row.run_id, env).catch(() => undefined);
     return { job: serializeDeliveryJob(failed) };
   }
+}
+
+async function finalizeCampaignLearningIfComplete(userId, projectId, runId, env) {
+  const database = getPool(env);
+  const [runResult, jobsResult] = await Promise.all([
+    database.query("SELECT data FROM market_agent_runs WHERE user_id = $1 AND project_id = $2 AND id = $3 LIMIT 1", [userId, projectId, runId]),
+    database.query(
+      `SELECT status, COUNT(*)::int AS count, COALESCE(SUM(click_count),0)::int AS clicks
+       FROM market_agent_delivery_jobs WHERE user_id = $1 AND project_id = $2 AND run_id = $3 GROUP BY status`,
+      [userId, projectId, runId],
+    ),
+  ]);
+  const run = runResult.rows[0]?.data;
+  if (!run?.experimentPlan) {
+    if (String(runId || "").startsWith("optin-")) return finalizeProspectInvitationLearning(userId, projectId, String(runId).slice(6), env);
+    return null;
+  }
+  const counts = Object.fromEntries(jobsResult.rows.map((row) => [row.status, Number(row.count || 0)]));
+  const active = ["awaiting_approval", "scheduled", "running", "submitted"].some((status) => Number(counts[status] || 0) > 0);
+  if (active) return null;
+  const clicks = jobsResult.rows.reduce((sum, row) => sum + Number(row.clicks || 0), 0);
+  const complete = Number(counts.complete || 0);
+  const failed = Number(counts.failed || 0) + Number(counts.dead_letter || 0);
+  const conclusion = {
+    whatHappened: `${complete} campaign item${complete === 1 ? " completed" : "s completed"}; ${failed} failed; ${clicks} tracked link interaction${clicks === 1 ? "" : "s"}.`,
+    meaning: clicks > 0
+      ? "The experiment created measurable link activity, but link activity alone is not proof of the stated business outcome. Compare the configured conversion before scaling."
+      : complete > 0
+        ? "The experiment delivered, but produced no tracked link activity. This may indicate a weak audience, proposition, creative, destination, or tracking gap; it is not evidence to scale unchanged."
+        : "The experiment did not produce enough completed delivery to evaluate the hypothesis.",
+    unknowns: ["Whether the intended business outcome occurred", "Which audience, offer, creative, or channel caused the observed result"],
+    changes: clicks > 0 ? ["Verify the destination conversion", "Retain the strongest audience signal and test one changed variable"] : ["Do not repeat the same campaign", "Revisit audience tension, offer, proof, and delivery before another cohort"],
+    nextTest: clicks > 0 ? "Test one revised offer or proof element with another small matched cohort." : "Create a new sector-grounded hypothesis before preparing another cohort.",
+    concludedAt: new Date().toISOString(),
+  };
+  const updated = { ...run, learningConclusion: conclusion };
+  await database.query("UPDATE market_agent_runs SET data = $4::jsonb WHERE user_id = $1 AND project_id = $2 AND id = $3", [userId, projectId, runId, JSON.stringify(updated)]);
+  await database.query(
+    `UPDATE market_agent_states SET state = jsonb_set(
+       state, '{runs}',
+       COALESCE((SELECT jsonb_agg(CASE WHEN item->>'id' = $2 THEN $3::jsonb ELSE item END)
+         FROM jsonb_array_elements(COALESCE(state->'runs','[]'::jsonb)) AS item), '[]'::jsonb), true),
+       revision = revision + 1, updated_at = NOW()
+     WHERE user_id = $1`,
+    [userId, runId, JSON.stringify(updated)],
+  );
+  return conclusion;
+}
+
+async function finalizeProspectInvitationLearning(userId, projectId, campaignId, env) {
+  if (!campaignId) return null;
+  const database = getPool(env);
+  const campaignResult = await database.query(
+    "SELECT title, experiment, learning FROM market_agent_optin_campaigns WHERE id = $1 AND user_id = $2 AND project_id = $3 LIMIT 1",
+    [campaignId, userId, projectId],
+  );
+  const campaign = campaignResult.rows[0];
+  if (!campaign?.experiment || campaign.learning) return campaign?.learning || null;
+  const stats = await getProspectInvitationStats(userId, projectId, campaignId, env);
+  if (!stats.total || stats.scheduled > 0) return null;
+  const conclusion = {
+    whatHappened: `${stats.sent} of ${stats.total} approved invitations were accepted by Gmail; ${stats.failed} failed; ${stats.uniqueClicks || 0} tracked recipients visited; ${stats.confirmedConversions || 0} confirmed the intended conversion.`,
+    meaning: stats.confirmedConversions > 0
+      ? "The experiment produced a confirmed business action. The result supports further testing, not an immediate full-list rollout."
+      : stats.uniqueClicks > 0
+        ? "The message produced interest but not the intended conversion. The next test should change the offer, proof, or destination rather than expand the same message."
+        : stats.sent > 0
+          ? "The experiment delivered without measurable recipient action. Revisit the audience tension, proposition, proof, and subject before another cohort."
+          : "Delivery was insufficient to evaluate the hypothesis.",
+    unknowns: ["Whether untracked human replies changed the outcome", "Which single audience, offer, or proof variable caused the observed result"],
+    changes: stats.confirmedConversions > 0 ? ["Keep the qualified audience definition", "Test one offer or proof variation"] : ["Do not expand the unchanged message", "Review audience fit and the conversion path"],
+    nextTest: stats.confirmedConversions > 0 ? "Test one controlled variation with another matched 20–30-person cohort." : "Create a revised sector-grounded hypothesis before contacting another cohort.",
+    concludedAt: new Date().toISOString(),
+  };
+  await database.query(
+    "UPDATE market_agent_optin_campaigns SET learning = $4::jsonb, updated_at = NOW() WHERE id = $1 AND user_id = $2 AND project_id = $3 AND learning IS NULL",
+    [campaignId, userId, projectId, JSON.stringify(conclusion)],
+  );
+  return conclusion;
 }
 
 export function applyInvitationTracking(payload = {}, trackedUrl = "") {

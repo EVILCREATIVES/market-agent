@@ -550,8 +550,8 @@ export async function createOptinCampaign(userId, projectId, direction, userApiE
   const invitationUrl = invitationStrategy === "direct_signup" ? publicUrl : safeInvitationUrl(workspace.website, publicUrl);
   const result = await getPool(env).query(
     `INSERT INTO market_agent_optin_campaigns
-      (id,user_id,project_id,public_token,status,eyebrow,title,description,cta_label,privacy_note,promotion_text,invitation_subject,invitation_body,invitation_strategy,invitation_cta_label,invitation_url,signup_url,logo_url,primary_color,background_color,text_color,created_at,updated_at)
-     VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,NOW(),NOW()) RETURNING *`,
+      (id,user_id,project_id,public_token,status,eyebrow,title,description,cta_label,privacy_note,promotion_text,invitation_subject,invitation_body,invitation_strategy,invitation_cta_label,invitation_url,experiment,signup_url,logo_url,primary_color,background_color,text_color,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21,NOW(),NOW()) RETURNING *`,
     [
       id,
       userId,
@@ -568,6 +568,7 @@ export async function createOptinCampaign(userId, projectId, direction, userApiE
       invitationStrategy,
       cleanHeader(generated?.invitationCtaLabel, 80) || (invitationStrategy === "direct_signup" ? "Subscribe" : "Explore the project"),
       invitationUrl,
+      JSON.stringify(generated?.experiment || {}),
       signupUrl,
       projectLogoUrl(workspace),
       safeColor(workspace?.brand?.primaryColor, "#6e50d7"),
@@ -594,7 +595,7 @@ export async function updateOptinCampaign(userId, projectId, id, input, env = pr
   const publicUrl = `${applicationOrigin(env)}/join/${encodeURIComponent(row.public_token)}`;
   const invitationFallback = invitationStrategy === "direct_signup" ? publicUrl : safeInvitationUrl(workspace.website, publicUrl);
   const result = await getPool(env).query(
-    `UPDATE market_agent_optin_campaigns SET status=$4,eyebrow=$5,title=$6,description=$7,cta_label=$8,privacy_note=$9,promotion_text=$10,invitation_subject=$11,invitation_body=$12,invitation_strategy=$13,invitation_cta_label=$14,invitation_url=$15,updated_at=NOW()
+    `UPDATE market_agent_optin_campaigns SET status=$4,eyebrow=$5,title=$6,description=$7,cta_label=$8,privacy_note=$9,promotion_text=$10,invitation_subject=$11,invitation_body=$12,invitation_strategy=$13,invitation_cta_label=$14,invitation_url=$15,experiment=$16::jsonb,updated_at=NOW()
      WHERE id=$1 AND user_id=$2 AND project_id=$3 RETURNING *`,
     [
       id,
@@ -612,6 +613,7 @@ export async function updateOptinCampaign(userId, projectId, id, input, env = pr
       invitationStrategy,
       cleanHeader(input?.invitationCtaLabel ?? row.invitation_cta_label, 80) || (invitationStrategy === "direct_signup" ? "Subscribe" : "Explore"),
       safeInvitationUrl(input?.invitationUrl ?? row.invitation_url, invitationFallback),
+      JSON.stringify(input?.experiment && typeof input.experiment === "object" ? input.experiment : row.experiment || {}),
     ],
   );
   return { campaign: serializeOptinCampaign(result.rows[0], env, workspace) };
@@ -1145,6 +1147,8 @@ async function ensureTables(env) {
       cta_label TEXT NOT NULL DEFAULT '', privacy_note TEXT NOT NULL DEFAULT '', promotion_text TEXT NOT NULL DEFAULT '',
       invitation_subject TEXT NOT NULL DEFAULT '', invitation_body TEXT NOT NULL DEFAULT '',
       invitation_strategy TEXT NOT NULL DEFAULT '', invitation_cta_label TEXT NOT NULL DEFAULT '', invitation_url TEXT NOT NULL DEFAULT '',
+      experiment JSONB NOT NULL DEFAULT '{}'::jsonb,
+      learning JSONB,
       signup_url TEXT NOT NULL DEFAULT '', logo_url TEXT NOT NULL DEFAULT '',
       primary_color TEXT NOT NULL DEFAULT '', background_color TEXT NOT NULL DEFAULT '', text_color TEXT NOT NULL DEFAULT '',
       views INTEGER NOT NULL DEFAULT 0, cta_clicks INTEGER NOT NULL DEFAULT 0,
@@ -1155,6 +1159,8 @@ async function ensureTables(env) {
     ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS invitation_strategy TEXT NOT NULL DEFAULT '';
     ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS invitation_cta_label TEXT NOT NULL DEFAULT '';
     ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS invitation_url TEXT NOT NULL DEFAULT '';
+    ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS experiment JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS learning JSONB;
     CREATE INDEX IF NOT EXISTS market_agent_optin_campaigns_user_project_idx ON market_agent_optin_campaigns (user_id,project_id,created_at DESC);
   `);
   tablesReady = true;
@@ -1313,6 +1319,8 @@ function serializeOptinCampaign(row, env, workspace = {}) {
     invitationStrategy,
     invitationCtaLabel: row.invitation_cta_label || (invitationStrategy === "direct_signup" ? "Subscribe" : "Explore the project"),
     invitationUrl,
+    experiment: row.experiment && typeof row.experiment === "object" ? row.experiment : null,
+    learning: row.learning && typeof row.learning === "object" ? row.learning : null,
     publicUrl,
     views: Number(row.views || 0),
     ctaClicks: Number(row.cta_clicks || 0),

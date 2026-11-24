@@ -123,7 +123,31 @@ export interface ProductWorkspace {
     addressPreference: "ask" | "include" | "omit";
   };
   growth: ProjectGrowthPlan;
+  sectorExpertise: SectorExpertise;
   updatedAt: string;
+}
+
+export type SectorKnowledgeCategory = "industry_business_model" | "customer_segments" | "decision_process" | "problems_objections_triggers" | "competitors_alternatives" | "terminology_conventions" | "regulations_risks_proof" | "seasonality_events_signals";
+export type EvidenceConfidence = "high" | "medium" | "low";
+export type EvidenceVerificationStatus = "verified" | "hypothesis" | "needs_review" | "outdated";
+
+export interface SectorKnowledgeItem {
+  id: string;
+  category: SectorKnowledgeCategory;
+  statement: string;
+  sourceTitle: string;
+  sourceUrl: string;
+  observedAt: string;
+  confidence: EvidenceConfidence;
+  verificationStatus: EvidenceVerificationStatus;
+  userCorrected: boolean;
+}
+
+export interface SectorExpertise {
+  summary: string;
+  items: SectorKnowledgeItem[];
+  missingKnowledge: string[];
+  refreshedAt: string;
 }
 
 export interface ProjectChatMessage {
@@ -157,6 +181,10 @@ export interface AgentRun {
   executionMode?: "single" | "panel";
   campaignPlan?: CampaignPlan | null;
   researchPlan?: ResearchPlan | null;
+  sectorExpertise?: SectorExpertise | null;
+  strategyPlan?: StrategyPlan | null;
+  experimentPlan?: ExperimentPlan | null;
+  learningConclusion?: ExperimentLearning | null;
   intensity?: CampaignIntensity;
   issueFindings?: {
     high: string[];
@@ -171,6 +199,69 @@ export interface AgentRun {
     startedAt: string | null;
   };
   createdAt: string;
+}
+
+export interface StrategyEvidence {
+  claim: string;
+  title: string;
+  url: string;
+  observedAt: string;
+  confidence: EvidenceConfidence;
+  verificationStatus: EvidenceVerificationStatus;
+}
+
+export interface CampaignTerritory {
+  id: string;
+  title: string;
+  sectorInsight: string;
+  audienceTension: string;
+  strategicProposition: string;
+  creativeConcept: string;
+  offer: string;
+  requiredProof: string;
+  conversionPath: string;
+  channels: string[];
+  experimentDesign: string;
+  risks: string[];
+  failureReasons: string[];
+  evidence: StrategyEvidence[];
+  criticVerdict: "accepted" | "rejected" | "revised";
+  criticReason: string;
+}
+
+export interface StrategyPlan {
+  summary: string;
+  territories: CampaignTerritory[];
+  selectedTerritoryId: string;
+  rejectedCount: number;
+  generatedAt: string;
+}
+
+export interface ExperimentPlan {
+  hypothesis: string;
+  audienceSegment: string;
+  variant: string;
+  businessOutcome: string;
+  minimumEvidence: string;
+  stopRule: string;
+  reviseRule: string;
+  continueRule: string;
+  cohortSize: number;
+  whyAudience: string;
+  whyIdea: string;
+  whyNow: string;
+  evidenceRationale: string;
+  learningGoal: string;
+  evidence: StrategyEvidence[];
+}
+
+export interface ExperimentLearning {
+  whatHappened: string;
+  meaning: string;
+  unknowns: string[];
+  changes: string[];
+  nextTest: string;
+  concludedAt: string;
 }
 
 export interface ResearchPlan {
@@ -527,6 +618,8 @@ export interface ProspectConversionCampaign {
   invitationStrategy: "project_first" | "direct_signup" | "custom";
   invitationCtaLabel: string;
   invitationUrl: string;
+  experiment: ExperimentPlan | null;
+  learning: ExperimentLearning | null;
   publicUrl: string;
   invitation: {
     total: number;
@@ -536,6 +629,7 @@ export interface ProspectConversionCampaign {
     cancelled: number;
     clicks: number;
     uniqueClicks: number;
+    confirmedConversions: number;
     firstClickedAt: string | null;
     lastClickedAt: string | null;
     startsAt: string | null;
@@ -763,6 +857,7 @@ export interface GrowthReport {
   campaigns: Array<{ id: string; name: string; source: string; medium: string; sessions: number; leads: number | null }>;
   keyEvents: Array<{ eventName: string; count: number }>;
   recommendations: Array<{ level: "positive" | "attention" | "setup"; title: string; detail: string; action: string }>;
+  experimentLearnings: Array<{ id: string; title: string; learning: ExperimentLearning }>;
   tracking: { startedAt: string; attributed: boolean; note: string };
   fetchedAt: string;
 }

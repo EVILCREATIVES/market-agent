@@ -45,6 +45,7 @@ export function createEmptyProject(name: string = "New project", id: string = cr
     chatMessages: [],
     emailIdentity: { senderName: "", businessDetails: "", physicalAddress: "", addressPreference: "ask" },
     growth: createDefaultGrowthPlan(),
+    sectorExpertise: createEmptySectorExpertise(),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -179,6 +180,34 @@ function normalizeProject(project: Partial<ProductWorkspace>, index: number): Pr
       addressPreference: project.emailIdentity?.addressPreference === "include" || project.emailIdentity?.addressPreference === "omit" ? project.emailIdentity.addressPreference : "ask",
     },
     growth: normalizeGrowthPlan(project.growth),
+    sectorExpertise: normalizeSectorExpertise(project.sectorExpertise),
+  };
+}
+
+function createEmptySectorExpertise(): ProductWorkspace["sectorExpertise"] {
+  return { summary: "", items: [], missingKnowledge: [], refreshedAt: "" };
+}
+
+function normalizeSectorExpertise(value: Partial<ProductWorkspace["sectorExpertise"]> | undefined): ProductWorkspace["sectorExpertise"] {
+  const source = value && typeof value === "object" ? value : {};
+  const categories = new Set(["industry_business_model", "customer_segments", "decision_process", "problems_objections_triggers", "competitors_alternatives", "terminology_conventions", "regulations_risks_proof", "seasonality_events_signals"]);
+  const confidence = new Set(["high", "medium", "low"]);
+  const verification = new Set(["verified", "hypothesis", "needs_review", "outdated"]);
+  return {
+    summary: String(source.summary || "").trim().slice(0, 4_000),
+    items: (Array.isArray(source.items) ? source.items : []).map((item, index) => ({
+      id: String(item?.id || `sector-${index + 1}`).slice(0, 120),
+      category: (categories.has(String(item?.category || "")) ? item.category : "industry_business_model") as ProductWorkspace["sectorExpertise"]["items"][number]["category"],
+      statement: String(item?.statement || "").trim().slice(0, 3_000),
+      sourceTitle: String(item?.sourceTitle || "").trim().slice(0, 500),
+      sourceUrl: String(item?.sourceUrl || "").trim().slice(0, 2_000),
+      observedAt: String(item?.observedAt || ""),
+      confidence: (confidence.has(String(item?.confidence || "")) ? item.confidence : "low") as ProductWorkspace["sectorExpertise"]["items"][number]["confidence"],
+      verificationStatus: (verification.has(String(item?.verificationStatus || "")) ? item.verificationStatus : "needs_review") as ProductWorkspace["sectorExpertise"]["items"][number]["verificationStatus"],
+      userCorrected: item?.userCorrected === true,
+    })).filter((item) => item.statement).slice(0, 240),
+    missingKnowledge: Array.from(new Set((Array.isArray(source.missingKnowledge) ? source.missingKnowledge : []).map(String).map((item) => item.trim()).filter(Boolean))).slice(0, 40),
+    refreshedAt: String(source.refreshedAt || ""),
   };
 }
 

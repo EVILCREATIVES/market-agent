@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { neon, Pool as NeonPool } from "@neondatabase/serverless";
+import { assertExperimentReady, emptySectorExpertise, normalizeSectorExpertise } from "./intelligence.mjs";
 
 const databases = new Map();
 
@@ -187,7 +188,7 @@ export async function appendRunForUser(userId, run, env = process.env) {
       ON CONFLICT (user_id, id) DO UPDATE SET data = EXCLUDED.data`,
     [userId, run.id, run.projectId || "project-default", JSON.stringify(run), run.createdAt || new Date().toISOString()],
   );
-  const result = await database.query(
+  let result = await database.query(
     `INSERT INTO market_agent_states (user_id, state)
      VALUES ($1, $2::jsonb)
      ON CONFLICT (user_id) DO UPDATE
@@ -200,6 +201,33 @@ export async function appendRunForUser(userId, run, env = process.env) {
      RETURNING state, revision`,
     [userId, JSON.stringify(initial), JSON.stringify(run)],
   );
+  if (run.sectorExpertise?.items?.length) {
+    const currentProject = (Array.isArray(result.rows[0]?.state?.projects) ? result.rows[0].state.projects : [])
+      .find((project) => project?.id === (run.projectId || "project-default"));
+    const expertise = normalizeSectorExpertise(run.sectorExpertise, currentProject?.sectorExpertise);
+    result = await database.query(
+      `UPDATE market_agent_states
+          SET state = jsonb_set(
+            state,
+            '{projects}',
+            COALESCE(
+              (SELECT jsonb_agg(
+                CASE WHEN project->>'id' = $2
+                  THEN jsonb_set(project, '{sectorExpertise}', $3::jsonb, true)
+                  ELSE project
+                END
+              ) FROM jsonb_array_elements(COALESCE(state->'projects', '[]'::jsonb)) project),
+              COALESCE(state->'projects', '[]'::jsonb)
+            ),
+            true
+          ),
+          revision = revision + 1,
+          updated_at = NOW()
+        WHERE user_id = $1
+        RETURNING state, revision`,
+      [userId, run.projectId || "project-default", JSON.stringify(expertise)],
+    );
+  }
   return normalizeState(result.rows[0].state);
 }
 
@@ -223,6 +251,7 @@ export async function updateRunStatusForUser(userId, runId, status, env = proces
     const now = new Date().toISOString();
     const run = { ...currentRun.rows[0].data, status: nextStatus };
     if (nextStatus === "Approved" && ["campaign", "social", "chat"].includes(String(run.action || ""))) {
+      assertExperimentReady(run);
       const currentTracking = run.campaignTracking && typeof run.campaignTracking === "object" ? run.campaignTracking : {};
       run.campaignTracking = {
         status: currentTracking.startedAt ? "active" : "ready",
@@ -439,6 +468,7 @@ function defaultProject(name = "New project", id = "project-default") {
     chatMessages: [],
     emailIdentity: defaultEmailIdentity(),
     growth: defaultGrowthPlan(),
+    sectorExpertise: emptySectorExpertise(),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -480,6 +510,7 @@ function normalizeProject(value, index) {
     chatMessages: Array.isArray(project.chatMessages) ? project.chatMessages.slice(-80) : [],
     emailIdentity: normalizeEmailIdentity(project.emailIdentity),
     growth: normalizeGrowthPlan(project.growth),
+    sectorExpertise: normalizeSectorExpertise(project.sectorExpertise),
   };
 }
 
