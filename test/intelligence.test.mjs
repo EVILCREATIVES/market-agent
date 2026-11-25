@@ -40,10 +40,12 @@ test("sector research falls back to the connected web provider and saves support
     const body = JSON.parse(options.body);
     requests.push(body);
     if (String(url).includes("openai.com")) return Response.json({}, { status: 429 });
-    if (body.tools) {
-      return Response.json({ candidates: [{
-        content: { parts: [{ text: "A trade source describes agency production leads as buyers." }] },
-        groundingMetadata: { groundingChunks: [{ web: { title: researched.sourceTitle, uri: researched.sourceUrl } }, { web: { title: "Project deck", uri: "https://project.example/deck" } }] },
+    if (String(url).endsWith("/interactions")) {
+      return Response.json({ steps: [{
+        type: "model_output", content: [{ type: "text", annotations: [
+          { type: "url_citation", title: researched.sourceTitle, url: researched.sourceUrl },
+          { type: "url_citation", title: "Project deck", url: "https://project.example/deck" },
+        ] }],
       }] });
     }
     return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({
@@ -64,11 +66,41 @@ test("sector research falls back to the connected web provider and saves support
 
   assert.equal(requests.length, 3);
   assert.equal(requests[0].tool_choice, "required");
-  assert.doesNotMatch(requests[1].contents[0].parts[0].text, /direct profile URL/);
+  assert.equal(requests[0].reasoning.effort, "low");
+  assert.equal(requests[0].max_tool_calls, 2);
+  assert.deepEqual(requests[1].tools, [{ type: "google_search" }]);
+  assert.doesNotMatch(requests[1].input, /direct profile URL/);
   assert.equal(expertise.items.find((item) => item.id === savedCorrection.id).statement, savedCorrection.statement);
   assert.equal(expertise.items.find((item) => item.sourceChecked).sourceUrl, researched.sourceUrl);
   assert.equal(expertise.items.length, 2);
   assert.ok(expertise.items.every((item) => !item.statement.includes("competitor may target")));
+});
+
+test("sector research opens sources even when the discovery response has no written summary", async (t) => {
+  const page = { id: "trade", sourceTitle: "Trade association", title: "Trade association", url: "https://trade.example/buyers", text: "Procurement managers in this industry typically require a written onboarding plan." };
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    const body = JSON.parse(options.body);
+    requests.push(body);
+    if (body.tools) return Response.json({
+      status: "incomplete",
+      output: [{ type: "web_search_call", action: { sources: [{ url: page.url, title: page.title }] } }],
+    });
+    return Response.json({ output_text: JSON.stringify({
+      items: [{ id: "buyer", pageId: page.id, category: "decision_process", quote: page.text }],
+    }) });
+  });
+  const saved = await generateSectorExpertise(
+    { workspace: { name: "Example", description: "A business selling industrial services." } },
+    { OPENAI_API_KEY: "test-openai", OPENAI_MODEL: "configured-analysis-model" },
+    async (sources) => {
+      assert.equal(sources[0].url, page.url);
+      return [page];
+    },
+  );
+  assert.equal(requests[0].model, "gpt-6-luna");
+  assert.equal(requests[1].model, "configured-analysis-model");
+  assert.equal(saved.items[0].statement, page.text);
 });
 
 test("sector research reports an unavailable search instead of returning an empty success", async (t) => {

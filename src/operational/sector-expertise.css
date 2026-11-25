@@ -39,9 +39,12 @@
 .sector-empty > svg { flex: none; }
 .sector-empty h2 { margin: 0 0 4px; font-size: 18px; }
 .sector-empty p { margin: 0; }
-.sector-tabs { display: flex; flex-wrap: wrap; gap: 5px; padding-bottom: 8px; border-bottom: 1px solid var(--sector-line); }
-.sector-tabs button { color: var(--sector-muted); background: transparent; }
-.sector-tabs button[aria-pressed="true"] { background: #ebe3fb; color: #5033aa; }
+.sector-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px; border: 1px solid var(--sector-line); border-radius: 12px; background: #fff; }
+.sector-tabs button { flex: 1 0 auto; color: var(--sector-muted); background: transparent; min-height: 38px; }
+.sector-tabs button:hover { background: #f5f1fc; color: #5033aa; }
+.sector-tabs button[aria-selected="true"] { background: #ebe3fb; color: #5033aa; }
+.sector-tab-content { display: grid; gap: var(--op-space-section, 24px); }
+.sector-tab-content:focus-visible { outline: 2px solid var(--sector-accent); outline-offset: 4px; border-radius: 12px; }
 .sector-overview { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; }
 .sector-entry, .sector-panel { min-width: 0; border: 1px solid var(--sector-line); border-radius: 16px; padding: 20px; background: #fff; overflow-wrap: anywhere; }
 .sector-entry { background: #f6f2ff; border-color: #d5c8f0; }

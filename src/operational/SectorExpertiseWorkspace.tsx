@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ArrowRight, ChartColumn, CircleAlert, Globe2, LoaderCircle, Search, Sparkles, X } from "lucide-react";
 import { apiFetch } from "../auth";
 import type { AgentRun, ProductWorkspace, SectorKnowledgeCategory, SectorKnowledgeItem, SectorPosition } from "./types";
@@ -28,6 +28,8 @@ interface Props {
 
 export default function SectorExpertiseWorkspace({ workspace, runs, onSave, onResearchSaved, onDevelop, notify }: Props) {
   const [tab, setTab] = useState<Tab>("Overview");
+  const tablistId = useId();
+  const tablist = useRef<HTMLDivElement>(null);
   const [category, setCategory] = useState<SectorKnowledgeCategory | "all">("all");
   const [query, setQuery] = useState("");
   const [working, setWorking] = useState(false);
@@ -63,7 +65,6 @@ export default function SectorExpertiseWorkspace({ workspace, runs, onSave, onRe
         throw new Error(data?.error || (response.status === 504 ? "Sector research timed out. Try again." : "No checked sector evidence was returned. Try again."));
       }
       onResearchSaved(workspace.id, data.sectorExpertise, Number(data.revision));
-      setTab("Overview");
       notify("Sector research saved.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Sector research could not be refreshed.");
@@ -125,21 +126,37 @@ export default function SectorExpertiseWorkspace({ workspace, runs, onSave, onRe
           {working ? "Researching…" : outside.length ? "Refresh research" : "Build sector expertise"}
         </button>
       </header>
+      <div className="sector-tabs" ref={tablist} role="tablist" aria-label="Sector expertise">
+        {tabs.map((name, index) => (
+          <button key={name} role="tab" type="button" id={`${tablistId}-tab-${index}`}
+            aria-selected={tab === name} aria-controls={tab === name ? `${tablistId}-panel-${index}` : undefined}
+            tabIndex={tab === name ? 0 : -1} onClick={() => setTab(name)}
+            onKeyDown={(event) => {
+              let next: number;
+              switch (event.key) {
+                case "ArrowRight": next = (index + 1) % tabs.length; break;
+                case "ArrowLeft": next = (index + tabs.length - 1) % tabs.length; break;
+                case "Home": next = 0; break;
+                case "End": next = tabs.length - 1; break;
+                default: return;
+              }
+              event.preventDefault();
+              setTab(tabs[next]);
+              tablist.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+            }}>
+            {name}
+          </button>
+        ))}
+      </div>
       {working && <p className="sector-progress" role="status">Searching the market, opening sources, and checking passages. This can take a few minutes.</p>}
-      {error && <div className="op-analytics-error" role="alert"><CircleAlert size={16} />{error}</div>}
-      {!outside.length && (
+      {error && <div className="op-analytics-error" role="alert"><CircleAlert size={16} aria-hidden="true" />{error}</div>}
+      <div className="sector-tab-content" role="tabpanel" tabIndex={0} id={`${tablistId}-panel-${tabs.indexOf(tab)}`} aria-labelledby={`${tablistId}-tab-${tabs.indexOf(tab)}`}>
+      {!outside.length && tab === "Overview" && (
         <div className="sector-empty">
-          <Globe2 size={26} />
+          <Globe2 size={26} aria-hidden="true" />
           <div><h2>{expertise?.items?.length ? "Ready for a new research brief" : "Research your market"}</h2>
             <p>{expertise?.items?.length ? "Refresh to check earlier claims against independent sources and build the market brief. Your corrections are saved." : "Build sector expertise to uncover buying triggers, alternatives, and positioning options for this project."}</p></div>
         </div>
-      )}
-      {(outside.length > 0 || items.length > 0) && (
-        <nav className="sector-tabs" aria-label="Sector expertise views">
-          {tabs.filter((name) => outside.length || name === "Evidence").map((name) => (
-            <button key={name} aria-pressed={tab === name || (!outside.length && name === "Evidence")} onClick={() => setTab(name)}>{name}</button>
-          ))}
-        </nav>
       )}
       {outside.length > 0 && tab === "Overview" && <>
         <section className="sector-overview">
@@ -186,27 +203,27 @@ export default function SectorExpertiseWorkspace({ workspace, runs, onSave, onRe
           </details>)}</div>
         </section>}
       </>}
-      {outside.length > 0 && tab === "Buyer journey" && (
+      {tab === "Buyer journey" && (
         <section className="sector-panel"><h2>How the buyer decides</h2><p className="sector-muted">Research interpretation. Actual decisions can vary by organization.</p>
           {brief?.buyerJourney.length ? <ol className="sector-journey">{brief.buyerJourney.map((stage, index) => (
             <li key={`${stage.stage}-${index}`}><span className="sector-stage-number">{index + 1}</span><h3>{stage.stage}</h3>
               <strong>{stage.role}</strong><p>{stage.decision}</p><dl className="sector-detail-list"><Detail label="Proof they need">{stage.proof}</Detail></dl>
               {showEvidence(stage.evidenceIds)}
             </li>
-          ))}</ol> : <p className="sector-muted">The sources did not establish the decision stages yet.</p>}
+          ))}</ol> : <p className="sector-muted">{outside.length ? "The sources did not establish the decision stages yet." : "Run sector research to see who is involved in buying, what triggers the decision, and what proof they need."}</p>}
         </section>
       )}
-      {outside.length > 0 && tab === "Alternatives" && (
+      {tab === "Alternatives" && (
         <section className="sector-panel"><h2>What buyers can choose instead</h2><p className="sector-muted">Competitive assessment based on the linked sources.</p>
           {brief?.alternatives.length ? <div className="sector-alternatives">{brief.alternatives.map((alternative, index) => (
             <article key={`${alternative.name}-${index}`}><h3>{alternative.name}</h3>
               <dl className="sector-detail-list"><Detail label="Why it wins">{alternative.advantage}</Detail><Detail label="Where there may be an opening">{alternative.opening}</Detail></dl>
               {showEvidence(alternative.evidenceIds)}
             </article>
-          ))}</div> : <p className="sector-muted">The reviewed sources did not establish enough about alternatives to compare them.</p>}
+          ))}</div> : <p className="sector-muted">{outside.length ? "The reviewed sources did not establish enough about alternatives to compare them." : "Run sector research to compare the competitors and substitutes your buyers already use."}</p>}
         </section>
       )}
-      {outside.length > 0 && tab === "Positioning" && (
+      {tab === "Positioning" && (
         <section className="sector-panel"><h2>Positioning options</h2><p className="sector-muted">Proposed directions based on the evidence. Compare the buyer, promise and proof each would require.</p>
           {brief?.positions.length ? <div className="sector-positions">{[...brief.positions].sort((a, b) => Number(b.id === recommended?.id) - Number(a.id === recommended?.id)).map((position) => (
             <article key={position.id} className={position.id === recommended?.id ? "recommended" : ""}>
@@ -224,10 +241,10 @@ export default function SectorExpertiseWorkspace({ workspace, runs, onSave, onRe
                 <button className="sector-primary" onClick={() => onDevelop(position)}><Sparkles size={15} /> Develop in Ideas</button>
               </div>
             </article>
-          ))}</div> : <p className="sector-muted">More independent evidence is needed before proposing a position.</p>}
+          ))}</div> : <p className="sector-muted">{outside.length ? "More independent evidence is needed before proposing a position." : "Run sector research to see positioning options, the proof each needs, and experiments to take into Ideas."}</p>}
         </section>
       )}
-      {(tab === "Evidence" || (!outside.length && !!items.length)) && (
+      {tab === "Evidence" && (
         <section className="sector-panel">
           <div className="sector-evidence-controls"><h2>Evidence library</h2>
             <label><span>Search evidence</span><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
@@ -238,9 +255,10 @@ export default function SectorExpertiseWorkspace({ workspace, runs, onSave, onRe
               <textarea aria-label="Your correction" value={correction} onChange={(event) => setCorrection(event.target.value)} />
               <div><button className="secondary" onClick={() => setEditingId("")}>Cancel</button><button onClick={saveCorrection} disabled={!correction.trim()}>Save correction</button></div>
             </div> : <button className="sector-secondary" onClick={() => { setCorrection(item.statement); setEditingId(item.id); }}>Correct</button>}
-          </EvidenceCard>) : <p className="sector-muted">No findings match this view.</p>}</div>
+          </EvidenceCard>) : <p className="sector-muted">{items.length ? "No findings match this view." : "Checked passages and your corrections appear here after research."}</p>}</div>
         </section>
       )}
+      </div>
       <EvidenceDialog items={selectedEvidence} onClose={() => setEvidenceIds([])} />
     </div>
   );
