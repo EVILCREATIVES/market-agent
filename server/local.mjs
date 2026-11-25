@@ -19,6 +19,7 @@ import { getAgentPerformanceContext } from "./growth.mjs";
 import { getConnectionStatus } from "./connections.mjs";
 import { createBrandLogoAccessUrl, getBrandLogo } from "./brand-logos.mjs";
 import { archiveProjectConversationDays, getProjectConversationMemory, pinProjectConversationNote } from "./conversation-memory.mjs";
+import { buildSectorExpertiseForUser } from "../api/agent.mjs";
 
 const port = Number(process.env.PORT || 8787);
 
@@ -142,6 +143,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const { userId } = await requireUser(req);
       const payload = await readJson(req);
+      if (payload.action === "sector") return json(res, 200, await buildSectorExpertiseForUser(userId, payload.projectId));
       const mode = payload.mode || "single";
       const userApiEnv = await loadUserApiEnv(userId);
       await enforceRunBudget(userId, mode);

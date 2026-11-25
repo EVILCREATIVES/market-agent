@@ -105,6 +105,43 @@ export async function loadStateForUser(userId, env = process.env) {
   }
 }
 
+export async function loadProjectForSectorResearch(userId, projectId, env = process.env) {
+  const result = await getPool(env).query(
+    `SELECT project FROM market_agent_states
+       CROSS JOIN LATERAL jsonb_array_elements(state->'projects') AS projects(project)
+      WHERE user_id = $1 AND project->>'id' = $2`,
+    [userId, projectId],
+  );
+  const project = result.rows[0]?.project;
+  if (!project) throw Object.assign(new Error("This project could not be found. Open a saved project and try again."), { statusCode: 404 });
+  return project;
+}
+
+export async function saveProjectSectorExpertise(userId, projectId, researched, env = process.env) {
+  const database = getPool(env);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const project = await loadProjectForSectorResearch(userId, projectId, env);
+    const previous = project.sectorExpertise ?? null;
+    const expertise = normalizeSectorExpertise(researched, previous);
+    const result = await database.query(
+      `UPDATE market_agent_states AS workspace
+          SET state = jsonb_set(workspace.state, '{projects}', (
+                SELECT jsonb_agg(CASE WHEN project->>'id' = $2
+                  THEN jsonb_set(project, '{sectorExpertise}', $3::jsonb) ELSE project END ORDER BY ordinal)
+                  FROM jsonb_array_elements(workspace.state->'projects') WITH ORDINALITY AS target(project, ordinal)
+              )), revision = workspace.revision + 1, updated_at = NOW()
+        WHERE workspace.user_id = $1 AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(workspace.state->'projects') AS target(project)
+           WHERE project->>'id' = $2 AND COALESCE(project->'sectorExpertise', 'null'::jsonb) = $4::jsonb
+        )
+        RETURNING revision`,
+      [userId, projectId, JSON.stringify(expertise), JSON.stringify(previous)],
+    );
+    if (result.rows[0]) return { sectorExpertise: expertise, revision: Number(result.rows[0].revision) };
+  }
+  throw Object.assign(new Error("Sector expertise changed while research was running. Refresh the evidence again to merge the latest changes."), { statusCode: 409 });
+}
+
 async function loadStateForUserOnce(userId, env) {
   const database = getPool(env);
   const [result, runRows, scheduleRows, messageRows] = await Promise.all([

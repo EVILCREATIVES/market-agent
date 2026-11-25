@@ -1,7 +1,6 @@
-import { runMarketingAgent } from "../server/agent.mjs";
-import { createRunRecord } from "../server/agent.mjs";
+import { createRunRecord, generateSectorExpertise, runMarketingAgent } from "../server/agent.mjs";
 import { requireUser } from "../server/auth.mjs";
-import { appendRunForUser, enforceRunBudget } from "../server/db.mjs";
+import { appendRunForUser, enforceRunBudget, loadProjectForSectorResearch, saveProjectSectorExpertise } from "../server/db.mjs";
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 import { getConnectionStatus } from "../server/connections.mjs";
 import { consumeAiUsage } from "../server/billing.mjs";
@@ -14,6 +13,7 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   try {
     const { userId } = await requireUser(req);
+    if (req.body?.action === "sector") return res.status(200).json(await buildSectorExpertiseForUser(userId, req.body?.projectId));
     const userApiEnv = await loadUserApiEnv(userId);
     const mode = req.body?.mode || "single";
     await enforceRunBudget(userId, mode);
@@ -38,4 +38,22 @@ export default async function handler(req, res) {
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message || "Agent run failed." });
   }
+}
+
+export async function buildSectorExpertiseForUser(userId, projectId, env = process.env) {
+  if (typeof projectId !== "string" || !projectId.trim() || projectId.length > 200) {
+    throw Object.assign(new Error("Choose a project before building sector expertise."), { statusCode: 400 });
+  }
+  const [workspace, userApiEnv] = await Promise.all([
+    loadProjectForSectorResearch(userId, projectId, env),
+    loadUserApiEnv(userId, env),
+  ]);
+  const projectContext = [workspace.website, workspace.description, workspace.positioning, workspace.segmentation].some((value) => typeof value === "string" && value.trim());
+  if (!projectContext && !workspace.sources?.length && !workspace.materials?.length) {
+    throw Object.assign(new Error("Add a website, source, or description in Brand so the research can identify this project’s sector."), { statusCode: 422 });
+  }
+  await enforceRunBudget(userId, "single", env);
+  await consumeAiUsage(userId, "agent", userApiEnv, env);
+  const expertise = await generateSectorExpertise({ workspace, useWeb: true }, userApiEnv);
+  return saveProjectSectorExpertise(userId, projectId, expertise, env);
 }

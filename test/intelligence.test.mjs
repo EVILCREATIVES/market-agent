@@ -10,6 +10,7 @@ import {
   strategyIsGeneric,
 } from "../server/intelligence.mjs";
 import { limitDeliveryExperimentCohort, selectProspectExperimentCohort } from "../server/delivery.mjs";
+import { generateSectorExpertise } from "../server/agent.mjs";
 
 const observedAt = "2026-11-24T12:00:00.000Z";
 
@@ -26,6 +27,53 @@ function evidence(category, statement, index) {
     userCorrected: false,
   };
 }
+
+test("sector research falls back to the connected web provider and saves supported partial coverage", async (t) => {
+  const savedCorrection = { ...evidence("decision_process", "The buyer needs to approve the scope before production starts.", 1), userCorrected: true };
+  const researched = evidence("customer_segments", "The service is purchased by agency production leads.", 2);
+  const guessed = evidence("competitors_alternatives", "A competitor may target the same buyer.", 3);
+  const requests = [];
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    const body = JSON.parse(options.body);
+    requests.push(body);
+    if (String(url).includes("openai.com")) return Response.json({}, { status: 429 });
+    if (body.tools) {
+      return Response.json({ candidates: [{
+        content: { parts: [{ text: "A trade source describes agency production leads as buyers." }] },
+        groundingMetadata: { groundingChunks: [{ web: { title: researched.sourceTitle, uri: researched.sourceUrl } }] },
+      }] });
+    }
+    return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({
+      summary: "The sector sells creative production services.",
+      items: [researched, { ...guessed, userCorrected: true }],
+      missingKnowledge: ["Who holds the budget?"],
+    }) }] } }] });
+  });
+  const expertise = await generateSectorExpertise({
+    workspace: { name: "Example Studio", sectorExpertise: { items: [savedCorrection] } },
+    useWeb: true,
+  }, { OPENAI_API_KEY: "test-openai", GOOGLE_GENERATIVE_AI_API_KEY: "test-google" });
+
+  assert.equal(requests.length, 3);
+  assert.equal(requests[0].tool_choice, "required");
+  assert.doesNotMatch(requests[1].contents[0].parts[0].text, /direct profile URL/);
+  assert.equal(expertise.items.find((item) => item.id === savedCorrection.id).statement, savedCorrection.statement);
+  assert.equal(expertise.items.find((item) => item.id === researched.id).sourceUrl, researched.sourceUrl);
+  const rejectedSource = expertise.items.find((item) => item.id === guessed.id);
+  assert.equal(rejectedSource.sourceUrl, "");
+  assert.equal(rejectedSource.verificationStatus, "hypothesis");
+  assert.equal(rejectedSource.userCorrected, false);
+});
+
+test("sector research reports an unavailable search instead of returning an empty success", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(globalThis, "fetch", async () => Response.json({ output_text: "No sources." }));
+  await assert.rejects(generateSectorExpertise({ workspace: { name: "Example Studio" } }, { OPENAI_API_KEY: "test" }), {
+    statusCode: 502,
+    message: /no usable sources/i,
+  });
+});
 
 function readyExperiment(overrides = {}) {
   return {

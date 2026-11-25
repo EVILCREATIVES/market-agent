@@ -1,4 +1,4 @@
-import type { AgentRun, AgentSchedule, AppState, ProductWorkspace } from "./types";
+import type { AgentRun, AgentSchedule, AppState, ProductWorkspace, SectorExpertise } from "./types";
 
 const STORAGE_KEY_PREFIX = "market-agent-state-v2";
 
@@ -80,7 +80,8 @@ export function mergeCloudState(local: AppState, remote: AppState): AppState {
     if (!current) projects.set(project.id, project);
     else {
       const localIsNewer = new Date(project.updatedAt || 0).getTime() >= new Date(current.updatedAt || 0).getTime();
-      projects.set(project.id, preserveSavedLogo(localIsNewer ? project : current, localIsNewer ? current : project));
+      const merged = preserveSavedLogo(localIsNewer ? project : current, localIsNewer ? current : project);
+      projects.set(project.id, { ...merged, sectorExpertise: mergeSectorExpertise(current.sectorExpertise, project.sectorExpertise) });
     }
   }
   const schedules = { ...remote.schedules, ...local.schedules };
@@ -98,6 +99,18 @@ export function mergeCloudState(local: AppState, remote: AppState): AppState {
     runs: remote.runs.slice(),
     schedules,
   });
+}
+
+export function mergeSectorExpertise(incoming?: SectorExpertise, existing?: SectorExpertise): SectorExpertise {
+  if (!incoming || !existing) return incoming || existing || createEmptySectorExpertise();
+  const latest = incoming.refreshedAt >= existing.refreshedAt ? incoming : existing;
+  const items = new Map(latest.items.map((item) => [item.id, item]));
+  for (const item of [...incoming.items, ...existing.items]) {
+    if (!item.userCorrected) continue;
+    const saved = items.get(item.id);
+    if (!saved?.userCorrected || item.observedAt > saved.observedAt) items.set(item.id, item);
+  }
+  return { ...latest, items: Array.from(items.values()) };
 }
 
 function preserveSavedLogo(preferred: ProductWorkspace, fallback: ProductWorkspace): ProductWorkspace {

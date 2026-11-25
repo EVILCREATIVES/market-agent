@@ -209,9 +209,9 @@ export function sectorExpertiseSchema() {
     properties: {
       summary: { type: "string" },
       refreshedAt: { type: "string" },
-      missingKnowledge: { type: "array", maxItems: 30, items: { type: "string" } },
+      missingKnowledge: { type: "array", items: { type: "string" } },
       items: {
-        type: "array", minItems: 8, maxItems: 80,
+        type: "array",
         items: {
           type: "object", additionalProperties: false,
           required: ["id", "category", "statement", "sourceTitle", "sourceUrl", "observedAt", "confidence", "verificationStatus", "userCorrected"],

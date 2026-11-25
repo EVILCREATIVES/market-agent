@@ -65,7 +65,7 @@ import {
   siX,
   siYoutube,
 } from "simple-icons";
-import { createDefaultSchedule, createEmptyProject, loadState, mergeCloudState, saveState } from "./operational/storage";
+import { createDefaultSchedule, createEmptyProject, loadState, mergeCloudState, mergeSectorExpertise, saveState } from "./operational/storage";
 import { prepareFileForUpload, prepareLogo, prepareMaterial, type PreparedMaterial } from "./operational/materials";
 import { upload } from "@vercel/blob/client";
 import { apiFetch, getAccessToken } from "./auth";
@@ -420,6 +420,15 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
     ...current,
     projects: current.projects.map((project) => project.id === workspace.id ? workspace : project),
   }));
+  const applySectorResearch = (projectId: string, sectorExpertise: ProductWorkspace["sectorExpertise"], revision: number) => {
+    if (cloudRevisionRef.current === revision - 1) cloudRevisionRef.current = revision;
+    setState((current) => ({
+      ...current,
+      projects: current.projects.map((project) => project.id === projectId
+        ? { ...project, sectorExpertise: mergeSectorExpertise(sectorExpertise, project.sectorExpertise) }
+        : project),
+    }));
+  };
   const updateSchedule = (schedule: AgentSchedule) => setState((current) => ({
     ...current,
     schedules: { ...current.schedules, [current.activeProjectId]: schedule },
@@ -428,7 +437,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
     setState((current) => ({
       ...current,
       runs: [run, ...current.runs],
-      projects: run.sectorExpertise?.items?.length ? current.projects.map((project) => project.id === run.projectId ? { ...project, sectorExpertise: run.sectorExpertise!, updatedAt: new Date().toISOString() } : project) : current.projects,
+      projects: run.sectorExpertise?.items?.length ? current.projects.map((project) => project.id === run.projectId ? { ...project, sectorExpertise: mergeSectorExpertise(run.sectorExpertise!, project.sectorExpertise), updatedAt: new Date().toISOString() } : project) : current.projects,
     }));
     setSelectedRunId(run.id);
   };
@@ -586,7 +595,7 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
           {selectedRunId ? <RunDetail run={state.runs.find((run) => run.id === selectedRunId)!} workspace={activeProject} connections={connections} onBack={() => setSelectedRunId(null)} onConnect={() => navigate("integrations")} onStatus={updateRunStatus} onOutput={updateRunOutput} onCampaignUpdate={applyCampaignUpdate} onDelete={deleteRun} notify={notify} /> : <>
             {page === "agent" && <AgentHome workspace={activeProject} runs={projectRuns} health={{ ...health, agentConfigured: runtimeReady }} connections={connections} schedule={activeSchedule} automationReady={automationReady} onSchedule={updateSchedule} onRun={addRun} onIssuesFound={addProactiveIssues} onOpen={setSelectedRunId} onNavigate={navigate} notify={notify} />}
             {page === "brain" && <ProductBrain key={activeProject.id} userId={userId} workspace={activeProject} onSave={updateWorkspace} onOpenContentLibrary={() => navigate("content")} notify={notify} />}
-            {page === "sector" && <SectorExpertiseWorkspace workspace={activeProject} onSave={updateWorkspace} onRun={addRun} onOpen={setSelectedRunId} notify={notify} />}
+            {page === "sector" && <SectorExpertiseWorkspace key={activeProject.id} workspace={activeProject} onSave={updateWorkspace} onResearchSaved={applySectorResearch} notify={notify} />}
             {page === "issues" && <IssuesCenter workspace={activeProject} onSave={updateWorkspace} onOpenBrand={() => navigate("brain")} notify={notify} />}
             {page === "research" && <ResearchWorkspace workspace={activeProject} runs={projectRuns.filter((run) => Boolean(run.strategyPlan?.territories?.length) || ["research", "audience"].includes(run.action))} onRun={addRun} onOpen={setSelectedRunId} notify={notify} />}
             {page === "campaigns" && <CampaignWorkspace workspace={activeProject} runs={campaignRuns} connections={connections} onSaveWorkspace={updateWorkspace} onOpen={setSelectedRunId} onStart={() => navigate("research")} onConnect={() => navigate("integrations")} onGrowth={() => navigate("analytics")} notify={notify} />}
@@ -3939,22 +3948,29 @@ const sectorCategoryLabels: Record<SectorKnowledgeCategory, string> = {
   seasonality_events_signals: "Seasonality, events and current signals",
 };
 
-function SectorExpertiseWorkspace({ workspace, onSave, onRun, onOpen, notify }: { workspace: ProductWorkspace; onSave: (workspace: ProductWorkspace) => void; onRun: (run: AgentRun) => void; onOpen: (id: string) => void; notify: (message: string) => void }) {
+function SectorExpertiseWorkspace({ workspace, onSave, onResearchSaved, notify }: { workspace: ProductWorkspace; onSave: (workspace: ProductWorkspace) => void; onResearchSaved: (projectId: string, expertise: ProductWorkspace["sectorExpertise"], revision: number) => void; notify: (message: string) => void }) {
   const [working, setWorking] = useState(false);
+  const [researchError, setResearchError] = useState("");
   const [editingId, setEditingId] = useState("");
   const [correction, setCorrection] = useState("");
   const expertise = workspace.sectorExpertise || { summary: "", items: [], missingKnowledge: [], refreshedAt: "" };
   const groups = (Object.keys(sectorCategoryLabels) as SectorKnowledgeCategory[]).map((category) => ({ category, items: expertise.items.filter((item) => item.category === category) }));
   const verified = expertise.items.filter((item) => item.verificationStatus === "verified" || item.userCorrected).length;
   const refresh = async () => {
+    if (working) return;
     setWorking(true);
+    setResearchError("");
     try {
-      const response = await apiFetch("/api/agent", { method: "POST", body: JSON.stringify({ action: "research", prompt: "Refresh the persistent sector expertise. Find material gaps, verify outdated evidence, preserve every user correction, and ask only questions whose answer would materially change strategy.", workspace, projectId: workspace.id, useWeb: true, mode: "single", intensity: "assertive" }) });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Sector expertise could not be refreshed.");
-      onRun(data.run as AgentRun);
-      notify("Sector expertise refreshed with dated, sourced evidence.");
-    } catch (error) { notify(error instanceof Error ? error.message : "Sector expertise could not be refreshed."); }
+      const response = await apiFetch("/api/agent", { method: "POST", body: JSON.stringify({ action: "sector", projectId: workspace.id }) });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.sectorExpertise?.items?.length) {
+        throw new Error(data?.error || (response.status === 504
+          ? "Sector research timed out. Try building it again."
+          : "Sector expertise could not be refreshed. Try again."));
+      }
+      onResearchSaved(workspace.id, data.sectorExpertise, Number(data.revision));
+      notify("Sector expertise saved to this project.");
+    } catch (error) { setResearchError(error instanceof Error ? error.message : "Sector expertise could not be refreshed. Try again."); }
     finally { setWorking(false); }
   };
   const saveCorrection = (id: string) => {
@@ -3976,6 +3992,8 @@ function SectorExpertiseWorkspace({ workspace, onSave, onRun, onOpen, notify }: 
   };
   return <div className="op-stack op-sector-workspace">
     <div className="op-heading op-sector-heading"><div><div className="op-eyebrow">Persistent project intelligence</div><h1>Sector expertise</h1><p>The agent’s working knowledge of the industry, buyers, alternatives, risks, proof requirements, and market timing. Every claim keeps its source, date, confidence, and verification state.</p></div><button onClick={() => void refresh()} disabled={working}>{working ? <LoaderCircle className="spin" size={15} /> : <Search size={15} />}{working ? "Researching…" : expertise.items.length ? "Refresh evidence" : "Build expertise"}</button></div>
+    {working && <p role="status">Reading project sources and researching the sector. This can take a few minutes.</p>}
+    {researchError && <div className="op-analytics-error" role="alert"><CircleAlert size={16} />{researchError}</div>}
     <section className="op-sector-summary"><article><small>Evidence items</small><strong>{expertise.items.length}</strong><span>saved for this project</span></article><article><small>Verified</small><strong>{verified}</strong><span>directly supported or corrected</span></article><article><small>Coverage</small><strong>{groups.filter((group) => group.items.length).length}/8</strong><span>decision areas represented</span></article><article><small>Last refreshed</small><strong>{expertise.refreshedAt ? new Date(expertise.refreshedAt).toLocaleDateString() : "—"}</strong><span>evidence is refreshed proactively</span></article></section>
     {expertise.summary && <section className="op-sector-overview"><small>SECTOR MODEL</small><p>{expertise.summary}</p></section>}
     {expertise.items.length ? <div className="op-sector-grid">{groups.map((group) => <section key={group.category} className={!group.items.length ? "empty" : ""}><header><span>{sectorCategoryLabels[group.category]}</span><em>{group.items.length}</em></header>{group.items.length ? group.items.map((item) => <article key={item.id} className={item.userCorrected ? "corrected" : ""}><p>{item.statement}</p><footer><span className={`verification-${item.verificationStatus}`}>{item.userCorrected ? "User verified" : item.verificationStatus.replaceAll("_", " ")}</span><span>{item.confidence} confidence</span><time>{item.observedAt ? new Date(item.observedAt).toLocaleDateString() : "No date"}</time></footer><div className="op-sector-source">{item.sourceUrl ? <a href={item.sourceUrl} target="_blank" rel="noreferrer">{item.sourceTitle || "Open source"}<ArrowRight size={11} /></a> : <span>{item.sourceTitle || "Source needs review"}</span>}<button className="secondary" onClick={() => { setEditingId(item.id); setCorrection(item.statement); }}>Correct</button></div>{editingId === item.id && <div className="op-sector-correction"><textarea value={correction} onChange={(event) => setCorrection(event.target.value)} /><div><button className="secondary" onClick={() => setEditingId("")}>Cancel</button><button onClick={() => saveCorrection(item.id)} disabled={!correction.trim()}>Save correction</button></div></div>}</article>) : <p>No supported evidence yet. The next refresh will research this decision area.</p>}</section>)}</div> : <div className="op-empty"><span><Globe2 size={23} /></span><h2>No sector expertise yet</h2><p>Build it before creating another campaign. The agent will read the project sources, research credible external evidence, and separate verified facts from hypotheses.</p><button onClick={() => void refresh()} disabled={working}><Sparkles size={15} /> Build sector expertise</button></div>}
