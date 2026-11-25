@@ -11,7 +11,7 @@ import { handleSchedule } from "../server/schedule-handler.mjs";
 import { projectLogoVariants, safeMailchimpSignupUrl, selectNewsletterLogoVariant, signupFormUrlFromResponses } from "../server/newsletters.mjs";
 import { createBrandLogoAccessUrl } from "../server/brand-logos.mjs";
 import { linkedinCommunityApprovalStatus, socialConnectorConfigured } from "../server/social-connections.mjs";
-import { ownerCostEstimateCents, ownerMonthlyCostCapCents } from "../server/billing.mjs";
+import { getManagedSubscriptionStatus, ownerCostEstimateCents, ownerMonthlyCostCapCents } from "../server/billing.mjs";
 import { appendMarkdownTableColumn, editableCampaignRunId, extractMarkdownTableRows, setMarkdownTableColumnValues } from "../server/campaign-edits.mjs";
 import { backgroundWakePlan, nextDailyRoutineAt } from "../server/background-queue.mjs";
 
@@ -92,6 +92,32 @@ test("database access uses Neon's stateless serverless transport", () => {
   assert.match(database, /neon\(connectionString, \{ fullResults: true \}\)/);
   assert.doesNotMatch(database, /from "pg"/);
   assert.doesNotMatch(database, /attachDatabasePool/);
+});
+
+test("billing initializes through Neon with one SQL statement per prepared query", async (t) => {
+  const requests = [];
+  const emptyResult = { fields: [], rows: [], rowCount: 0 };
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    const request = JSON.parse(options.body);
+    requests.push(request);
+    const queries = request.queries || [request];
+    if (queries.some(({ query }) => /;\s*(?:CREATE|ALTER)\b/i.test(query))) {
+      return Response.json({ code: "42601", message: "cannot insert multiple commands into a prepared statement" }, { status: 400 });
+    }
+    return Response.json(request.queries ? { results: queries.map(() => emptyResult) } : emptyResult);
+  });
+
+  const billing = await getManagedSubscriptionStatus("test-user", {
+    DATABASE_URL: "postgresql://test:test@schema-batch.example.test/test",
+  });
+
+  assert.equal(billing.checked, true);
+  const [lock, ...schema] = requests[0].queries.map(({ query }) => query);
+  assert.match(lock, /pg_advisory_xact_lock/);
+  assert.equal(schema.length, 9);
+  assert.match(schema[0], /^CREATE TABLE IF NOT EXISTS market_agent_subscriptions/);
+  assert.match(schema.at(-1), /^CREATE INDEX IF NOT EXISTS market_agent_ai_usage_user_day_idx/);
+  assert.deepEqual(requests[1].params, ["test-user"]);
 });
 
 test("LinkedIn company-page review stays separate from optional personal publishing", () => {

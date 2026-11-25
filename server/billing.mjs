@@ -317,8 +317,8 @@ function usageLimits(mode, purpose) {
 
 async function ensureBillingTables(env) {
   if (billingTablesReady) return;
-  await getPool(env).query(`
-    CREATE TABLE IF NOT EXISTS market_agent_subscriptions (
+  await getPool(env).applySchema([
+    `CREATE TABLE IF NOT EXISTS market_agent_subscriptions (
       user_id TEXT PRIMARY KEY,
       provider TEXT NOT NULL DEFAULT 'paypal',
       subscription_id TEXT NOT NULL DEFAULT '',
@@ -329,39 +329,39 @@ async function ensureBillingTables(env) {
       payer_email TEXT NOT NULL DEFAULT '',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS market_agent_subscriptions_subscription_uidx
-      ON market_agent_subscriptions (subscription_id) WHERE subscription_id <> '';
-    CREATE UNIQUE INDEX IF NOT EXISTS market_agent_subscriptions_checkout_uidx
-      ON market_agent_subscriptions (checkout_token) WHERE checkout_token <> '';
-    CREATE TABLE IF NOT EXISTS market_agent_access_periods (
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS market_agent_subscriptions_subscription_uidx
+      ON market_agent_subscriptions (subscription_id) WHERE subscription_id <> ''`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS market_agent_subscriptions_checkout_uidx
+      ON market_agent_subscriptions (checkout_token) WHERE checkout_token <> ''`,
+    `CREATE TABLE IF NOT EXISTS market_agent_access_periods (
       user_id TEXT PRIMARY KEY,
       trial_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS market_agent_paypal_events (
+    )`,
+    `CREATE TABLE IF NOT EXISTS market_agent_paypal_events (
       event_id TEXT PRIMARY KEY,
       event_type TEXT NOT NULL DEFAULT '',
       received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS market_agent_ai_usage_events (
+    )`,
+    `CREATE TABLE IF NOT EXISTS market_agent_ai_usage_events (
       id BIGSERIAL PRIMARY KEY,
       user_id TEXT NOT NULL,
       access_mode TEXT NOT NULL,
       purpose TEXT NOT NULL,
       estimated_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_cents >= 0),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    ALTER TABLE market_agent_ai_usage_events
-      ADD COLUMN IF NOT EXISTS estimated_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_cents >= 0);
-    CREATE TABLE IF NOT EXISTS market_agent_owner_cost_controls (
+    )`,
+    `ALTER TABLE market_agent_ai_usage_events
+      ADD COLUMN IF NOT EXISTS estimated_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_cents >= 0)`,
+    `CREATE TABLE IF NOT EXISTS market_agent_owner_cost_controls (
       control_key TEXT PRIMARY KEY,
       monthly_cap_cents INTEGER NOT NULL CHECK (monthly_cap_cents >= 0),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE INDEX IF NOT EXISTS market_agent_ai_usage_user_day_idx
-      ON market_agent_ai_usage_events (user_id, access_mode, purpose, created_at DESC);
-  `);
+    )`,
+    `CREATE INDEX IF NOT EXISTS market_agent_ai_usage_user_day_idx
+      ON market_agent_ai_usage_events (user_id, access_mode, purpose, created_at DESC)`,
+  ]);
   billingTablesReady = true;
 }
 

@@ -189,8 +189,8 @@ function emptyMeasurement() {
 
 async function ensureModelUsageTables(env) {
   if (usageTablesReady) return;
-  await getPool(env).query(`
-    CREATE TABLE IF NOT EXISTS market_agent_model_usage_measurements (
+  await getPool(env).applySchema([
+    `CREATE TABLE IF NOT EXISTS market_agent_model_usage_measurements (
       measurement_key TEXT PRIMARY KEY,
       started_at TIMESTAMPTZ NOT NULL,
       ends_at TIMESTAMPTZ NOT NULL,
@@ -198,8 +198,8 @@ async function ensureModelUsageTables(env) {
     );
     INSERT INTO market_agent_model_usage_measurements (measurement_key, started_at, ends_at)
     VALUES ('${MEASUREMENT_KEY}', NOW(), NOW() + INTERVAL '${MEASUREMENT_DAYS} days')
-    ON CONFLICT (measurement_key) DO NOTHING;
-    CREATE TABLE IF NOT EXISTS market_agent_model_usage_events (
+    ON CONFLICT (measurement_key) DO NOTHING`,
+    `CREATE TABLE IF NOT EXISTS market_agent_model_usage_events (
       id BIGSERIAL PRIMARY KEY,
       measurement_key TEXT NOT NULL REFERENCES market_agent_model_usage_measurements(measurement_key),
       user_id TEXT NOT NULL,
@@ -217,9 +217,9 @@ async function ensureModelUsageTables(env) {
       fallback BOOLEAN NOT NULL DEFAULT FALSE,
       succeeded BOOLEAN NOT NULL DEFAULT TRUE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE INDEX IF NOT EXISTS market_agent_model_usage_user_window_idx
-      ON market_agent_model_usage_events (user_id, measurement_key, created_at DESC);
-  `);
+    )`,
+    `CREATE INDEX IF NOT EXISTS market_agent_model_usage_user_window_idx
+      ON market_agent_model_usage_events (user_id, measurement_key, created_at DESC)`,
+  ]);
   usageTablesReady = true;
 }

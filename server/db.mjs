@@ -42,6 +42,11 @@ function createServerlessDatabase(connectionString) {
   const sql = neon(connectionString, { fullResults: true });
   return {
     query: (...args) => sql.query(...args).catch((error) => { throw normalizeDatabaseError(error); }),
+    applySchema: (statements) => sql.transaction((transaction) => [
+      // Cold functions and migrations can modify some of the same tables.
+      transaction.query("SELECT pg_advisory_xact_lock(hashtext('market-agent-schema-migrations'))"),
+      ...statements.map((statement) => transaction.query(statement)),
+    ]).catch((error) => { throw normalizeDatabaseError(error); }),
     connect: async () => {
       // Transactions need a session, so give each transaction its own short-lived
       // WebSocket pool and close it as soon as the caller releases the client.

@@ -562,8 +562,8 @@ function hexColor(value) {
 
 async function ensureTables(env) {
   if (tablesReady) return;
-  await getPool(env).query(`
-    CREATE TABLE IF NOT EXISTS market_agent_project_assets (
+  await getPool(env).applySchema([
+    `CREATE TABLE IF NOT EXISTS market_agent_project_assets (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, project_id TEXT NOT NULL, name TEXT NOT NULL,
       source_kind TEXT NOT NULL, asset_kind TEXT NOT NULL, mime_type TEXT NOT NULL DEFAULT '',
       size_bytes BIGINT NOT NULL DEFAULT 0, blob_path TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '',
@@ -571,16 +571,16 @@ async function ensureTables(env) {
       summary TEXT NOT NULL DEFAULT '', recommendation TEXT NOT NULL DEFAULT 'review', rationale TEXT NOT NULL DEFAULT '',
       suggested_changes TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[], error TEXT NOT NULL DEFAULT '',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS market_agent_asset_proposals (
+    )`,
+    `CREATE TABLE IF NOT EXISTS market_agent_asset_proposals (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, project_id TEXT NOT NULL, kind TEXT NOT NULL,
       title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', rationale TEXT NOT NULL DEFAULT '',
       source_asset_ids TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[], status TEXT NOT NULL DEFAULT 'awaiting_approval',
       estimated_cost_cents INTEGER NOT NULL DEFAULT 15, approved_budget_cents INTEGER NOT NULL DEFAULT 0,
       actual_cost_cents INTEGER, blob_path TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', approved_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
+    )`,
+  ]);
   tablesReady = true;
 }
 

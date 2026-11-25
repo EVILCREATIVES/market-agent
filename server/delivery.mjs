@@ -1560,8 +1560,8 @@ export function validApprovedRecipient(value, run = {}) {
 
 async function ensureDeliveryTable(env) {
   if (deliveryTableReady) return;
-  await getPool(env).query(`
-    CREATE TABLE IF NOT EXISTS market_agent_delivery_jobs (
+  await getPool(env).applySchema([
+    `CREATE TABLE IF NOT EXISTS market_agent_delivery_jobs (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, project_id TEXT NOT NULL, run_id TEXT NOT NULL,
       channel TEXT NOT NULL CHECK (channel IN ('gmail','linkedin','instagram','tiktok','youtube','x','discord','reddit','shopify')),
       payload JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -1572,30 +1572,30 @@ async function ensureDeliveryTable(env) {
       max_attempts INTEGER NOT NULL DEFAULT 5, next_attempt_at TIMESTAMPTZ, dead_lettered_at TIMESTAMPTZ,
       click_count INTEGER NOT NULL DEFAULT 0, first_clicked_at TIMESTAMPTZ, last_clicked_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE INDEX IF NOT EXISTS market_agent_delivery_jobs_user_project_run_idx ON market_agent_delivery_jobs (user_id, project_id, run_id, created_at DESC);
-    CREATE INDEX IF NOT EXISTS market_agent_delivery_jobs_scheduled_idx ON market_agent_delivery_jobs (status);
-    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS idempotency_key TEXT NOT NULL DEFAULT '';
-    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0;
-    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 5;
-    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ;
-    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS dead_lettered_at TIMESTAMPTZ;
-    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS click_count INTEGER NOT NULL DEFAULT 0;
-    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS first_clicked_at TIMESTAMPTZ;
-    ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS last_clicked_at TIMESTAMPTZ;
-    CREATE TABLE IF NOT EXISTS market_agent_email_suppressions (
+    )`,
+    `CREATE INDEX IF NOT EXISTS market_agent_delivery_jobs_user_project_run_idx ON market_agent_delivery_jobs (user_id, project_id, run_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS market_agent_delivery_jobs_scheduled_idx ON market_agent_delivery_jobs (status)`,
+    `ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS idempotency_key TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 5`,
+    `ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ`,
+    `ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS dead_lettered_at TIMESTAMPTZ`,
+    `ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS click_count INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS first_clicked_at TIMESTAMPTZ`,
+    `ALTER TABLE market_agent_delivery_jobs ADD COLUMN IF NOT EXISTS last_clicked_at TIMESTAMPTZ`,
+    `CREATE TABLE IF NOT EXISTS market_agent_email_suppressions (
       user_id TEXT NOT NULL, project_id TEXT NOT NULL, email TEXT NOT NULL,
       reason TEXT NOT NULL DEFAULT 'unsubscribed', status TEXT NOT NULL DEFAULT 'suppressed',
       hold_until TIMESTAMPTZ, source_message_id TEXT NOT NULL DEFAULT '',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (user_id, project_id, email)
-    );
-    ALTER TABLE market_agent_email_suppressions ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'suppressed';
-    ALTER TABLE market_agent_email_suppressions ADD COLUMN IF NOT EXISTS hold_until TIMESTAMPTZ;
-    ALTER TABLE market_agent_email_suppressions ADD COLUMN IF NOT EXISTS source_message_id TEXT NOT NULL DEFAULT '';
-    ALTER TABLE market_agent_email_suppressions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
-    CREATE UNIQUE INDEX IF NOT EXISTS market_agent_delivery_jobs_idempotency_uidx ON market_agent_delivery_jobs (user_id, idempotency_key) WHERE idempotency_key <> '';
-    DO $$ BEGIN
+    )`,
+    `ALTER TABLE market_agent_email_suppressions ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'suppressed'`,
+    `ALTER TABLE market_agent_email_suppressions ADD COLUMN IF NOT EXISTS hold_until TIMESTAMPTZ`,
+    `ALTER TABLE market_agent_email_suppressions ADD COLUMN IF NOT EXISTS source_message_id TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE market_agent_email_suppressions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS market_agent_delivery_jobs_idempotency_uidx ON market_agent_delivery_jobs (user_id, idempotency_key) WHERE idempotency_key <> ''`,
+    `DO $$ BEGIN
       IF EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conrelid = 'market_agent_delivery_jobs'::regclass
@@ -1606,8 +1606,8 @@ async function ensureDeliveryTable(env) {
         ALTER TABLE market_agent_delivery_jobs ADD CONSTRAINT market_agent_delivery_jobs_channel_check
           CHECK (channel IN ('gmail','linkedin','instagram','tiktok','youtube','x','discord','reddit','shopify'));
       END IF;
-    END $$;
-    DO $$ BEGIN
+    END $$`,
+    `DO $$ BEGIN
       IF EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conrelid = 'market_agent_delivery_jobs'::regclass
@@ -1618,8 +1618,8 @@ async function ensureDeliveryTable(env) {
         ALTER TABLE market_agent_delivery_jobs ADD CONSTRAINT market_agent_delivery_jobs_status_check
           CHECK (status IN ('awaiting_approval','scheduled','running','submitted','complete','failed','dead_letter','cancelled'));
       END IF;
-    END $$;
-  `);
+    END $$`,
+  ]);
   deliveryTableReady = true;
 }
 

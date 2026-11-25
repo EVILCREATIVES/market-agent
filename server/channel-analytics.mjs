@@ -172,8 +172,8 @@ async function recordAndCompareChannelSnapshot(userId, projectId, provider, repo
 
 async function ensureMetricSnapshotsTable(env) {
   if (metricSnapshotsReady) return;
-  await getPool(env).query(`
-    CREATE TABLE IF NOT EXISTS market_agent_metric_snapshots (
+  await getPool(env).applySchema([
+    `CREATE TABLE IF NOT EXISTS market_agent_metric_snapshots (
       user_id TEXT NOT NULL,
       project_id TEXT NOT NULL,
       provider TEXT NOT NULL,
@@ -182,10 +182,10 @@ async function ensureMetricSnapshotsTable(env) {
       account JSONB NOT NULL DEFAULT '{}'::jsonb,
       totals JSONB NOT NULL DEFAULT '{}'::jsonb,
       PRIMARY KEY (user_id, project_id, provider, captured_on)
-    );
-    CREATE INDEX IF NOT EXISTS market_agent_metric_snapshots_lookup_idx
-      ON market_agent_metric_snapshots (user_id, project_id, provider, captured_at DESC);
-  `);
+    )`,
+    `CREATE INDEX IF NOT EXISTS market_agent_metric_snapshots_lookup_idx
+      ON market_agent_metric_snapshots (user_id, project_id, provider, captured_at DESC)`,
+  ]);
   metricSnapshotsReady = true;
 }
 

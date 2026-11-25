@@ -1085,29 +1085,29 @@ function serializeNewsletterSettings(row) {
 
 async function ensureTables(env) {
   if (tablesReady) return;
-  await getPool(env).query(`
-    CREATE TABLE IF NOT EXISTS market_agent_connections (
+  await getPool(env).applySchema([
+    `CREATE TABLE IF NOT EXISTS market_agent_connections (
       user_id TEXT NOT NULL, project_id TEXT NOT NULL DEFAULT 'project-default', provider TEXT NOT NULL,
       account_id TEXT NOT NULL DEFAULT '', account_label TEXT NOT NULL DEFAULT '', account_email TEXT NOT NULL DEFAULT '',
       encrypted_credentials TEXT NOT NULL, scopes TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[], status TEXT NOT NULL DEFAULT 'connected',
       connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (user_id, project_id, provider)
-    );
-    ALTER TABLE market_agent_connections ADD COLUMN IF NOT EXISTS account_id TEXT NOT NULL DEFAULT '';
-    ALTER TABLE market_agent_connections ADD COLUMN IF NOT EXISTS account_label TEXT NOT NULL DEFAULT '';
-    ALTER TABLE market_agent_connections ADD COLUMN IF NOT EXISTS account_email TEXT NOT NULL DEFAULT '';
-    ALTER TABLE market_agent_connections DROP CONSTRAINT IF EXISTS market_agent_connections_pkey;
-    CREATE UNIQUE INDEX IF NOT EXISTS market_agent_connections_user_project_provider_uidx ON market_agent_connections (user_id, project_id, provider);
-    CREATE TABLE IF NOT EXISTS market_agent_newsletters (
+    )`,
+    `ALTER TABLE market_agent_connections ADD COLUMN IF NOT EXISTS account_id TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE market_agent_connections ADD COLUMN IF NOT EXISTS account_label TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE market_agent_connections ADD COLUMN IF NOT EXISTS account_email TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE market_agent_connections DROP CONSTRAINT IF EXISTS market_agent_connections_pkey`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS market_agent_connections_user_project_provider_uidx ON market_agent_connections (user_id, project_id, provider)`,
+    `CREATE TABLE IF NOT EXISTS market_agent_newsletters (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, project_id TEXT NOT NULL, direction TEXT NOT NULL DEFAULT '',
       draft JSONB NOT NULL DEFAULT '{}'::jsonb, html TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','preparing','scheduled','sent','failed')),
       external_id TEXT NOT NULL DEFAULT '', archive_url TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
       approved_at TIMESTAMPTZ, scheduled_for TIMESTAMPTZ, sent_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE INDEX IF NOT EXISTS market_agent_newsletters_user_project_idx ON market_agent_newsletters (user_id, project_id, created_at DESC);
-    CREATE TABLE IF NOT EXISTS market_agent_contact_imports (
+    )`,
+    `CREATE INDEX IF NOT EXISTS market_agent_newsletters_user_project_idx ON market_agent_newsletters (user_id, project_id, created_at DESC)`,
+    `CREATE TABLE IF NOT EXISTS market_agent_contact_imports (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, project_id TEXT NOT NULL, source_asset_id TEXT NOT NULL DEFAULT '', source_name TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'staged' CHECK (status IN ('staged','importing','imported','partial','failed')),
       contacts JSONB NOT NULL DEFAULT '[]'::jsonb, column_map JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -1117,11 +1117,11 @@ async function ensureTables(env) {
       denied_count INTEGER NOT NULL DEFAULT 0, imported_count INTEGER NOT NULL DEFAULT 0,
       failed_count INTEGER NOT NULL DEFAULT 0, import_mode TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    ALTER TABLE market_agent_contact_imports ADD COLUMN IF NOT EXISTS source_asset_id TEXT NOT NULL DEFAULT '';
-    CREATE INDEX IF NOT EXISTS market_agent_contact_imports_user_project_idx ON market_agent_contact_imports (user_id, project_id, created_at DESC);
-    CREATE UNIQUE INDEX IF NOT EXISTS market_agent_contact_imports_source_asset_uidx ON market_agent_contact_imports (source_asset_id) WHERE source_asset_id <> '';
-    CREATE TABLE IF NOT EXISTS market_agent_subscribers (
+    )`,
+    `ALTER TABLE market_agent_contact_imports ADD COLUMN IF NOT EXISTS source_asset_id TEXT NOT NULL DEFAULT ''`,
+    `CREATE INDEX IF NOT EXISTS market_agent_contact_imports_user_project_idx ON market_agent_contact_imports (user_id, project_id, created_at DESC)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS market_agent_contact_imports_source_asset_uidx ON market_agent_contact_imports (source_asset_id) WHERE source_asset_id <> ''`,
+    `CREATE TABLE IF NOT EXISTS market_agent_subscribers (
       user_id TEXT NOT NULL, project_id TEXT NOT NULL, email TEXT NOT NULL,
       first_name TEXT NOT NULL DEFAULT '', last_name TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','confirmed','unsubscribed','bounced')),
@@ -1131,16 +1131,16 @@ async function ensureTables(env) {
       welcome_sent_at TIMESTAMPTZ, welcome_error TEXT NOT NULL DEFAULT '',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (user_id,project_id,email)
-    );
-    CREATE INDEX IF NOT EXISTS market_agent_subscribers_user_project_status_idx ON market_agent_subscribers (user_id,project_id,status,updated_at DESC);
-    CREATE TABLE IF NOT EXISTS market_agent_newsletter_settings (
+    )`,
+    `CREATE INDEX IF NOT EXISTS market_agent_subscribers_user_project_status_idx ON market_agent_subscribers (user_id,project_id,status,updated_at DESC)`,
+    `CREATE TABLE IF NOT EXISTS market_agent_newsletter_settings (
       user_id TEXT NOT NULL, project_id TEXT NOT NULL,
       welcome_enabled BOOLEAN NOT NULL DEFAULT FALSE,
       welcome_subject TEXT NOT NULL DEFAULT '', welcome_body TEXT NOT NULL DEFAULT '', welcome_enabled_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (user_id,project_id)
-    );
-    CREATE TABLE IF NOT EXISTS market_agent_optin_campaigns (
+    )`,
+    `CREATE TABLE IF NOT EXISTS market_agent_optin_campaigns (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, project_id TEXT NOT NULL, public_token TEXT NOT NULL UNIQUE,
       status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused')),
       eyebrow TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
@@ -1153,16 +1153,16 @@ async function ensureTables(env) {
       primary_color TEXT NOT NULL DEFAULT '', background_color TEXT NOT NULL DEFAULT '', text_color TEXT NOT NULL DEFAULT '',
       views INTEGER NOT NULL DEFAULT 0, cta_clicks INTEGER NOT NULL DEFAULT 0,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS invitation_subject TEXT NOT NULL DEFAULT '';
-    ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS invitation_body TEXT NOT NULL DEFAULT '';
-    ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS invitation_strategy TEXT NOT NULL DEFAULT '';
-    ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS invitation_cta_label TEXT NOT NULL DEFAULT '';
-    ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS invitation_url TEXT NOT NULL DEFAULT '';
-    ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS experiment JSONB NOT NULL DEFAULT '{}'::jsonb;
-    ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS learning JSONB;
-    CREATE INDEX IF NOT EXISTS market_agent_optin_campaigns_user_project_idx ON market_agent_optin_campaigns (user_id,project_id,created_at DESC);
-  `);
+    )`,
+    `ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS invitation_subject TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS invitation_body TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS invitation_strategy TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS invitation_cta_label TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS invitation_url TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS experiment JSONB NOT NULL DEFAULT '{}'::jsonb`,
+    `ALTER TABLE market_agent_optin_campaigns ADD COLUMN IF NOT EXISTS learning JSONB`,
+    `CREATE INDEX IF NOT EXISTS market_agent_optin_campaigns_user_project_idx ON market_agent_optin_campaigns (user_id,project_id,created_at DESC)`,
+  ]);
   tablesReady = true;
 }
 
