@@ -141,6 +141,54 @@ export interface SectorKnowledgeItem {
   confidence: EvidenceConfidence;
   verificationStatus: EvidenceVerificationStatus;
   userCorrected: boolean;
+  sourceChecked: boolean;
+  implication: string;
+  metric: string;
+}
+
+export interface SectorMarketEntry {
+  segment: string;
+  buyer: string;
+  whyNow: string;
+  rationale: string;
+  biggestUnknown: string;
+  evidenceIds: string[];
+}
+
+export interface SectorBuyerStage {
+  stage: string;
+  role: string;
+  decision: string;
+  proof: string;
+  evidenceIds: string[];
+}
+
+export interface SectorAlternative {
+  name: string;
+  advantage: string;
+  opening: string;
+  evidenceIds: string[];
+}
+
+export interface SectorPosition {
+  id: string;
+  title: string;
+  buyer: string;
+  promise: string;
+  difference: string;
+  proof: string;
+  risk: string;
+  test: string;
+  successSignal: string;
+  evidenceIds: string[];
+}
+
+export interface SectorBrief {
+  marketEntry: SectorMarketEntry | null;
+  buyerJourney: SectorBuyerStage[];
+  alternatives: SectorAlternative[];
+  positions: SectorPosition[];
+  recommendedPositionId: string;
 }
 
 export interface SectorExpertise {
@@ -148,6 +196,7 @@ export interface SectorExpertise {
   items: SectorKnowledgeItem[];
   missingKnowledge: string[];
   refreshedAt: string;
+  brief: SectorBrief | null;
 }
 
 export interface ProjectChatMessage {

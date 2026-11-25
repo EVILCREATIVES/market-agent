@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 export const SECTOR_KNOWLEDGE_CATEGORIES = [
   "industry_business_model",
@@ -28,6 +28,7 @@ export function emptySectorExpertise() {
     items: [],
     missingKnowledge: [],
     refreshedAt: "",
+    brief: null,
   };
 }
 
@@ -41,11 +42,13 @@ export function normalizeSectorExpertise(value, existing = emptySectorExpertise(
   );
   const correctedById = new Map(Array.from(corrected.values()).map((item) => [item.id, item]));
   const merged = new Map();
-  for (const item of Array.isArray(current.items) ? current.items : []) {
+  const incoming = Array.isArray(source.items) ? source.items : [];
+  const replacesResearch = Boolean(source.brief) || incoming.some((item) => item?.sourceChecked);
+  for (const item of !replacesResearch && Array.isArray(current.items) ? current.items : []) {
     const normalized = normalizeSectorItem(item);
     if (normalized.statement) merged.set(sectorItemKey(normalized), normalized);
   }
-  for (const item of Array.isArray(source.items) ? source.items : []) {
+  for (const item of incoming) {
     const normalized = normalizeSectorItem(item);
     if (!normalized.statement) continue;
     const key = sectorItemKey(normalized);
@@ -62,6 +65,7 @@ export function normalizeSectorExpertise(value, existing = emptySectorExpertise(
     items,
     missingKnowledge: uniqueStrings(source.missingKnowledge || current.missingKnowledge, 40, 500),
     refreshedAt: validDate(source.refreshedAt) || validDate(current.refreshedAt) || (items.length ? new Date().toISOString() : ""),
+    brief: normalizeSectorBrief(Object.hasOwn(source, "brief") ? source.brief : current.brief, items),
   };
 }
 
@@ -84,16 +88,79 @@ export function applySectorCorrection(expertise, correction) {
 
 export function sectorCoverage(expertise) {
   const normalized = normalizeSectorExpertise(expertise);
-  const verifiedCategories = new Set(normalized.items.filter((item) => item.verificationStatus === "verified" || item.userCorrected).map((item) => item.category));
-  const supportedCategories = new Set(normalized.items.filter((item) => item.sourceUrl || item.userCorrected).map((item) => item.category));
+  const verified = normalized.items.filter(isTrustedSectorEvidence);
+  const supportedCategories = new Set(verified.map((item) => item.category));
   return {
     totalItems: normalized.items.length,
-    verifiedItems: normalized.items.filter((item) => item.verificationStatus === "verified" || item.userCorrected).length,
+    verifiedItems: verified.length,
     categoriesCovered: supportedCategories.size,
-    categoriesVerified: verifiedCategories.size,
-    readyForStrategy: supportedCategories.size >= 5 && normalized.items.length >= 8,
+    categoriesVerified: supportedCategories.size,
+    readyForStrategy: supportedCategories.size >= 5 && verified.length >= 8,
     missingCategories: SECTOR_KNOWLEDGE_CATEGORIES.filter((category) => !supportedCategories.has(category)),
   };
+}
+
+export function isTrustedSectorEvidence(item) {
+  return item?.userCorrected === true || (item?.sourceChecked === true && Boolean(item.sourceUrl) && item.verificationStatus === "verified");
+}
+
+export function verifySectorResearch(value, pages, observedAt = new Date().toISOString()) {
+  const byPage = new Map(pages.map((page) => [page.id, page]));
+  const ids = new Map();
+  const items = new Map();
+  for (const candidate of (Array.isArray(value?.items) ? value.items : []).slice(0, 18)) {
+    const page = byPage.get(candidate?.pageId);
+    const quote = cleanText(candidate?.quote, 600);
+    const category = candidate?.category;
+    if (!page || !candidate.id || ids.has(candidate.id) || quote.length < 32 || !cleanText(page.text, 20_000).includes(quote) || !SECTOR_KNOWLEDGE_CATEGORIES.includes(category)) continue;
+    const id = `sector-${createHash("sha256").update(`${page.url}\n${quote}`).digest("hex").slice(0, 20)}`;
+    ids.set(candidate.id, id);
+    if (items.has(id)) continue;
+    const metric = cleanText(candidate.metric, 45);
+    const literalMetric = metric.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const metricInQuote = /\d/.test(metric) && new RegExp(`(?:^|[^0-9.,])${literalMetric}(?![0-9.,])`).test(quote);
+    items.set(id, {
+      id, category, statement: quote, sourceTitle: page.title, sourceUrl: page.url, observedAt,
+      implication: cleanText(candidate.implication, 400), metric: metricInQuote ? metric : "",
+      sourceChecked: true, confidence: "high", verificationStatus: "verified", userCorrected: false,
+    });
+  }
+  const remap = (record) => ({
+    ...record,
+    evidenceIds: (Array.isArray(record?.evidenceIds) ? record.evidenceIds : []).map((id) => ids.get(id)).filter(Boolean),
+  });
+  const resultItems = [...items.values()];
+  const brief = normalizeSectorBrief({
+    marketEntry: remap(value?.marketEntry),
+    buyerJourney: (Array.isArray(value?.buyerJourney) ? value.buyerJourney : []).map(remap),
+    alternatives: (Array.isArray(value?.alternatives) ? value.alternatives : []).map(remap),
+    positions: (Array.isArray(value?.positions) ? value.positions : []).map(remap),
+    recommendedPositionId: value?.recommendedPositionId,
+  }, resultItems);
+  return normalizeSectorExpertise({ summary: brief?.marketEntry?.rationale || "", brief, items: resultItems, missingKnowledge: value?.missingKnowledge, refreshedAt: observedAt });
+}
+
+function normalizeSectorBrief(value, items) {
+  if (!value || typeof value !== "object") return null;
+  const sources = new Map(items.filter((item) => item.sourceChecked && !item.userCorrected).map((item) => [item.id, item.sourceUrl]));
+  const corrected = new Set(items.filter((item) => item.userCorrected).map((item) => item.id));
+  function normalizeRecord(record, keys, minSources = 1) {
+    const text = Object.fromEntries(keys.map((key) => [key, cleanText(record?.[key], key === "id" ? 120 : 600)]));
+    const requestedIds = uniqueStrings(record?.evidenceIds, 8, 120);
+    if (requestedIds.some((id) => corrected.has(id))) return null;
+    const evidenceIds = requestedIds.filter((id) => sources.has(id));
+    const count = new Set(evidenceIds.map((id) => sources.get(id))).size;
+    return Object.values(text).every(Boolean) && count >= minSources ? { ...text, evidenceIds } : null;
+  }
+  function normalizeRows(rows, keys, limit, minSources) {
+    return (Array.isArray(rows) ? rows : []).slice(0, limit).map((row) => normalizeRecord(row, keys, minSources)).filter(Boolean);
+  }
+  const marketEntry = normalizeRecord(value.marketEntry, ["segment", "buyer", "whyNow", "rationale", "biggestUnknown"], 2);
+  const buyerJourney = normalizeRows(value.buyerJourney, ["stage", "role", "decision", "proof"], 5);
+  const alternatives = normalizeRows(value.alternatives, ["name", "advantage", "opening"], 6);
+  const positions = normalizeRows(value.positions, ["id", "title", "buyer", "promise", "difference", "proof", "risk", "test", "successSignal"], 3, 2);
+  const recommendedPositionId = positions.some((item) => item.id === value.recommendedPositionId) ? value.recommendedPositionId : "";
+  return { marketEntry, buyerJourney, alternatives, positions, recommendedPositionId };
 }
 
 export function experimentReadiness(experiment) {
@@ -202,31 +269,25 @@ export function renderStrategyPlan(plan, experiment) {
 }
 
 export function sectorExpertiseSchema() {
+  const text = { type: "string" };
+  const strings = { type: "array", items: text };
+  const record = (properties) => ({ type: "object", additionalProperties: false, required: Object.keys(properties), properties });
+  const withEvidence = (fields) => record({ ...Object.fromEntries(fields.map((field) => [field, text])), evidenceIds: strings });
+  const rows = (fields) => ({ type: "array", items: withEvidence(fields) });
   return {
     type: "object",
     additionalProperties: false,
-    required: ["summary", "items", "missingKnowledge", "refreshedAt"],
+    required: ["items", "marketEntry", "buyerJourney", "alternatives", "positions", "recommendedPositionId", "missingKnowledge"],
     properties: {
-      summary: { type: "string" },
-      refreshedAt: { type: "string" },
-      missingKnowledge: { type: "array", items: { type: "string" } },
+      missingKnowledge: strings,
+      marketEntry: withEvidence(["segment", "buyer", "whyNow", "rationale", "biggestUnknown"]),
+      buyerJourney: rows(["stage", "role", "decision", "proof"]),
+      alternatives: rows(["name", "advantage", "opening"]),
+      positions: rows(["id", "title", "buyer", "promise", "difference", "proof", "risk", "test", "successSignal"]),
+      recommendedPositionId: text,
       items: {
         type: "array",
-        items: {
-          type: "object", additionalProperties: false,
-          required: ["id", "category", "statement", "sourceTitle", "sourceUrl", "observedAt", "confidence", "verificationStatus", "userCorrected"],
-          properties: {
-            id: { type: "string" },
-            category: { type: "string", enum: SECTOR_KNOWLEDGE_CATEGORIES },
-            statement: { type: "string" },
-            sourceTitle: { type: "string" },
-            sourceUrl: { type: "string" },
-            observedAt: { type: "string" },
-            confidence: { type: "string", enum: ["high", "medium", "low"] },
-            verificationStatus: { type: "string", enum: ["verified", "hypothesis", "needs_review", "outdated"] },
-            userCorrected: { type: "boolean" },
-          },
-        },
+        items: record({ id: text, pageId: text, category: { type: "string", enum: SECTOR_KNOWLEDGE_CATEGORIES }, quote: text, implication: text, metric: text }),
       },
     },
   };
@@ -289,16 +350,22 @@ function evidenceSchema() {
 
 function normalizeSectorItem(item) {
   const source = item && typeof item === "object" ? item : {};
+  const sourceUrl = safeSourceUrl(source.sourceUrl);
+  const userCorrected = source.userCorrected === true;
+  const sourceChecked = source.sourceChecked === true && Boolean(sourceUrl) && !userCorrected;
   return {
     id: cleanText(source.id, 120) || randomUUID(),
     category: SECTOR_KNOWLEDGE_CATEGORIES.includes(source.category) ? source.category : "industry_business_model",
     statement: cleanText(source.statement, 3_000),
     sourceTitle: cleanText(source.sourceTitle, 500),
-    sourceUrl: safeSourceUrl(source.sourceUrl),
+    sourceUrl,
     observedAt: validDate(source.observedAt) || new Date().toISOString(),
     confidence: ["high", "medium", "low"].includes(source.confidence) ? source.confidence : "low",
-    verificationStatus: ["verified", "hypothesis", "needs_review", "outdated"].includes(source.verificationStatus) ? source.verificationStatus : "needs_review",
-    userCorrected: source.userCorrected === true,
+    verificationStatus: userCorrected || sourceChecked ? "verified" : source.verificationStatus === "hypothesis" ? "hypothesis" : "needs_review",
+    userCorrected,
+    sourceChecked,
+    implication: sourceChecked ? cleanText(source.implication, 400) : "",
+    metric: sourceChecked ? cleanText(source.metric, 45) : "",
   };
 }
 

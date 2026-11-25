@@ -4,7 +4,7 @@ import { handleUpload } from "@vercel/blob/client";
 import { buildProductBrain, createRunRecord, readConnectedSourceMetadata, refineProductBrain, runMarketingAgent, runProjectConversation } from "./agent.mjs";
 import { approveAssetProposal, cancelAssetProposal, deleteProjectAsset, getProjectAssetPreviewUrl, listProjectAssets, listReadyCampaignAssets, registerLinkedAsset, registerUploadedAsset, serveProjectFile } from "./assets.mjs";
 import { requireUser } from "./auth.mjs";
-import { appendRunForUser, enforceRunBudget, loadStateForUser, saveStateForUser, updateRunStatusForUser } from "./db.mjs";
+import { appendRunForUser, enforceRunBudget, loadProjectForSectorResearch, loadStateForUser, saveStateForUser, updateRunStatusForUser } from "./db.mjs";
 import { approveMediaJob, cancelMediaJob, listMediaJobs, prepareMediaJob } from "./media.mjs";
 import { cancelManagedSubscription, consumeAiUsage, createManagedSubscription, getManagedSubscriptionStatus } from "./billing.mjs";
 import { getModelUsageMeasurement } from "./model-usage.mjs";
@@ -149,6 +149,7 @@ const server = http.createServer(async (req, res) => {
       await enforceRunBudget(userId, mode);
       await consumeAiUsage(userId, mode === "panel" ? "panel" : "agent", userApiEnv);
       const projectId = payload.projectId || "project-default";
+      const savedProject = payload.sectorPositionId ? await loadProjectForSectorResearch(userId, projectId) : null;
       const [connections, performanceContext, libraryMedia] = await Promise.all([
         getConnectionStatus(userId, projectId),
         getAgentPerformanceContext(userId, projectId).catch(() => ""),
@@ -158,7 +159,7 @@ const server = http.createServer(async (req, res) => {
       const suppliedLibrary = Array.isArray(payload.workspace?.contentLibraryAssets) ? payload.workspace.contentLibraryAssets : [];
       const availableMedia = [...libraryMedia, ...suppliedMedia.filter((item) => !libraryMedia.some((asset) => asset.id === item?.id))];
       const workspace = {
-        ...(payload.workspace || {}),
+        ...(savedProject || payload.workspace || {}),
         performanceContext,
         sourceMedia: availableMedia,
         contentLibraryAssets: [...availableMedia, ...suppliedLibrary.filter((item) => !availableMedia.some((asset) => asset.id === item?.id))],

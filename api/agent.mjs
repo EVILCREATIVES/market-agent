@@ -4,7 +4,7 @@ import { appendRunForUser, enforceRunBudget, loadProjectForSectorResearch, saveP
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 import { getConnectionStatus } from "../server/connections.mjs";
 import { consumeAiUsage } from "../server/billing.mjs";
-import { getAgentPerformanceContext } from "../server/growth.mjs";
+import { getAgentPerformanceContext, listProjectExperimentLearnings } from "../server/growth.mjs";
 import { listReadyCampaignAssets } from "../server/assets.mjs";
 
 export const config = { maxDuration: 300 };
@@ -19,6 +19,7 @@ export default async function handler(req, res) {
     await enforceRunBudget(userId, mode);
     await consumeAiUsage(userId, mode === "panel" ? "panel" : "agent", userApiEnv);
     const projectId = req.body?.projectId || "project-default";
+    const savedProject = req.body?.sectorPositionId ? await loadProjectForSectorResearch(userId, projectId) : null;
     const connections = await getConnectionStatus(userId, projectId);
     const performanceContext = await getAgentPerformanceContext(userId, projectId).catch(() => "");
     const libraryMedia = await listReadyCampaignAssets(userId, projectId).catch(() => []);
@@ -26,7 +27,7 @@ export default async function handler(req, res) {
     const suppliedLibrary = Array.isArray(req.body?.workspace?.contentLibraryAssets) ? req.body.workspace.contentLibraryAssets : [];
     const availableMedia = [...libraryMedia, ...suppliedMedia.filter((item) => !libraryMedia.some((asset) => asset.id === item?.id))];
     const workspace = {
-      ...(req.body?.workspace || {}),
+      ...(savedProject || req.body?.workspace || {}),
       performanceContext,
       sourceMedia: availableMedia,
       contentLibraryAssets: [...availableMedia, ...suppliedLibrary.filter((item) => !availableMedia.some((asset) => asset.id === item?.id))],
@@ -54,6 +55,8 @@ export async function buildSectorExpertiseForUser(userId, projectId, env = proce
   }
   await enforceRunBudget(userId, "single", env);
   await consumeAiUsage(userId, "agent", userApiEnv, env);
-  const expertise = await generateSectorExpertise({ workspace, useWeb: true }, userApiEnv);
+  const learnings = await listProjectExperimentLearnings(userId, projectId, env).catch(() => []);
+  const performanceContext = JSON.stringify(learnings.slice(0, 5).map(({ title, conclusion }) => ({ title, conclusion })));
+  const expertise = await generateSectorExpertise({ workspace: { ...workspace, performanceContext }, useWeb: true }, userApiEnv);
   return saveProjectSectorExpertise(userId, projectId, expertise, env);
 }

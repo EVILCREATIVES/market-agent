@@ -8,6 +8,7 @@ import {
   normalizeStrategyPlan,
   sectorCoverage,
   strategyIsGeneric,
+  verifySectorResearch,
 } from "../server/intelligence.mjs";
 import { limitDeliveryExperimentCohort, selectProspectExperimentCohort } from "../server/delivery.mjs";
 import { generateSectorExpertise } from "../server/agent.mjs";
@@ -25,13 +26,14 @@ function evidence(category, statement, index) {
     confidence: "high",
     verificationStatus: "verified",
     userCorrected: false,
+    sourceChecked: true,
   };
 }
 
 test("sector research falls back to the connected web provider and saves supported partial coverage", async (t) => {
   const savedCorrection = { ...evidence("decision_process", "The buyer needs to approve the scope before production starts.", 1), userCorrected: true };
   const researched = evidence("customer_segments", "The service is purchased by agency production leads.", 2);
-  const guessed = evidence("competitors_alternatives", "A competitor may target the same buyer.", 3);
+  const page = { id: "page-2", title: researched.sourceTitle, url: researched.sourceUrl, text: researched.statement };
   const requests = [];
   t.mock.method(console, "warn", () => {});
   t.mock.method(globalThis, "fetch", async (url, options) => {
@@ -41,29 +43,32 @@ test("sector research falls back to the connected web provider and saves support
     if (body.tools) {
       return Response.json({ candidates: [{
         content: { parts: [{ text: "A trade source describes agency production leads as buyers." }] },
-        groundingMetadata: { groundingChunks: [{ web: { title: researched.sourceTitle, uri: researched.sourceUrl } }] },
+        groundingMetadata: { groundingChunks: [{ web: { title: researched.sourceTitle, uri: researched.sourceUrl } }, { web: { title: "Project deck", uri: "https://project.example/deck" } }] },
       }] });
     }
     return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({
-      summary: "The sector sells creative production services.",
-      items: [researched, { ...guessed, userCorrected: true }],
+      items: [
+        { id: "documented", pageId: page.id, category: researched.category, quote: researched.statement },
+        { id: "invented", pageId: page.id, category: "competitors_alternatives", quote: "A competitor may target the same buyer.", userCorrected: true },
+      ],
       missingKnowledge: ["Who holds the budget?"],
     }) }] } }] });
   });
   const expertise = await generateSectorExpertise({
-    workspace: { name: "Example Studio", sectorExpertise: { items: [savedCorrection] } },
+    workspace: { name: "Example Studio", description: "A creative production studio.", website: "https://project.example/", sectorExpertise: { items: [savedCorrection] } },
     useWeb: true,
-  }, { OPENAI_API_KEY: "test-openai", GOOGLE_GENERATIVE_AI_API_KEY: "test-google" });
+  }, { OPENAI_API_KEY: "test-openai", GOOGLE_GENERATIVE_AI_API_KEY: "test-google" }, async (sources) => {
+    assert.deepEqual(sources.map((source) => source.url), [page.url]);
+    return [page];
+  });
 
   assert.equal(requests.length, 3);
   assert.equal(requests[0].tool_choice, "required");
   assert.doesNotMatch(requests[1].contents[0].parts[0].text, /direct profile URL/);
   assert.equal(expertise.items.find((item) => item.id === savedCorrection.id).statement, savedCorrection.statement);
-  assert.equal(expertise.items.find((item) => item.id === researched.id).sourceUrl, researched.sourceUrl);
-  const rejectedSource = expertise.items.find((item) => item.id === guessed.id);
-  assert.equal(rejectedSource.sourceUrl, "");
-  assert.equal(rejectedSource.verificationStatus, "hypothesis");
-  assert.equal(rejectedSource.userCorrected, false);
+  assert.equal(expertise.items.find((item) => item.sourceChecked).sourceUrl, researched.sourceUrl);
+  assert.equal(expertise.items.length, 2);
+  assert.ok(expertise.items.every((item) => !item.statement.includes("competitor may target")));
 });
 
 test("sector research reports an unavailable search instead of returning an empty success", async (t) => {
@@ -71,8 +76,50 @@ test("sector research reports an unavailable search instead of returning an empt
   t.mock.method(globalThis, "fetch", async () => Response.json({ output_text: "No sources." }));
   await assert.rejects(generateSectorExpertise({ workspace: { name: "Example Studio" } }, { OPENAI_API_KEY: "test" }), {
     statusCode: 502,
-    message: /no usable sources/i,
+    message: /no independent sources/i,
   });
+});
+
+test("sector figures and positioning use real passages, and fresh research supersedes older automatic claims", () => {
+  const pages = [
+    { id: "trade", url: "https://trade.example/report", title: "Industry report", text: "24% of surveyed US facilities purchased new controls during 2025. 34% of surveyed facilities cited maintenance costs as a barrier." },
+    { id: "procurement", url: "https://buyer.example/tender", title: "Public tender", text: "Bidders must provide a commissioning plan and two maintenance references." },
+  ];
+  const direction = {
+    id: "control-retrofit", title: "Retrofit for existing facilities", buyer: "Facilities directors",
+    promise: "A phased controls upgrade", difference: "Start with one facility", proof: "Commissioning plan",
+    risk: "Maintenance burden may outweigh the benefit", test: "Pitch a one-site assessment to five directors",
+    successSignal: "At least two ask for a site assessment", evidenceIds: ["adoption", "proof"],
+  };
+  const checked = verifySectorResearch({
+    items: [
+      { id: "adoption", pageId: "trade", category: "industry_business_model", quote: "24% of surveyed US facilities purchased new controls during 2025.", metric: "24%" },
+      { id: "wrong-value", pageId: "trade", category: "customer_segments", quote: "34% of surveyed facilities cited maintenance costs as a barrier.", metric: "4%" },
+      { id: "proof", pageId: "procurement", category: "regulations_risks_proof", quote: pages[1].text, metric: "90%" },
+      { id: "false", pageId: "trade", category: "decision_process", quote: "96% of surveyed US facilities intend to buy in the coming year." },
+    ],
+    positions: [direction, { ...direction, id: "unsupported", evidenceIds: ["adoption", "false"] }],
+    recommendedPositionId: direction.id,
+  }, pages, observedAt);
+  const refreshed = normalizeSectorExpertise(checked, {
+    items: [
+      { ...evidence("customer_segments", "Unverified claim carried over from an old report.", 4), sourceChecked: false },
+      { ...evidence("customer_segments", "Our customer budgets are approved in June.", 5), userCorrected: true },
+    ],
+  });
+  assert.deepEqual(refreshed.items.filter((item) => item.sourceChecked).map((item) => item.metric), ["24%", "", ""]);
+  assert.ok(refreshed.items.some((item) => item.userCorrected));
+  assert.ok(refreshed.items.every((item) => !item.statement.includes("old report")));
+  assert.equal(refreshed.brief.positions.length, 1);
+  assert.equal(refreshed.brief.recommendedPositionId, direction.id);
+  assert.ok(refreshed.brief.positions[0].evidenceIds.every((id) => refreshed.items.find((item) => item.id === id)?.sourceChecked));
+  assert.equal(sectorCoverage({ items: [{ ...evidence("decision_process", "Legacy claim.", 8), sourceChecked: false }] }).verifiedItems, 0);
+  const corrected = applySectorCorrection(refreshed, {
+    id: refreshed.brief.positions[0].evidenceIds[0],
+    category: "industry_business_model",
+    statement: "The survey does not cover our target segment.",
+  });
+  assert.equal(corrected.brief.positions.length, 0);
 });
 
 function readyExperiment(overrides = {}) {

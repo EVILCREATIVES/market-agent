@@ -112,15 +112,7 @@ export async function getAgentPerformanceContext(userId, projectId, env = proces
         ORDER BY created_at DESC LIMIT 60`,
       [userId, projectId],
     ).then((result) => result.rows).catch(() => []),
-    getPool(env).query(
-      `SELECT id, data->>'title' AS title, data->'experimentPlan' AS experiment,
-              data->'learningConclusion' AS conclusion, created_at
-         FROM market_agent_runs
-        WHERE user_id = $1 AND project_id = $2
-          AND data->'learningConclusion' IS NOT NULL
-        ORDER BY created_at DESC LIMIT 20`,
-      [userId, projectId],
-    ).then((result) => result.rows).catch(() => []),
+    listProjectExperimentLearnings(userId, projectId, env).catch(() => []),
   ]);
   const summary = {
     goal: report?.goal || null,
@@ -156,6 +148,18 @@ export async function getAgentPerformanceContext(userId, projectId, env = proces
     ],
   };
   return `LIVE PERFORMANCE — use this to decide what to continue, change, or stop. Never invent missing values.\n${JSON.stringify(summary, null, 2).slice(0, 20_000)}`;
+}
+
+export async function listProjectExperimentLearnings(userId, projectId, env = process.env) {
+  const result = await getPool(env).query(
+    `SELECT id, data->>'title' AS title, data->'experimentPlan' AS experiment,
+            data->'learningConclusion' AS conclusion, created_at
+       FROM market_agent_runs
+      WHERE user_id = $1 AND project_id = $2 AND jsonb_typeof(data->'learningConclusion') = 'object'
+      ORDER BY created_at DESC LIMIT 20`,
+    [userId, projectId],
+  );
+  return result.rows;
 }
 
 export function inferGrowthPlan(workspace) {

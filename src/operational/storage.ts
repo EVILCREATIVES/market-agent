@@ -198,7 +198,7 @@ function normalizeProject(project: Partial<ProductWorkspace>, index: number): Pr
 }
 
 function createEmptySectorExpertise(): ProductWorkspace["sectorExpertise"] {
-  return { summary: "", items: [], missingKnowledge: [], refreshedAt: "" };
+  return { summary: "", items: [], missingKnowledge: [], refreshedAt: "", brief: null };
 }
 
 function normalizeSectorExpertise(value: Partial<ProductWorkspace["sectorExpertise"]> | undefined): ProductWorkspace["sectorExpertise"] {
@@ -218,9 +218,13 @@ function normalizeSectorExpertise(value: Partial<ProductWorkspace["sectorExperti
       confidence: (confidence.has(String(item?.confidence || "")) ? item.confidence : "low") as ProductWorkspace["sectorExpertise"]["items"][number]["confidence"],
       verificationStatus: (verification.has(String(item?.verificationStatus || "")) ? item.verificationStatus : "needs_review") as ProductWorkspace["sectorExpertise"]["items"][number]["verificationStatus"],
       userCorrected: item?.userCorrected === true,
+      sourceChecked: item?.sourceChecked === true,
+      implication: String(item?.implication || "").slice(0, 400),
+      metric: String(item?.metric || "").slice(0, 45),
     })).filter((item) => item.statement).slice(0, 240),
     missingKnowledge: Array.from(new Set((Array.isArray(source.missingKnowledge) ? source.missingKnowledge : []).map(String).map((item) => item.trim()).filter(Boolean))).slice(0, 40),
     refreshedAt: String(source.refreshedAt || ""),
+    brief: source.brief && Array.isArray(source.brief.buyerJourney) && Array.isArray(source.brief.alternatives) && Array.isArray(source.brief.positions) ? source.brief : null,
   };
 }
 
