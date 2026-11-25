@@ -60,6 +60,18 @@
 .sector-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; }
 .sector-coverage > header svg { color: var(--sector-accent); flex: none; }
 .sector-coverage > header p, .sector-coverage > small { color: var(--sector-muted); font-size: 12px; }
+.sector-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 8px 0 14px; }
+.sector-counts > div { display: flex; flex-direction: column-reverse; gap: 2px; padding: 8px; background: #f6f2fd; border-radius: 8px; }
+.sector-counts dt { font-size: 12px; color: var(--sector-muted); }
+.sector-counts dd { margin: 0; font-size: 19px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.sector-gaps { display: grid; gap: 7px; margin: 10px 0 0; padding-left: 20px; color: var(--sector-muted); font-size: 14px; line-height: 1.45; }
+.sector-outbound-details, .sector-accounts { grid-template-columns: repeat(auto-fit, minmax(min(100%, 235px), 1fr)); }
+.sector-accounts { list-style: none; display: grid; gap: 12px; padding: 0; margin: 16px 0 0; }
+.sector-accounts li { min-width: 0; padding: 14px; border: 1px solid var(--sector-line); border-radius: 12px; background: #faf8fe; }
+.sector-accounts header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 5px 12px; }
+.sector-accounts h3 { margin: 0; font-size: 17px; }
+.sector-accounts header span { font-size: 12px; color: var(--sector-muted); }
+.sector-accounts blockquote, .sector-opening { margin: 12px 0; padding: 0 0 0 12px; border-left: 3px solid #b9a5ee; font-size: 14px; line-height: 1.55; }
 .sector-bars { display: grid; gap: 6px; margin: 10px 0 14px; }
 .sector-bars button {
   display: grid;

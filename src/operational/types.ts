@@ -144,6 +144,10 @@ export interface SectorKnowledgeItem {
   sourceChecked: boolean;
   implication: string;
   metric: string;
+  buyerRecord?: string;
+  signalKind?: string;
+  signalDate?: string;
+  namedAccount?: string;
 }
 
 export interface SectorMarketEntry {
@@ -152,6 +156,10 @@ export interface SectorMarketEntry {
   whyNow: string;
   rationale: string;
   biggestUnknown: string;
+  industry?: string;
+  companyProfile?: string;
+  buyingSituation?: string;
+  budgetBasis?: string;
   evidenceIds: string[];
 }
 
@@ -167,6 +175,9 @@ export interface SectorAlternative {
   name: string;
   advantage: string;
   opening: string;
+  kind?: string;
+  price?: string;
+  priceSource?: string;
   evidenceIds: string[];
 }
 
@@ -184,11 +195,38 @@ export interface SectorPosition {
 }
 
 export interface SectorBrief {
+  version?: number;
   marketEntry: SectorMarketEntry | null;
   buyerJourney: SectorBuyerStage[];
   alternatives: SectorAlternative[];
   positions: SectorPosition[];
   recommendedPositionId: string;
+  accounts?: {
+    name: string;
+    fit: string;
+    outreachAngle: string;
+    trigger: string;
+    triggerDate: string;
+    evidenceIds: string[];
+  }[];
+  outbound?: {
+    channel: string;
+    buyerRole: string;
+    offer: string;
+    pricingApproach: string;
+    openingMessage: string;
+    successSignal: string;
+    stopRule: string;
+    evidenceIds: string[];
+  } | null;
+  readiness?: {
+    publishers: number;
+    buyerPublishers: number;
+    datedSignals: number;
+    alternativeKinds: number;
+    gaps: string[];
+    outboundGaps: string[];
+  };
 }
 
 export interface SectorExpertise {

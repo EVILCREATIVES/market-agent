@@ -14,7 +14,20 @@ const categories: Record<SectorKnowledgeCategory, string> = {
   regulations_risks_proof: "Risk and proof",
   seasonality_events_signals: "Timing and signals",
 };
-const tabs = ["Overview", "Buyer journey", "Alternatives", "Positioning", "Evidence"] as const;
+const tabs = ["Overview", "Buyer journey", "Alternatives", "Positioning", "Outbound test", "Evidence"] as const;
+const alternativeLabels: Record<string, string> = {
+  incumbent: "Incumbent provider",
+  direct_competitor: "Direct competitor",
+  specialist: "Specialist provider",
+  independent: "Independent",
+  in_house: "In-house",
+};
+const buyerRecordLabels: Record<string, string> = {
+  procurement: "Procurement record",
+  job_post: "Buyer job listing",
+  buyer_statement: "Buyer statement",
+  buyer_interviews: "Buyer interviews or observations",
+};
 type Tab = typeof tabs[number];
 
 interface Props {
@@ -39,7 +52,10 @@ export default function SectorExpertiseWorkspace({ workspace, runs, onSave, onRe
   const [correction, setCorrection] = useState("");
   const expertise = workspace.sectorExpertise;
   const brief = expertise?.brief;
-  const entry = brief?.marketEntry;
+  const entry = brief?.version === 2 ? brief.marketEntry : null;
+  const readiness = brief?.readiness;
+  const accounts = brief?.accounts || [];
+  const outbound = entry ? brief?.outbound : null;
   const items = (expertise?.items || []).filter((item) => item.sourceChecked || item.userCorrected);
   const outside = items.filter((item) => item.sourceChecked && !item.userCorrected);
   const sources = new Set(outside.map((item) => item.sourceUrl)).size;
@@ -50,9 +66,10 @@ export default function SectorExpertiseWorkspace({ workspace, runs, onSave, onRe
   const filtered = items.filter((item) => (category === "all" || item.category === category)
     && `${item.statement} ${item.implication} ${item.sourceTitle}`.toLowerCase().includes(query.trim().toLowerCase()));
   const selectedEvidence = outside.filter((item) => evidenceIds.includes(item.id));
-  const recommended = brief?.positions.find((item) => item.id === brief.recommendedPositionId);
+  const recommended = entry ? brief?.positions.find((item) => item.id === brief.recommendedPositionId) : undefined;
   const learning = runs.filter((run) => run.learningConclusion).slice(0, 3);
-  const metrics = [...new Map(outside.filter((item) => item.metric).map((item) => [item.sourceUrl + item.metric, item])).values()].slice(0, 4);
+  const metrics = brief?.version === 2 ? [...new Map(outside.filter((item) => item.metric)
+    .map((item) => [item.sourceUrl.split("/")[2]?.toLowerCase().replace(/^www\./, "") || item.sourceUrl, item])).values()].slice(0, 4) : [];
 
   const refresh = async () => {
     if (working) return;
@@ -65,7 +82,7 @@ export default function SectorExpertiseWorkspace({ workspace, runs, onSave, onRe
         throw new Error(data?.error || (response.status === 504 ? "Sector research timed out. Try again." : "No checked sector evidence was returned. Try again."));
       }
       onResearchSaved(workspace.id, data.sectorExpertise, Number(data.revision));
-      notify("Sector research saved.");
+      notify(data.sectorExpertise.brief?.recommendedPositionId ? "Sector research saved." : "Evidence saved. See Overview for what is still missing.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Sector research could not be refreshed.");
     } finally {
@@ -84,14 +101,19 @@ export default function SectorExpertiseWorkspace({ workspace, runs, onSave, onRe
         ...expertise,
         brief: brief ? {
           ...brief,
-          marketEntry: brief.marketEntry && avoidsCorrection(brief.marketEntry) ? brief.marketEntry : null,
+          marketEntry: null,
           buyerJourney: brief.buyerJourney.filter(avoidsCorrection),
           alternatives: brief.alternatives.filter(avoidsCorrection),
           positions: brief.positions.filter(avoidsCorrection),
+          recommendedPositionId: "",
+          accounts: brief.accounts?.filter(avoidsCorrection),
+          outbound: null,
+          readiness: undefined,
         } : null,
         items: expertise.items.map((item) => item.id === editingId ? {
           ...item, statement, sourceTitle: "User correction", sourceUrl: "", observedAt: now, confidence: "high",
           verificationStatus: "verified", userCorrected: true, sourceChecked: false, implication: "", metric: "",
+          buyerRecord: "", signalKind: "", signalDate: "", namedAccount: "",
         } : item),
       },
       updatedAt: now,
@@ -148,7 +170,7 @@ export default function SectorExpertiseWorkspace({ workspace, runs, onSave, onRe
           </button>
         ))}
       </div>
-      {working && <p className="sector-progress" role="status">Searching the market, opening sources, and checking passages. This can take a few minutes.</p>}
+      {working && <p className="sector-progress" role="status">Checking buyer records, competing offers and prices, and dated buying signals. This can take a few minutes.</p>}
       {error && <div className="op-analytics-error" role="alert"><CircleAlert size={16} aria-hidden="true" />{error}</div>}
       <div className="sector-tab-content" role="tabpanel" tabIndex={0} id={`${tablistId}-panel-${tabs.indexOf(tab)}`} aria-labelledby={`${tablistId}-tab-${tabs.indexOf(tab)}`}>
       {!outside.length && tab === "Overview" && (
@@ -161,23 +183,34 @@ export default function SectorExpertiseWorkspace({ workspace, runs, onSave, onRe
       {outside.length > 0 && tab === "Overview" && <>
         <section className="sector-overview">
           <article className="sector-entry">
-            <span className="sector-kicker">Market entry recommendation</span>
+            <span className="sector-kicker">{entry ? "Market entry recommendation" : "Research coverage"}</span>
             {entry ? <>
               <h2>{entry.segment}</h2>
               <p>{entry.rationale}</p>
               <dl className="sector-detail-list">
+                {entry.industry && <Detail label="Industry">{entry.industry}</Detail>}
+                {entry.companyProfile && <Detail label="Company profile">{entry.companyProfile}</Detail>}
+                {entry.buyingSituation && <Detail label="Buying situation">{entry.buyingSituation}</Detail>}
                 <Detail label="Buyer to reach">{entry.buyer}</Detail>
+                {entry.budgetBasis && <Detail label="Budget evidence">{entry.budgetBasis}</Detail>}
                 <Detail label="Why now">{entry.whyNow}</Detail>
                 <Detail label="What could change the decision">{entry.biggestUnknown}</Detail>
               </dl>
               <div className="sector-actions">
                 {showEvidence(entry.evidenceIds)}
                 {recommended && <button className="sector-secondary" onClick={() => setTab("Positioning")}>Compare positioning <ArrowRight size={14} /></button>}
+                {outbound && <button className="sector-secondary" onClick={() => setTab("Outbound test")}>See outbound test <ArrowRight size={14} /></button>}
               </div>
-            </> : <p>Research is available. More evidence is needed to recommend which market to enter first.</p>}
+            </> : <><h2>More evidence needed</h2><p>Refresh research to build a supported recommendation for your first buyer segment.</p></>}
+            {!!readiness?.gaps.length && <ul className="sector-gaps">{readiness.gaps.map((gap) => <li key={gap}>{gap}</li>)}</ul>}
           </article>
           <article className="sector-panel sector-coverage">
             <header><div><h2>Market evidence</h2><p>{sources} source{sources === 1 ? "" : "s"} · {outside.length} checked findings</p></div><ChartColumn size={20} /></header>
+            {readiness && <dl className="sector-counts">
+              <div><dt>Publishers</dt><dd>{readiness.publishers}</dd></div>
+              <div><dt>Buyer sources</dt><dd>{readiness.buyerPublishers}</dd></div>
+              <div><dt>Dated signals</dt><dd>{readiness.datedSignals}</dd></div>
+            </dl>}
             <div className="sector-bars">{coverage.map(({ key, label, count }) => (
               <button key={key} onClick={() => openCategory(key)} aria-label={`${label}, ${count} findings. Open evidence.`}>
                 <span>{label}</span><span className="sector-bar"><i style={{ width: `${count / maxCount * 100}%` }} /></span><strong>{count}</strong>
@@ -216,15 +249,19 @@ export default function SectorExpertiseWorkspace({ workspace, runs, onSave, onRe
       {tab === "Alternatives" && (
         <section className="sector-panel"><h2>What buyers can choose instead</h2><p className="sector-muted">Competitive assessment based on the linked sources.</p>
           {brief?.alternatives.length ? <div className="sector-alternatives">{brief.alternatives.map((alternative, index) => (
-            <article key={`${alternative.name}-${index}`}><h3>{alternative.name}</h3>
-              <dl className="sector-detail-list"><Detail label="Why it wins">{alternative.advantage}</Detail><Detail label="Where there may be an opening">{alternative.opening}</Detail></dl>
+            <article key={`${alternative.name}-${index}`}>
+              {alternative.kind && alternativeLabels[alternative.kind] && <span className="sector-kicker">{alternativeLabels[alternative.kind]}</span>}
+              <h3>{alternative.name}</h3>
+              <dl className="sector-detail-list"><Detail label="Why buyers choose it">{alternative.advantage}</Detail><Detail label="Where there may be an opening">{alternative.opening}</Detail>
+                <Detail label="Public pricing">{alternative.price || "No public price found"}{alternative.priceSource && <> · {showEvidence([alternative.priceSource])}</>}</Detail>
+              </dl>
               {showEvidence(alternative.evidenceIds)}
             </article>
           ))}</div> : <p className="sector-muted">{outside.length ? "The reviewed sources did not establish enough about alternatives to compare them." : "Run sector research to compare the competitors and substitutes your buyers already use."}</p>}
         </section>
       )}
       {tab === "Positioning" && (
-        <section className="sector-panel"><h2>Positioning options</h2><p className="sector-muted">Proposed directions based on the evidence. Compare the buyer, promise and proof each would require.</p>
+        <section className="sector-panel"><h2>Positioning options</h2><p className="sector-muted">{recommended ? "Compare the buyer, promise, and proof each direction would require." : "These are working options. More evidence is needed before recommending a position to test."}</p>
           {brief?.positions.length ? <div className="sector-positions">{[...brief.positions].sort((a, b) => Number(b.id === recommended?.id) - Number(a.id === recommended?.id)).map((position) => (
             <article key={position.id} className={position.id === recommended?.id ? "recommended" : ""}>
               {position.id === recommended?.id && <span className="sector-kicker">Recommended to test</span>}
@@ -238,11 +275,44 @@ export default function SectorExpertiseWorkspace({ workspace, runs, onSave, onRe
               </dl>
               <details className="sector-test"><summary>View proposed experiment</summary><p>{position.test}</p><p><b>Success signal</b> {position.successSignal}</p></details>
               <div className="sector-actions">{showEvidence(position.evidenceIds)}
-                <button className="sector-primary" onClick={() => onDevelop(position)}><Sparkles size={15} /> Develop in Ideas</button>
+                {recommended?.id === position.id && <button className="sector-primary" onClick={() => onDevelop(position)}><Sparkles size={15} /> Develop in Ideas</button>}
               </div>
             </article>
           ))}</div> : <p className="sector-muted">{outside.length ? "More independent evidence is needed before proposing a position." : "Run sector research to see positioning options, the proof each needs, and experiments to take into Ideas."}</p>}
         </section>
+      )}
+      {tab === "Outbound test" && (
+        <>
+          <section className="sector-panel">
+            <h2>{outbound ? "First outbound test" : "Outbound test needs more evidence"}</h2>
+            {outbound ? <>
+              <dl className="sector-detail-list sector-outbound-details">
+                <Detail label="Channel">{outbound.channel}</Detail>
+                <Detail label="Buyer to reach">{outbound.buyerRole}</Detail>
+                <Detail label="Offer">{outbound.offer}</Detail>
+                <Detail label="Pricing approach">{outbound.pricingApproach}</Detail>
+                <Detail label="Success criterion">{outbound.successSignal}</Detail>
+                <Detail label="When to stop">{outbound.stopRule}</Detail>
+              </dl>
+              <h3>Opening message</h3><blockquote className="sector-opening">{outbound.openingMessage}</blockquote>
+              <div className="sector-actions">{showEvidence(outbound.evidenceIds)}
+                {recommended && <button className="sector-primary" onClick={() => onDevelop(recommended)}><Sparkles size={15} /> Develop test in Ideas</button>}
+              </div>
+            </> : <ul className="sector-gaps">{(readiness?.outboundGaps.length ? readiness.outboundGaps : ["Run sector research to identify accounts with dated buying signals and build a test."]).map((gap) => <li key={gap}>{gap}</li>)}</ul>}
+          </section>
+          {!!accounts.length && <section className="sector-panel"><h2>Accounts to evaluate</h2>
+            <p className="sector-muted">Each account has a documented event. Fit and outreach angles are research interpretations.</p>
+            <ol className="sector-accounts">{accounts.map((account) => <li key={account.name}>
+              <header><h3>{account.name}</h3><span>{account.triggerDate}</span></header>
+              <blockquote>{account.trigger}</blockquote>
+              <dl className="sector-detail-list">
+                <Detail label="Why it fits">{account.fit}</Detail>
+                <Detail label="Outreach angle">{account.outreachAngle}</Detail>
+              </dl>
+              {showEvidence(account.evidenceIds)}
+            </li>)}</ol>
+          </section>}
+        </>
       )}
       {tab === "Evidence" && (
         <section className="sector-panel">
@@ -275,6 +345,8 @@ function EvidenceCard({ item, children }: { item: SectorKnowledgeItem; children?
       {item.userCorrected ? <p>{item.statement}</p> : <blockquote>“{item.statement}”</blockquote>}
       {item.implication && !item.userCorrected && <p className="sector-implication"><b>What it may mean</b> {item.implication}</p>}
       {item.sourceUrl && <footer><a href={item.sourceUrl} target="_blank" rel="noreferrer">{item.sourceTitle || "Open source"} <ArrowRight size={13} /></a>
+        {item.buyerRecord && <span>{buyerRecordLabels[item.buyerRecord]}</span>}
+        {item.signalDate && <span>Dated evidence · {item.signalDate}</span>}
         {item.observedAt && <time dateTime={item.observedAt}>Checked {new Date(item.observedAt).toLocaleDateString()}</time>}
       </footer>}
       {children}
