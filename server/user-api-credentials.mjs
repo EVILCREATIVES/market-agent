@@ -70,7 +70,7 @@ export async function deleteUserApiCredential(userId, provider, env = process.en
   return getUserApiCredentialStatus(userId, env);
 }
 
-export async function loadUserApiEnv(userId, env = process.env) {
+export async function loadUserApiEnv(userId, env = process.env, { brandBuilder = false } = {}) {
   await ensureCredentialsTable(env);
   const result = await getPool(env).query(
     `SELECT provider, encrypted_key
@@ -89,7 +89,7 @@ export async function loadUserApiEnv(userId, env = process.env) {
   }
 
   const subscription = await getManagedSubscriptionStatus(userId, env);
-  const hasPrivateCore = Boolean(keys.openai || keys.google);
+  const hasPrivateCore = Boolean(keys.openai || keys.google || (brandBuilder && keys.anthropic));
   const accessMode = hasPrivateCore ? "byok" : subscription.active ? "managed" : subscription.trial.active ? "trial" : "expired";
   const platformKeys = {
     openai: String(env.OPENAI_API_KEY || ""),

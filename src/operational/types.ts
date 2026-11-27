@@ -124,6 +124,7 @@ export interface ProductWorkspace {
   };
   growth: ProjectGrowthPlan;
   sectorExpertise: SectorExpertise;
+  creativeBrand?: { version: number; name: string; idea: string };
   updatedAt: string;
 }
 

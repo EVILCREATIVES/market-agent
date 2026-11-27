@@ -1,6 +1,6 @@
 import { createRunRecord, generateSectorExpertise, runMarketingAgent } from "../server/agent.mjs";
 import { requireUser } from "../server/auth.mjs";
-import { appendRunForUser, enforceRunBudget, loadProjectForSectorResearch, saveProjectSectorExpertise } from "../server/db.mjs";
+import { appendRunForUser, enforceRunBudget, loadApprovedBrandForProject, loadProjectForSectorResearch, saveProjectSectorExpertise } from "../server/db.mjs";
 import { loadUserApiEnv } from "../server/user-api-credentials.mjs";
 import { getConnectionStatus } from "../server/connections.mjs";
 import { consumeAiUsage } from "../server/billing.mjs";
@@ -20,14 +20,18 @@ export default async function handler(req, res) {
     await consumeAiUsage(userId, mode === "panel" ? "panel" : "agent", userApiEnv);
     const projectId = req.body?.projectId || "project-default";
     const savedProject = req.body?.sectorPositionId ? await loadProjectForSectorResearch(userId, projectId) : null;
-    const connections = await getConnectionStatus(userId, projectId);
-    const performanceContext = await getAgentPerformanceContext(userId, projectId).catch(() => "");
-    const libraryMedia = await listReadyCampaignAssets(userId, projectId).catch(() => []);
+    const [connections, performanceContext, libraryMedia, creativeBrand] = await Promise.all([
+      getConnectionStatus(userId, projectId),
+      getAgentPerformanceContext(userId, projectId).catch(() => ""),
+      listReadyCampaignAssets(userId, projectId).catch(() => []),
+      savedProject ? savedProject.creativeBrand : loadApprovedBrandForProject(userId, projectId),
+    ]);
     const suppliedMedia = Array.isArray(req.body?.workspace?.sourceMedia) ? req.body.workspace.sourceMedia : [];
     const suppliedLibrary = Array.isArray(req.body?.workspace?.contentLibraryAssets) ? req.body.workspace.contentLibraryAssets : [];
     const availableMedia = [...libraryMedia, ...suppliedMedia.filter((item) => !libraryMedia.some((asset) => asset.id === item?.id))];
     const workspace = {
       ...(savedProject || req.body?.workspace || {}),
+      creativeBrand,
       performanceContext,
       sourceMedia: availableMedia,
       contentLibraryAssets: [...availableMedia, ...suppliedLibrary.filter((item) => !availableMedia.some((asset) => asset.id === item?.id))],

@@ -122,6 +122,16 @@ export async function loadProjectForSectorResearch(userId, projectId, env = proc
   return project;
 }
 
+export async function loadApprovedBrandForProject(userId, projectId, env = process.env) {
+  const { rows } = await getPool(env).query(
+    `SELECT project->'creativeBrand' AS canon
+     FROM market_agent_states CROSS JOIN LATERAL jsonb_array_elements(state->'projects') AS projects(project)
+     WHERE user_id = $1 AND project->>'id' = $2 LIMIT 1`,
+    [userId, projectId],
+  );
+  return rows[0]?.canon || undefined;
+}
+
 export async function saveProjectSectorExpertise(userId, projectId, researched, env = process.env) {
   const database = getPool(env);
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -183,12 +193,23 @@ async function loadStateForUserOnce(userId, env) {
 
 export async function saveStateForUser(userId, state, env = process.env, expectedRevision = null) {
   const normalized = normalizeState(state);
+  // Only the brand builder's approval and context actions may write the approved reference.
+  normalized.projects = normalized.projects.map(({ creativeBrand, ...project }) => project);
   const revision = Number.isInteger(expectedRevision) && expectedRevision >= 0 ? expectedRevision : null;
   const result = await getPool(env).query(
     `INSERT INTO market_agent_states (user_id, state, revision)
      VALUES ($1, $2::jsonb, 1)
      ON CONFLICT (user_id) DO UPDATE
-     SET state = EXCLUDED.state, revision = market_agent_states.revision + 1, updated_at = NOW()
+     SET state = jsonb_set(EXCLUDED.state, '{projects}', (
+       SELECT jsonb_agg(
+         CASE WHEN saved.project ? 'creativeBrand' THEN pending.project || jsonb_build_object('creativeBrand', saved.project->'creativeBrand')
+              ELSE pending.project END ORDER BY pending.ordinal)
+       FROM jsonb_array_elements(EXCLUDED.state->'projects') WITH ORDINALITY AS pending(project, ordinal)
+       LEFT JOIN LATERAL (
+         SELECT project FROM jsonb_array_elements(market_agent_states.state->'projects') AS current_brand(project)
+         WHERE project->>'id' = pending.project->>'id' LIMIT 1
+       ) AS saved ON true
+     )), revision = market_agent_states.revision + 1, updated_at = NOW()
      WHERE $3::integer IS NULL OR market_agent_states.revision = $3::integer
      RETURNING state, revision`,
     [userId, JSON.stringify(normalized), revision],

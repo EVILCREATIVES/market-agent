@@ -8,6 +8,7 @@ import { replaceDeliveryMediaFromAsset } from "../server/delivery.mjs";
 import { createNewsletterDraft, getNewsletterActionContext, updateLatestNewsletterLink, updateLatestNewsletterLogo, updateNewsletterDraft, updateOptinCampaign } from "../server/newsletters.mjs";
 import { addCampaignTableColumn, editableCampaignRunId, getCampaignActionContext, getCampaignPeopleTable, setCampaignTableColumnValues, updateCampaignExperiment, updateCampaignLink, updateCampaignPlanItem, updateCampaignText } from "../server/campaign-edits.mjs";
 import { applySectorCorrection } from "../server/intelligence.mjs";
+import { loadApprovedBrandForProject } from "../server/db.mjs";
 import { archiveProjectConversationDays, getProjectConversationMemory } from "../server/conversation-memory.mjs";
 import { waitUntil } from "@vercel/functions";
 
@@ -19,12 +20,15 @@ export default async function handler(req, res) {
     const { userId } = await requireUser(req);
     const userApiEnv = await loadUserApiEnv(userId);
     const projectId = String(req.body?.projectId || req.body?.workspace?.id || "project-default");
-    const connections = await getConnectionStatus(userId, projectId);
-    const library = await listProjectAssets(userId, projectId, userApiEnv).catch(() => ({ assets: [] }));
     const message = String(req.body?.message || "");
     const timeZone = String(req.body?.timeZone || "UTC");
-    const conversationMemory = await getProjectConversationMemory(userId, projectId, message, timeZone).catch(() => "");
-    const rememberedWorkspace = { ...(req.body?.workspace || {}), conversationMemory };
+    const [connections, library, conversationMemory, creativeBrand] = await Promise.all([
+      getConnectionStatus(userId, projectId),
+      listProjectAssets(userId, projectId, userApiEnv).catch(() => ({ assets: [] })),
+      getProjectConversationMemory(userId, projectId, message, timeZone).catch(() => ""),
+      loadApprovedBrandForProject(userId, projectId),
+    ]);
+    const rememberedWorkspace = { ...(req.body?.workspace || {}), creativeBrand, conversationMemory };
     waitUntil(archiveProjectConversationDays(userId, projectId, timeZone).catch(() => undefined));
     const runId = String(req.body?.activeRunId || req.body?.activeCampaignRunId || "").slice(0, 200);
     const campaignRunId = String(req.body?.activeCampaignRunId || "").slice(0, 200);

@@ -2,6 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "api/agent.mjs": { "maxDuration": 300 },
+    "api/brand-builder.mjs": { "maxDuration": 300 },
     "api/background-queue.mjs": {
       "maxDuration": 300,
       "experimentalTriggers": [{ "type": "queue/v2beta", "topic": "market-agent-background", "retryAfterSeconds": 60 }]

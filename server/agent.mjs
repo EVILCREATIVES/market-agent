@@ -8,6 +8,7 @@ import { decompress as decompressZstd } from "fzstd";
 import { compileSchema, decodeBinarySchema } from "kiwi-schema";
 import { Agent as UndiciAgent, fetch as pinnedFetch } from "undici";
 import { modelUsageFromGoogle, modelUsageFromOpenAI, recordModelUsage, utilityModelConfiguration } from "./model-usage.mjs";
+import { approvedBrandInstructions } from "./brand-canon.mjs";
 import { SECTOR_KNOWLEDGE_CATEGORIES, experimentPlanSchema, experimentReadiness, isTrustedSectorEvidence, normalizeSectorExpertise, normalizeStrategyPlan, renderStrategyPlan, sectorCoverage, sectorExpertiseSchema, strategyPlanSchema, verifySectorResearch } from "./intelligence.mjs";
 
 const actionInstructions = {
@@ -68,7 +69,7 @@ export async function runMarketingAgent(payload, env = process.env) {
       }
     }
   }
-  const context = buildContext(workingWorkspace);
+  const context = buildContext(workingWorkspace, prompt);
   const deliveryNeeded = needsDeliveryAccess(action, prompt);
   const operationalChannels = deliveryChannels(connections);
   const deliveryState = deliveryNeeded
@@ -248,6 +249,44 @@ const sectorResearchTracks = [
   ["Dated account triggers", 8, "Search for at least eight real organizations in one plausible buyer segment. Look for dated leadership changes, procurements, agency reviews, expansion, funding, or launches in the last six months, or deadlines in the coming four months. Prefer official buyer announcements and tender notices with an explicit date and organization name on the page, not prospect lists or speculative hiring intent."],
   ["Market conditions", 4, "Find primary research, industry bodies, regulator publications, and trade data about the target segment, including actual budgets, adoption, or contractual and commercial requirements. Seek statistics from multiple independent publishers. A survey sample count is not a market statistic."],
 ];
+
+export async function readBrandBuilderSources(workspace, brief, env) {
+  const supplied = [];
+  const urls = [...new Set([
+    workspace.website, ...(workspace.sources || []).map(({ url }) => url),
+    ...(brief.match(/https?:\/\/[^\s<>"\])]+/gi) || []).map((url) => url.replace(/[.,;!?]+$/, "")),
+  ].filter((url) => sectorUrl(url)))].slice(0, 3);
+  for (const material of (workspace.materials || []).filter((item) => item.summary && !/\.csv$/i.test(item.name || "")).slice(0, 7)) {
+    supplied.push({ label: material.name, url: "", excerpt: material.summary.slice(0, 1100), kind: "project" });
+  }
+  const currentSector = activeSectorExpertise(workspace.sectorExpertise);
+  const independent = currentSector.items.filter((item) => item.sourceChecked).slice(0, 10).map((item) => ({
+    label: item.sourceTitle, url: item.sourceUrl, excerpt: item.statement, kind: "market",
+  }));
+  const latestSources = await Promise.allSettled(urls.map((url) => readConnectedMaterial([url], { textOnly: true, signal: AbortSignal.timeout(13_000) })));
+  latestSources.forEach((result, index) => {
+    if (result.status === "fulfilled" && result.value.text) {
+      supplied.push({ label: result.value.sourceMetadata?.[0]?.label || new URL(urls[index]).hostname, url: urls[index], excerpt: result.value.text.slice(0, 3000), kind: "project" });
+    }
+  });
+  const searchProvider = sectorResearchProviders(env)[0];
+  if (independent.length < 3 && searchProvider) {
+    try {
+      const outside = (value) => {
+        const parsed = sectorUrl(value);
+        return Boolean(parsed && !urls.some((url) => new URL(url).hostname.replace(/^www\./i, "") === parsed.hostname.replace(/^www\./i, "")));
+      };
+      const signal = AbortSignal.timeout(33_000);
+      const candidate = searchProvider.provider === "openai" ? { ...searchProvider, model: env.OPENAI_SECTOR_SEARCH_MODEL || "gpt-6-luna" } : searchProvider;
+      const found = await requestSectorWebResearch(candidate, `Find primary evidence about alternatives and buyer behavior relevant to this proposed brand. Search for 3 distinct independent readable public sources, not the brand's own pages. Treat the following as context only: ${JSON.stringify({ brief, name: workspace.name, description: String(workspace.description || "").slice(0, 600) })}`, env, signal);
+      const pages = await readSectorEvidencePages(found.filter((item) => outside(item.url)).slice(0, 4), outside, signal);
+      for (const page of pages) independent.push({ label: page.title, url: page.url, excerpt: page.text.slice(0, 2000), kind: "market" });
+    } catch {
+      // The creative brief still identifies gaps when market sources are unavailable.
+    }
+  }
+  return [...supplied, ...independent].map((source, index) => ({ ...source, id: `source-${index + 1}` }));
+}
 
 export async function generateSectorExpertise(payload, env = process.env, readEvidence = readSectorEvidencePages) {
   const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
@@ -539,7 +578,7 @@ export async function generateSectorStrategy(payload, env = process.env) {
   const focusedDirection = focus ? `\n\nSELECTED POSITIONING\n${JSON.stringify(focus)}\nExplore different creative routes to test this positioning. Keep its segment and proposition fixed, bring forward its proof and risk, and make the measurement explicit.` : "";
   const outbound = expertise.brief.outbound;
   const outboundDirection = outbound && (!focus || focus.id === expertise.brief.recommendedPositionId) ? `\n\nRESEARCHED OUTBOUND TEST (use only if relevant to the request)\n${JSON.stringify({ outbound, accounts: expertise.brief.accounts })}` : "";
-  const base = `PROJECT\n${buildContext(workspace)}\n\nSECTOR EXPERTISE\n${evidence}\n\nUSER DIRECTION\n${task}${focusedDirection}${outboundDirection}\n\nCAMPAIGN PACE\n${String(payload?.intensity || "assertive")}`;
+  const base = `PROJECT\n${buildContext(workspace, task)}\n\nSECTOR EXPERTISE\n${evidence}\n\nUSER DIRECTION\n${task}${focusedDirection}${outboundDirection}\n\nCAMPAIGN PACE\n${String(payload?.intensity || "assertive")}`;
   const researcher = await runStrategicRole("research", `${base}\n\nAct as the sector researcher. Identify the few sector facts, buyer dynamics, timing signals, procurement constraints, proof requirements, and uncertainties that should determine this campaign. Reject unsupported assumptions.`, env);
   const creative = await runStrategicRole("creative", `${base}\n\nRESEARCHER BRIEF\n${researcher.text.slice(0, 24_000)}\n\nAct as the divergent creative strategist. Produce at least five meaningfully different strategic territories—not variations of one slogan. Each must start from a sector-specific audience tension and propose a distinct offer, conversion path, and experiment.`, env);
   const critic = await runStrategicRole("critic", `${base}\n\nRESEARCHER BRIEF\n${researcher.text.slice(0, 20_000)}\n\nCREATIVE TERRITORIES\n${creative.text.slice(0, 30_000)}\n\nAct as the commercial and originality critic. Reject any idea that could be copied onto an unrelated brand, lacks evidence, ignores procurement or proof, uses a weak offer, or cannot generate a useful learning outcome. Explain how rejected ideas must change.`, env);
@@ -785,7 +824,7 @@ export async function generateDeliveryPlan(payload, env = process.env) {
   const prompt = `Turn this approved marketing run into the complete dated execution queue for the operational channels.
 
 PROJECT
-${buildContext(workspace)}
+${buildContext(workspace, `${run.title || ""} ${run.prompt || ""} ${channels.join(" ")}`)}
 
 APPROVED RUN
 Title: ${String(run.title || "Approved marketing work").slice(0, 500)}
@@ -826,7 +865,7 @@ export async function generateNewsletterDraft(payload, env = process.env) {
   const prompt = `Create a finished email newsletter for this project.
 
 PROJECT CONTEXT
-${buildContext(workspace)}
+${buildContext(workspace, `Newsletter ${direction}`)}
 
 USER DIRECTION
 ${direction || "Choose the strongest timely, useful newsletter topic supported by the project context and approved work."}
@@ -856,7 +895,7 @@ export async function generateProspectConversionCampaign(payload, env = process.
   const prompt = `Create a finished prospect invitation campaign for this project. It includes a public opt-in page as an available subscription path, but the email's first action must follow the project's actual marketing goal rather than automatically asking for a subscription.
 
 PROJECT CONTEXT
-${buildContext(workspace)}
+${buildContext(workspace, `Invitation ${direction}`)}
 
 USER DIRECTION
 ${direction || "Choose the strongest honest reason for this project's relevant audience to subscribe."}
@@ -900,7 +939,7 @@ export async function runProjectConversation(payload, env = process.env) {
   const history = Array.isArray(payload?.history)
     ? payload.history.slice(-24).map((item) => `${item?.role === "assistant" ? "AGENT" : "USER"}: ${String(item?.content || "").slice(0, 5000)}`).join("\n\n")
     : "No earlier conversation.";
-  const prompt = `${buildContext(workspace)}
+  const prompt = `${buildContext(workspace, message)}
 
 CURRENT INTERFACE LOCATION
 ${JSON.stringify(payload?.uiContext || {})}
@@ -960,7 +999,7 @@ export async function planProjectInterfaceActions(payload, env = process.env) {
   if (!message || (!env.OPENAI_API_KEY && !env.GOOGLE_GENERATIVE_AI_API_KEY)) return { summary: "", actions: [] };
   const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
   const editable = payload?.editable && typeof payload.editable === "object" ? payload.editable : {};
-  const prompt = `${buildContext(workspace)}
+  const prompt = `${buildContext(workspace, message)}
 
 EDITABLE INTERFACE STATE
 ${JSON.stringify(editable, null, 2).slice(0, 36_000)}
@@ -1423,7 +1462,7 @@ EXTRACTED CONTENT
 ${extractedText || connected.text || "No readable text. Evaluate the supplied visual frames and metadata."}
 
 PROJECT CONTEXT
-${buildContext(payload?.workspace || {})}
+${buildContext(payload?.workspace || {}, payload?.instruction)}
 
 USER INSTRUCTION
 ${String(payload?.instruction || "Use this asset where it is most useful.").slice(0, 4000)}
@@ -1498,7 +1537,7 @@ Description: ${payload?.description || "Not supplied"}
 Reason: ${payload?.rationale || "Not supplied"}
 
 PROJECT CONTEXT
-${buildContext(payload?.workspace || {})}
+${buildContext(payload?.workspace || {}, `${payload?.title || ""} ${payload?.description || ""}`)}
 
 SELECTED ASSET EVIDENCE
 ${JSON.stringify(payload?.assets || [], null, 2)}
@@ -3527,7 +3566,7 @@ const operatorSystem = `You are Market Agent, an autonomous senior marketing ope
 
 const starterGuideSystem = `You are Market Agent's low-cost setup assistant. The user has not connected private analysis APIs yet. Help only with connecting API keys and understanding capability levels. Explain that either OpenAI or Gemini is enough to unlock core reasoning and image creation; Gemini also enables video creation; Claude is an optional independent reviewer; and all three together produce the strongest collaborative strategy. Give concise, non-technical, step-by-step instructions. Direct the user to Connections in this app and never request that they paste a key into chat. Do not perform marketing work, analyze private project materials, or claim that a connection is active.`;
 
-function buildContext(workspace) {
+function buildContext(workspace, direction = "") {
   const sources = Array.isArray(workspace.sources) ? workspace.sources : [];
   const verifiedTypographySystems = normalizeTypographySystems(workspace.brand?.typographySystems).filter((system) => system.verified);
   const verifiedTypographyFamilies = Array.from(new Set(verifiedTypographySystems.flatMap((system) => system.families)));
@@ -3547,6 +3586,7 @@ function buildContext(workspace) {
   const growth = operatorGrowthPlan(workspace);
   const sectorExpertise = activeSectorExpertise(workspace.sectorExpertise);
   return `
+  ${approvedBrandInstructions(workspace, direction)}
   BRAND WORKSPACE
   Name: ${workspace.name || "Unnamed brand"}
 Website: ${workspace.website || "Not supplied"}

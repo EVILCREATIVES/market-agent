@@ -1,7 +1,8 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { Readable } from "node:stream";
 import { get, put } from "@vercel/blob";
-import { getPool } from "./db.mjs";
+import { getPool, loadApprovedBrandForProject } from "./db.mjs";
+import { approvedBrandInstructions } from "./brand-canon.mjs";
 import { getMediaBudgetSummary, getUserMediaBudgetCents, updateUserMediaBudget } from "./media-budget.mjs";
 
 const IMAGE_ESTIMATE_CENTS = 8;
@@ -40,7 +41,7 @@ export async function prepareMediaJob(userId, payload, env = process.env) {
   const kind = payload?.kind === "video" ? "video" : payload?.kind === "image" ? "image" : "";
   if (!kind) throw httpError(400, "Choose image or video.");
 
-  const workspace = payload?.workspace && typeof payload.workspace === "object" ? payload.workspace : {};
+  const workspace = { ...(payload?.workspace || {}), creativeBrand: await loadApprovedBrandForProject(userId, projectId, env) };
   const recentRuns = Array.isArray(payload?.recentRuns) ? payload.recentRuns.slice(0, 3) : [];
   const direction = String(payload?.direction || "").trim().slice(0, 1500);
   const sourceAssetId = String(payload?.sourceAssetId || "").trim().slice(0, 100);
@@ -406,6 +407,8 @@ function buildMediaPrompt(kind, workspace, recentRuns, direction) {
   const projectName = clean(workspace.name, "the project");
   const visualDirection = clean(brand.lookAndFeel || brand.imageryStyle, "polished, distinctive, contemporary campaign photography");
   return `Create a final, campaign-ready ${kind} for ${projectName}.
+
+${approvedBrandInstructions(workspace, direction)}
 
 BRAND
 Offer: ${clean(workspace.description, projectName)}

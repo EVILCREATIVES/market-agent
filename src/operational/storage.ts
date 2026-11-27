@@ -81,7 +81,7 @@ export function mergeCloudState(local: AppState, remote: AppState): AppState {
     else {
       const localIsNewer = new Date(project.updatedAt || 0).getTime() >= new Date(current.updatedAt || 0).getTime();
       const merged = preserveSavedLogo(localIsNewer ? project : current, localIsNewer ? current : project);
-      projects.set(project.id, { ...merged, sectorExpertise: mergeSectorExpertise(current.sectorExpertise, project.sectorExpertise) });
+      projects.set(project.id, { ...merged, creativeBrand: current.creativeBrand, sectorExpertise: mergeSectorExpertise(current.sectorExpertise, project.sectorExpertise) });
     }
   }
   const schedules = { ...remote.schedules, ...local.schedules };

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 import {
   ArrowLeft,
   ArrowRight,
+  ArrowUpRight,
   Bot,
   Bookmark,
   BrainCircuit,
@@ -70,10 +71,11 @@ import { prepareFileForUpload, prepareLogo, prepareMaterial, type PreparedMateri
 import { upload } from "@vercel/blob/client";
 import { apiFetch, getAccessToken } from "./auth";
 import BrandLogo from "./BrandLogo";
+import BuildYourBrand from "./operational/BuildYourBrand";
 import SectorExpertiseWorkspace from "./operational/SectorExpertiseWorkspace";
 import type { AgentAction, AgentRun, AgentSchedule, AnalyticsReport, ApiCredentialStatus, ApiProvider, AppState, AssetProposal, BillingStatus, BrandLogoVariant, ConnectionStatus, ContactImport, DeliveryJob, GeographyReport, GrowthObjective, GrowthReport, HealthState, MediaBudgetSummary, MediaJob, NewsletterDashboard, NewsletterDraft, NewsletterSubscriber, PrimaryConversion, ProductSource, ProductWorkspace, ProjectAsset, ProjectChatMessage, ProspectConversionCampaign, RunAssetReference, RunStatus, SectorPosition, SocialAnalyticsReport, SourceMediaAsset, TikTokPublishingOptions, YouTubePublishingOptions } from "./operational/types";
 
-type Page = "agent" | "brain" | "sector" | "issues" | "research" | "campaigns" | "calendar" | "content" | "analytics" | "integrations";
+type Page = "agent" | "brain" | "build-brand" | "sector" | "issues" | "research" | "campaigns" | "calendar" | "content" | "analytics" | "integrations";
 type CampaignIntensity = "careful" | "assertive" | "aggressive";
 type ConnectionProvider = "google-analytics" | "google-gmail" | "mailchimp" | "shopify" | "linkedin" | "instagram" | "tiktok" | "youtube" | "x" | "discord" | "reddit";
 type ServiceLogoProvider = ConnectionProvider | "neon" | "google" | "anthropic";
@@ -136,6 +138,7 @@ function SourceServiceIcon({ url, compact = false }: { url: string; compact?: bo
 
 const nav = [
   { id: "brain" as const, label: "Brand", icon: BrainCircuit },
+  { id: "build-brand" as const, label: "Build Your Brand", icon: WandSparkles },
   { id: "sector" as const, label: "Sector expertise", icon: Globe2 },
   { id: "research" as const, label: "Ideas", icon: Sparkles },
   { id: "campaigns" as const, label: "Campaigns", icon: Rocket },
@@ -420,8 +423,17 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
 
   const updateWorkspace = (workspace: ProductWorkspace) => setState((current) => ({
     ...current,
-    projects: current.projects.map((project) => project.id === workspace.id ? workspace : project),
+    projects: current.projects.map((project) => project.id === workspace.id ? { ...workspace, creativeBrand: project.creativeBrand } : project),
   }));
+  const applyBrandVersion = (projectId: string, patch: Partial<ProductWorkspace>, revision: number) => {
+    if (cloudRevisionRef.current === revision - 1) cloudRevisionRef.current = revision;
+    setState((current) => ({
+      ...current,
+      projects: current.projects.map((project) => project.id === projectId
+        ? { ...project, ...patch, brand: { ...project.brand, ...patch.brand } }
+        : project),
+    }));
+  };
   const applySectorResearch = (projectId: string, sectorExpertise: ProductWorkspace["sectorExpertise"], revision: number) => {
     if (cloudRevisionRef.current === revision - 1) cloudRevisionRef.current = revision;
     setState((current) => ({
@@ -596,7 +608,19 @@ export default function OperationalApp({ userId, userEmail, onSignOut }: { userI
         <div className="op-page">
           {selectedRunId ? <RunDetail run={state.runs.find((run) => run.id === selectedRunId)!} workspace={activeProject} connections={connections} onBack={() => setSelectedRunId(null)} onConnect={() => navigate("integrations")} onStatus={updateRunStatus} onOutput={updateRunOutput} onCampaignUpdate={applyCampaignUpdate} onDelete={deleteRun} notify={notify} /> : <>
             {page === "agent" && <AgentHome workspace={activeProject} runs={projectRuns} health={{ ...health, agentConfigured: runtimeReady }} connections={connections} schedule={activeSchedule} automationReady={automationReady} onSchedule={updateSchedule} onRun={addRun} onIssuesFound={addProactiveIssues} onOpen={setSelectedRunId} onNavigate={navigate} notify={notify} />}
-            {page === "brain" && <ProductBrain key={activeProject.id} userId={userId} workspace={activeProject} onSave={updateWorkspace} onOpenContentLibrary={() => navigate("content")} notify={notify} />}
+            {page === "brain" && <>
+              {activeProject.creativeBrand && <section className="byb-approved-banner">
+                <div><strong>Brand Bible · Version {activeProject.creativeBrand.version}</strong><p>{activeProject.creativeBrand.idea}</p></div>
+                <button onClick={() => {
+                  const params = new URLSearchParams(window.location.search);
+                  params.set("brand-view", "brand-bible");
+                  window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+                  navigate("build-brand");
+                }}>Open Brand Bible <ArrowUpRight size={15} /></button>
+              </section>}
+              <ProductBrain key={activeProject.id} userId={userId} workspace={activeProject} onSave={updateWorkspace} onOpenContentLibrary={() => navigate("content")} notify={notify} />
+            </>}
+            {page === "build-brand" && <BuildYourBrand key={activeProject.id} workspace={activeProject} onWorkspaceUpdate={(patch, revision) => applyBrandVersion(activeProject.id, patch, revision)} onOpenBrand={() => navigate("brain")} onConnect={() => navigate("integrations")} notify={notify} />}
             {page === "sector" && <SectorExpertiseWorkspace key={activeProject.id} workspace={activeProject} runs={projectRuns} onSave={updateWorkspace} onResearchSaved={applySectorResearch} onDevelop={(position) => { setPositionFocus({ projectId: activeProject.id, position }); navigate("research"); }} notify={notify} />}
             {page === "issues" && <IssuesCenter workspace={activeProject} onSave={updateWorkspace} onOpenBrand={() => navigate("brain")} notify={notify} />}
             {page === "research" && <ResearchWorkspace key={activeProject.id} workspace={activeProject} runs={projectRuns.filter((run) => Boolean(run.strategyPlan?.territories?.length) || ["research", "audience"].includes(run.action))} positionFocus={positionFocus?.projectId === activeProject.id ? positionFocus.position : null} onClearFocus={() => setPositionFocus(null)} onRun={addRun} onOpen={setSelectedRunId} notify={notify} />}

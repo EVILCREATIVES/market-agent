@@ -4,7 +4,7 @@ import { handleUpload } from "@vercel/blob/client";
 import { buildProductBrain, createRunRecord, readConnectedSourceMetadata, refineProductBrain, runMarketingAgent, runProjectConversation } from "./agent.mjs";
 import { approveAssetProposal, cancelAssetProposal, deleteProjectAsset, getProjectAssetPreviewUrl, listProjectAssets, listReadyCampaignAssets, registerLinkedAsset, registerUploadedAsset, serveProjectFile } from "./assets.mjs";
 import { requireUser } from "./auth.mjs";
-import { appendRunForUser, enforceRunBudget, loadProjectForSectorResearch, loadStateForUser, saveStateForUser, updateRunStatusForUser } from "./db.mjs";
+import { appendRunForUser, enforceRunBudget, loadApprovedBrandForProject, loadProjectForSectorResearch, loadStateForUser, saveStateForUser, updateRunStatusForUser } from "./db.mjs";
 import { approveMediaJob, cancelMediaJob, listMediaJobs, prepareMediaJob } from "./media.mjs";
 import { cancelManagedSubscription, consumeAiUsage, createManagedSubscription, getManagedSubscriptionStatus } from "./billing.mjs";
 import { getModelUsageMeasurement } from "./model-usage.mjs";
@@ -20,6 +20,7 @@ import { getConnectionStatus } from "./connections.mjs";
 import { createBrandLogoAccessUrl, getBrandLogo } from "./brand-logos.mjs";
 import { archiveProjectConversationDays, getProjectConversationMemory, pinProjectConversationNote } from "./conversation-memory.mjs";
 import { buildSectorExpertiseForUser } from "../api/agent.mjs";
+import { brandBuilderRequest } from "./brand-builder.mjs";
 
 const port = Number(process.env.PORT || 8787);
 
@@ -42,6 +43,16 @@ async function readJson(req) {
 
 const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url || "/", `http://localhost:${port}`);
+  if (requestUrl.pathname === "/api/brand-builder" && ["GET", "POST"].includes(req.method)) {
+    try {
+      const account = await requireUser(req);
+      const body = req.method === "POST" ? await readJson(req) : {};
+      const projectId = String(body.projectId || requestUrl.searchParams.get("projectId") || "").trim();
+      return json(res, 200, await brandBuilderRequest(account, projectId, body));
+    } catch (error) {
+      return json(res, error.statusCode || 500, { error: error.statusCode ? error.message : "Build Your Brand could not finish that action. Your current work is saved." });
+    }
+  }
   if (requestUrl.pathname === "/api/brand-logo" && req.method === "GET") {
     try {
       const result = await getBrandLogo(requestUrl.searchParams.get("token"), req.headers["if-none-match"] || "");
@@ -150,16 +161,18 @@ const server = http.createServer(async (req, res) => {
       await consumeAiUsage(userId, mode === "panel" ? "panel" : "agent", userApiEnv);
       const projectId = payload.projectId || "project-default";
       const savedProject = payload.sectorPositionId ? await loadProjectForSectorResearch(userId, projectId) : null;
-      const [connections, performanceContext, libraryMedia] = await Promise.all([
+      const [connections, performanceContext, libraryMedia, creativeBrand] = await Promise.all([
         getConnectionStatus(userId, projectId),
         getAgentPerformanceContext(userId, projectId).catch(() => ""),
         listReadyCampaignAssets(userId, projectId).catch(() => []),
+        savedProject ? savedProject.creativeBrand : loadApprovedBrandForProject(userId, projectId),
       ]);
       const suppliedMedia = Array.isArray(payload.workspace?.sourceMedia) ? payload.workspace.sourceMedia : [];
       const suppliedLibrary = Array.isArray(payload.workspace?.contentLibraryAssets) ? payload.workspace.contentLibraryAssets : [];
       const availableMedia = [...libraryMedia, ...suppliedMedia.filter((item) => !libraryMedia.some((asset) => asset.id === item?.id))];
       const workspace = {
         ...(savedProject || payload.workspace || {}),
+        creativeBrand,
         performanceContext,
         sourceMedia: availableMedia,
         contentLibraryAssets: [...availableMedia, ...suppliedLibrary.filter((item) => !availableMedia.some((asset) => asset.id === item?.id))],
@@ -185,9 +198,12 @@ const server = http.createServer(async (req, res) => {
       const userApiEnv = await loadUserApiEnv(userId);
       await consumeAiUsage(userId, "chat", userApiEnv);
       const projectId = String(payload?.projectId || payload?.workspace?.id || "project-default");
-      const conversationMemory = await getProjectConversationMemory(userId, projectId, payload?.message, payload?.timeZone).catch(() => "");
+      const [conversationMemory, creativeBrand] = await Promise.all([
+        getProjectConversationMemory(userId, projectId, payload?.message, payload?.timeZone).catch(() => ""),
+        loadApprovedBrandForProject(userId, projectId),
+      ]);
       void archiveProjectConversationDays(userId, projectId, payload?.timeZone).catch(() => undefined);
-      return json(res, 200, await runProjectConversation({ ...payload, workspace: { ...(payload?.workspace || {}), conversationMemory } }, userApiEnv));
+      return json(res, 200, await runProjectConversation({ ...payload, workspace: { ...(payload?.workspace || {}), creativeBrand, conversationMemory } }, userApiEnv));
     } catch (error) {
       return json(res, error.statusCode || 500, { error: error.message || "The project assistant could not reply." });
     }

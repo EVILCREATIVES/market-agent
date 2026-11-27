@@ -4,7 +4,7 @@ import { del, get, put } from "@vercel/blob";
 import fontkit from "@pdf-lib/fontkit";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { analyzeProjectAsset, generateProjectDocument, safeFetchPublic } from "./agent.mjs";
-import { getPool } from "./db.mjs";
+import { getPool, loadApprovedBrandForProject } from "./db.mjs";
 import { getUserMediaBudgetCents } from "./media-budget.mjs";
 import { assertSafeSvgMarkup, isSvgAsset } from "./svg-safety.mjs";
 
@@ -235,7 +235,7 @@ async function createAndAnalyzeAsset(userId, asset, env) {
       text: asset.text,
       images: asset.images,
       instruction: asset.instruction,
-      workspace: asset.workspace,
+      workspace: { ...asset.workspace, creativeBrand: await loadApprovedBrandForProject(userId, asset.projectId, env) },
     }, env);
     const updated = await getPool(env).query(
       `UPDATE market_agent_project_assets
@@ -335,7 +335,7 @@ export async function approveAssetProposal(userId, payload, env = process.env) {
       title: row.title,
       description: row.description,
       rationale: row.rationale,
-      workspace: payload?.workspace,
+      workspace: { ...payload?.workspace, creativeBrand: await loadApprovedBrandForProject(userId, row.project_id, env) },
       assets: assets.rows.map((asset) => ({
         name: asset.name,
         kind: asset.asset_kind,
