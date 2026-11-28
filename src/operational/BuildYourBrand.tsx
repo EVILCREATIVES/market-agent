@@ -2,13 +2,15 @@ import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type R
 import { ArrowDown, ArrowDownRight, ArrowRight, ArrowUpRight, Check, ChevronRight, CircleAlert, Compass, Eye, LoaderCircle, Maximize2, Pencil, Plus, ScrollText, Sparkles, Trash2, X } from "lucide-react";
 import { apiFetch } from "../auth";
 import sectionList from "./brand-builder-sections.json";
-import type { BrandBuilderData, BrandDirection, BrandDiscovery, BrandFace, BrandLesson, BrandMethod, BrandPreview, BrandSourceRecord, BrandSystem, BrandTheme } from "./brand-builder-types";
+import relationships from "./brand-relationships.json";
+import type { BrandBuilderData, BrandDirection, BrandDiscovery, BrandFace, BrandFoundation, BrandLesson, BrandMeaning, BrandMethod, BrandPreview, BrandSourceRecord, BrandSystem, BrandTheme } from "./brand-builder-types";
 import type { ProductWorkspace } from "./types";
 import "./build-your-brand.css";
 
 const views = ["Studio", "Brand Bible", "Visual guidelines", "Vocabulary cube", "Memory", "Method"] as const;
 type View = typeof views[number];
-const chapters = ["Strategy", "Identity", "Practice"] as const;
+const chapters = ["Foundation", "Identity", "Strategy", "Practice"] as const;
+const chapterLabel: Record<typeof chapters[number], string> = { Foundation: "Foundation", Identity: "Identity", Strategy: "Audience & market", Practice: "Practice" };
 const faceOrder: BrandFace[] = ["first-contradiction", "second", "second-contradiction", "first", "both", "neither"];
 const rotations: Record<BrandFace, string> = {
   "first-contradiction": "rotateX(-14deg) rotateY(-18deg)",
@@ -30,10 +32,21 @@ function themeStyle(theme: BrandTheme) {
   return { "--byb-paper": theme.paper, "--byb-ink": theme.ink, "--byb-accent": theme.accent } as CSSProperties;
 }
 
+function relationshipTerms(face: BrandFace, axis: BrandDiscovery["axis"]) {
+  return relationships.find((entry) => entry.face === face)?.terms.map((term) => axis[term as keyof typeof axis]).join(" + ") || "";
+}
+
+function MeaningNote({ meaning, axis }: { meaning?: BrandMeaning; axis: BrandDiscovery["axis"] }) {
+  return meaning ? <details className="byb-meaning-note">
+    <summary>Why this fits</summary>
+    <p><strong>{relationshipTerms(meaning.face, axis)}</strong> {meaning.consequence}</p>
+  </details> : null;
+}
+
 function Artwork({ theme, preview, name, image, compose = false }: { theme: BrandTheme; preview: BrandPreview; name: string; image?: string; compose?: boolean }) {
   return <div className={`byb-artwork byb-layout-${theme.layout} byb-type-${theme.typeStyle} ${compose ? "byb-artwork--compact" : ""}`} style={themeStyle(theme)}>
-    <div className="byb-artwork-mark"><span>{name}</span><ArrowUpRight aria-hidden="true" size={14} /></div>
-    <div className="byb-artwork-copy"><strong>{preview.headline}</strong><p>{preview.copy}</p>{preview.action && <span className="byb-preview-cta">{preview.action}<ArrowUpRight size={12} aria-hidden="true" /></span>}</div>
+    <div className="byb-artwork-mark"><span>{name}</span></div>
+    <div className="byb-artwork-copy"><strong>{preview.headline}</strong><p>{preview.copy}</p></div>
     <div className="byb-artwork-image" aria-hidden="true">{image && <img src={image} alt="" loading="lazy" />}</div>
   </div>;
 }
@@ -57,8 +70,9 @@ export default function BuildYourBrand({ workspace, onWorkspaceUpdate, onOpenBra
   const [error, setError] = useState("");
   const [connectionNeeded, setConnectionNeeded] = useState(false);
   const [reopenBrief, setReopenBrief] = useState(false);
+  const [showEarlierDraft, setShowEarlierDraft] = useState(false);
   const [pinnedArtId, setPinnedArtId] = useState("");
-  const [chapter, setChapter] = useState<typeof chapters[number]>("Strategy");
+  const [chapter, setChapter] = useState<typeof chapters[number]>("Foundation");
   const [selectedDraft, setSelectedDraft] = useState(false);
 
   async function read(signal?: AbortSignal) {
@@ -70,7 +84,7 @@ export default function BuildYourBrand({ workspace, onWorkspaceUpdate, onOpenBra
     }
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Your brand workspace could not open.");
-    if (!signal?.aborted) { setData(result); setBrief(result.draft.brief); setPinnedArtId(result.draft.artDirectionId || ""); setError(""); }
+    if (!signal?.aborted) { setData(result); setBrief(result.pendingFoundation?.brief || result.draft.brief); setPinnedArtId(result.draft.artDirectionId || ""); setError(""); }
   }
 
   useEffect(() => {
@@ -100,6 +114,10 @@ export default function BuildYourBrand({ workspace, onWorkspaceUpdate, onOpenBra
   }
 
   const discovery = data?.draft.discovery;
+  const foundation = data?.draft.foundation;
+  const pending = data?.pendingFoundation;
+  const showFoundationReview = Boolean(pending && !reopenBrief && !showEarlierDraft);
+  const showStudioDraft = Boolean(discovery && !reopenBrief && !showFoundationReview && (foundation || showEarlierDraft));
   const direction = discovery?.directions.find((item) => item.id === data?.draft.directionId);
   const system = data?.draft.system;
   const approved = data?.approved;
@@ -107,6 +125,7 @@ export default function BuildYourBrand({ workspace, onWorkspaceUpdate, onOpenBra
   const readingSystem = showDraft ? system : approved.system;
   const readingAxis = showDraft ? discovery?.axis : approved.axis;
   const readingSources = showDraft ? discovery?.sources : approved.sources;
+  const readingFoundation = showDraft ? foundation : approved.foundation;
   const image = workspace.sourceMedia.find((item) => item.kind === "image" && item.recommendation === "reuse" && !/logo|icon|favicon/i.test(`${item.name} ${item.role}`) && /^https?:\/\//i.test(item.url))?.url;
   const projectHasContext = Boolean(workspace.website || workspace.description || workspace.sources.length || workspace.materials.length);
 
@@ -117,14 +136,20 @@ export default function BuildYourBrand({ workspace, onWorkspaceUpdate, onOpenBra
     window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
   }
 
+  async function reflect(note = "") {
+    const result = await command("reflect", note ? { note } : { brief }, data?.revision, note ? "Revising the foundation…" : "Reading the product and its meaning…");
+    if (result) { setBrief(result.pendingFoundation?.brief || brief); setReopenBrief(false); setShowEarlierDraft(false); }
+    return result;
+  }
+
   async function discover() {
-    const result = await command("discover", { brief }, data?.revision, "Finding creative directions…");
-    if (result) { setReopenBrief(false); setPinnedArtId(""); }
+    const result = await command("discover", {}, data?.revision, "Developing identity studies…");
+    if (result) { setReopenBrief(false); setPinnedArtId(""); setShowEarlierDraft(false); }
   }
 
   async function choose(item: BrandDirection) {
     const selected = await command("select", { directionId: item.id, artDirectionId: pinnedArtId === item.id ? "" : pinnedArtId });
-    if (selected) { setChapter("Strategy"); await command("draft-system", {}, selected.revision, "Writing the brand system…"); }
+    if (selected) { setChapter("Foundation"); await command("draft-system", {}, selected.revision, "Building the identity and its applications…"); }
   }
 
   async function review() {
@@ -152,22 +177,28 @@ export default function BuildYourBrand({ workspace, onWorkspaceUpdate, onOpenBra
     {!data && !error && <p className="byb-progress" role="status"><LoaderCircle className="spin" size={17} /> Opening your studio…</p>}
     {data && <div aria-busy={Boolean(busy)}>
       {view === "Studio" && <>
-        {(!discovery || reopenBrief) && <section className="byb-intro">
-          <div className="byb-intro-content"><h2>What are you building?</h2>
-            <p>Start with an idea, a link, or the material already in your project. See two creative directions applied to the same homepage.</p>
-            <form onSubmit={(event) => { event.preventDefault(); void discover(); }}>
-              <label className="byb-field"><span>Describe the business and who it’s for</span>
-                <textarea value={brief} rows={3} maxLength={3600} onChange={(event) => setBrief(event.target.value)} placeholder="We’re building… for people who…" /></label>
-              <div className="byb-actions"><button className="byb-primary" disabled={Boolean(busy) || (!brief.trim() && !projectHasContext)}><Sparkles size={16} /> Find creative directions</button>
-                <button type="button" className="byb-outline" onClick={onOpenBrand}>Manage project materials <ArrowUpRight size={14} /></button></div>
+        {!showStudioDraft && !showFoundationReview && <section className="byb-intro">
+          <div className="byb-intro-content"><h2>Why make this?</h2>
+            <p>Start with what you’re making and what matters to you about it. A few words, a link, or the materials already in your project are enough to begin.</p>
+            <form onSubmit={(event) => { event.preventDefault(); void reflect(); }}>
+              <label className="byb-field"><span>What do you want this product to stand for?</span>
+                <textarea value={brief} rows={3} maxLength={3600} onChange={(event) => setBrief(event.target.value)} placeholder="I wanted to make this because… One thing I wouldn’t compromise on is…" /></label>
+              <div className="byb-actions"><button className="byb-primary" disabled={Boolean(busy) || (!brief.trim() && !projectHasContext)}><Sparkles size={16} /> Explore the foundation</button>
+                <button type="button" className="byb-outline" onClick={onOpenBrand}>Open project sources <ArrowUpRight size={14} /></button>
+                {discovery && <button type="button" className="byb-textlink" onClick={() => { setReopenBrief(false); setShowEarlierDraft(true); }}>View saved draft</button>}
+              </div>
             </form>
           </div>
           <div className="byb-intro-visual" aria-hidden="true"><div className="byb-intro-shape" /><ArrowDownRight size={36} strokeWidth={1} /></div>
         </section>}
-        {discovery && !reopenBrief && <>
-          <div className="byb-steps" aria-label="Brand building stages"><span className="done"><Check size={14} /> Discover</span><ChevronRight size={15} /><span className={direction ? "done" : "current"}>{direction && <Check size={14} />} Choose a direction</span><ChevronRight size={15} /><span className={system ? "current" : ""}>Shape the brand</span></div>
+        {showFoundationReview && pending && <FoundationReview foundation={pending.foundation} sources={pending.sources} busy={Boolean(busy)}
+          onAdjust={reflect} onContinue={discover} onReturn={() => setReopenBrief(true)} />}
+        {showStudioDraft && discovery && <>
+          <div className="byb-steps" aria-label="Brand building stages"><span className={foundation ? "done" : ""}>{foundation && <Check size={14} />} Foundation</span><ChevronRight size={15} /><span className={direction ? "done" : "current"}>{direction && <Check size={14} />} Identity studies</span><ChevronRight size={15} /><span className={system ? "current" : ""}>Brand system</span></div>
+          {!foundation && <div className="byb-alert"><span>This is an earlier draft. Start with the product’s foundation to create an identity study.</span>
+            <button className="byb-outline" onClick={() => { setShowEarlierDraft(false); setReopenBrief(false); }}>Open foundation</button></div>}
           <section className="byb-decision">
-            <div><small>{discovery.axis.domain}</small><h2>{discovery.axis.first} <i>↔</i> {discovery.axis.second}</h2><p>{discovery.audience}</p></div>
+            <div><small>{discovery.axis.domain}</small><h2>{discovery.axis.first} <i>↔</i> {discovery.axis.second}</h2><p>{foundation?.belief || discovery.audience}</p></div>
             <details><summary>See the brief and evidence</summary><p>{discovery.reality}</p>{discovery.unknown && <p><b>Open question.</b> {discovery.unknown}</p>}<Sources records={discovery.sources} /></details>
           </section>
           {!system ? <>
@@ -175,19 +206,19 @@ export default function BuildYourBrand({ workspace, onWorkspaceUpdate, onOpenBra
               {discovery.directions.map((item) => <article className={`byb-direction ${direction?.id === item.id ? "selected" : ""}`} key={item.id}>
                 <Artwork theme={item.theme} preview={item.preview} name={discovery.brandName || workspace.name} />
                 <div className="byb-direction-body"><div className="byb-direction-top"><h3>{item.title}</h3><span>{labelFace(item.focus, discovery.axis)}</span></div>
-                  <p>{item.thesis}</p><dl><dt>What it delivers</dt><dd>{item.payoff}</dd><dt>Tradeoff</dt><dd>{item.tradeoff}</dd><dt>Proof</dt><dd>{item.proof}</dd><dt>Image direction</dt><dd>{item.preview.imagery}</dd></dl>
-                  <div className="byb-actions byb-direction-actions">
+                  <p>{item.thesis}</p><dl><dt>Character</dt><dd>{item.payoff}</dd><dt>Where it draws a line</dt><dd>{item.tradeoff}</dd><dt>What it changes</dt><dd>{item.proof}</dd><dt>Visual expression</dt><dd>{item.preview.imagery}</dd></dl>
+                  {foundation && <div className="byb-actions byb-direction-actions">
                     <button className="byb-primary" disabled={Boolean(busy)} onClick={() => void choose(item)}>
-                      {direction?.id === item.id ? "Draft this system" : "Develop this direction"} <ArrowRight size={16} />
+                      {direction?.id === item.id ? "Draft the brand system" : "Develop this identity"} <ArrowRight size={16} />
                     </button>
                     <button className="byb-outline" aria-pressed={pinnedArtId === item.id} disabled={Boolean(busy)} onClick={() => setPinnedArtId(pinnedArtId === item.id ? "" : item.id)}>
                       {pinnedArtId === item.id && <Check size={14} />}{pinnedArtId === item.id ? "Art direction pinned" : "Pin art direction"}
                     </button>
-                  </div>
+                  </div>}
                 </div>
               </article>)}
             </div>
-            <div className="byb-actions"><button className="byb-textlink" onClick={() => setReopenBrief(true)} disabled={Boolean(busy)}><Pencil size={14} /> Revisit the brief</button>
+            <div className="byb-actions"><button className="byb-textlink" onClick={() => setReopenBrief(true)} disabled={Boolean(busy)}><Pencil size={14} /> Revisit the foundation</button>
               {pinnedArtId && <span className="byb-pin-note">The pinned art direction will carry into the story you choose.</span>}
             </div>
           </> : <>
@@ -195,7 +226,7 @@ export default function BuildYourBrand({ workspace, onWorkspaceUpdate, onOpenBra
               <button className="byb-outline" onClick={() => { setSelectedDraft(true); selectView("Brand Bible"); }}><Eye size={15} /> Preview the Bible</button>
             </div>
             <nav className="byb-chapters" aria-label="Draft chapters">{chapters.map((item) =>
-              <button type="button" key={item} aria-pressed={chapter === item} onClick={() => setChapter(item)}>{data.draft.reviewed.includes(item) && <Check size={14} />}{item}</button>)}
+              <button type="button" key={item} aria-pressed={chapter === item} onClick={() => setChapter(item)}>{data.draft.reviewed.includes(item) && <Check size={14} />}{chapterLabel[item]}</button>)}
             </nav>
             <div className="byb-chapter"><section>
               {sectionList.filter((item) => item.group === chapter).map((item, index) => {
@@ -203,8 +234,9 @@ export default function BuildYourBrand({ workspace, onWorkspaceUpdate, onOpenBra
                 if (!entry) return null;
                 return <details key={item.id} className="byb-section" open={index === 0 || undefined}>
                   <summary>{item.title}</summary><p>{entry.text}</p><blockquote>{entry.example}</blockquote>
+                  <MeaningNote meaning={entry.meaning} axis={discovery.axis} />
                   <Sources records={discovery.sources.filter(({ id }) => entry.sourceIds.includes(id))} />
-                  <SectionEdit section={item.id} text={entry.text} example={entry.example} busy={Boolean(busy)} onSave={(details) => command("edit-section", details)} onRevise={(note) => command("draft-system", { section: item.id, note }, data.revision, "Revising this section…")} />
+                  {foundation && <SectionEdit section={item.id} text={entry.text} example={entry.example} busy={Boolean(busy)} onSave={(details) => command("edit-section", details)} onRevise={(note) => command("draft-system", { section: item.id, note }, data.revision, "Revising this section…")} />}
                 </details>;
               })}
             </section><aside className="byb-chapter-aside">
@@ -212,12 +244,12 @@ export default function BuildYourBrand({ workspace, onWorkspaceUpdate, onOpenBra
               <div><strong>{chapter === "Identity" ? "Visual direction" : "Creative direction"}</strong><p>{system.theme.direction}</p></div>
             </aside></div>
             <div className="byb-actions byb-review-actions">
-              {data.draft.dirty && !data.draft.reviewed.includes(chapter) && <button className="byb-outline" disabled={Boolean(busy)} onClick={() => void review()}><Check size={16} /> Mark {chapter.toLowerCase()} reviewed</button>}
-              {data.draft.dirty && chapters.every((item) => data.draft.reviewed.includes(item)) && <button className="byb-primary" disabled={Boolean(busy)} onClick={() => void approve()}><Check size={17} /> Approve brand version {(approved?.version || 0) + 1}</button>}
+              {foundation && data.draft.dirty && !data.draft.reviewed.includes(chapter) && <button className="byb-outline" disabled={Boolean(busy)} onClick={() => void review()}><Check size={16} /> Mark {chapterLabel[chapter].toLowerCase()} reviewed</button>}
+              {foundation && data.draft.dirty && chapters.every((item) => data.draft.reviewed.includes(item)) && <button className="byb-primary" disabled={Boolean(busy)} onClick={() => void approve()}><Check size={17} /> Approve brand version {(approved?.version || 0) + 1}</button>}
               {!data.draft.dirty && approved && <span className="byb-status"><Check size={15} /> This draft is the approved brand</span>}
               <details className="byb-revisit"><summary>Explore a different direction</summary><p>The approved version stays available while you explore.</p>
-                <div className="byb-actions">{discovery.directions.filter((item) => item.id !== direction?.id).map((item) => <button className="byb-outline" key={item.id} disabled={Boolean(busy)} onClick={() => void choose(item)}>{item.title}</button>)}
-                  <button className="byb-outline" disabled={Boolean(busy)} onClick={() => setReopenBrief(true)}>Revisit the brief</button>
+                <div className="byb-actions">{foundation && discovery.directions.filter((item) => item.id !== direction?.id).map((item) => <button className="byb-outline" key={item.id} disabled={Boolean(busy)} onClick={() => void choose(item)}>{item.title}</button>)}
+                  <button className="byb-outline" disabled={Boolean(busy)} onClick={() => setReopenBrief(true)}>Revisit the foundation</button>
                 </div></details>
             </div>
           </>}
@@ -227,9 +259,9 @@ export default function BuildYourBrand({ workspace, onWorkspaceUpdate, onOpenBra
       {["Brand Bible", "Visual guidelines", "Vocabulary cube"].includes(view) && <>
         {approved && system && data.draft.dirty && <div className="byb-version-toggle" aria-label="Brand version"><button aria-pressed={!showDraft} onClick={() => setSelectedDraft(false)}>Approved v{approved.version}</button><button aria-pressed={showDraft} onClick={() => setSelectedDraft(true)}>Draft preview</button></div>}
         {readingSystem && readingAxis ? <>
-          {view === "Brand Bible" && <BibleReader system={readingSystem} sources={readingSources || []} image={image} version={showDraft ? 0 : approved.version} onGuidelines={() => selectView("Visual guidelines")} />}
-          {view === "Visual guidelines" && <Guidelines system={readingSystem} workspace={workspace} image={image} onBrand={onOpenBrand} />}
-          {view === "Vocabulary cube" && <Cube key={`${showDraft ? "draft" : approved.version}-${readingSystem.idea}`} system={readingSystem} axis={readingAxis} image={image} initialFace={showDraft ? direction?.focus : data.focus.find((item) => item.version === approved.version && item.context === "Default")?.face}
+          {view === "Brand Bible" && <BibleReader system={readingSystem} axis={readingAxis} sources={readingSources || []} image={image} version={showDraft ? 0 : approved.version} onGuidelines={() => selectView("Visual guidelines")} />}
+          {view === "Visual guidelines" && <Guidelines system={readingSystem} axis={readingAxis} workspace={workspace} image={image} onBrand={onOpenBrand} />}
+          {view === "Vocabulary cube" && <Cube key={`${showDraft ? "draft" : approved.version}-${readingSystem.idea}`} system={readingSystem} axis={readingAxis} foundation={readingFoundation} image={image} initialFace={showDraft ? direction?.focus : data.focus.find((item) => item.version === approved.version && item.context === "Default")?.face}
             applied={showDraft ? [] : data.focus.filter((item) => item.version === approved.version)}
             editable={!showDraft} busy={Boolean(busy)} onApply={(face, context, reason) => command("focus", { face, context, reason, version: approved?.version })} />}
         </> : <EmptyState title={view} action={() => selectView("Studio")}>Develop a direction in the Studio to see this part of the brand.</EmptyState>}
@@ -248,6 +280,52 @@ function Sources({ records }: { records: BrandSourceRecord[] }) {
   return records.length ? <ul className="byb-sources">{records.map((record) => <li key={record.id}>
     {record.url ? <a href={record.url} target="_blank" rel="noreferrer">{record.label || "Open source"} <ArrowUpRight size={12} /></a> : <span>{record.label}</span>}
   </li>)}</ul> : null;
+}
+
+function FoundationReview({ foundation, sources, busy, onAdjust, onContinue, onReturn }: {
+  foundation: BrandFoundation;
+  sources: BrandSourceRecord[];
+  busy: boolean;
+  onAdjust: (note: string) => Promise<unknown>;
+  onContinue: () => Promise<void>;
+  onReturn: () => void;
+}) {
+  const [adjusting, setAdjusting] = useState(false);
+  const [note, setNote] = useState("");
+  const details = [["What started it", foundation.origin], ["Product character", foundation.character], ["What it commits you to", foundation.commitment]];
+  return <section className="byb-foundation">
+    <div className="byb-foundation-belief">
+      <h2>The product’s point of view</h2>
+      <p>{foundation.belief}</p>
+    </div>
+    <dl className="byb-foundation-principles">
+      {details.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+    </dl>
+    <details className="byb-foundation-map">
+      <summary>The tension behind it <span>{foundation.axis.first} ↔ {foundation.axis.second}</span></summary>
+      <p>{foundation.axis.domain}</p>
+      <ul>{foundation.readings.map((item) => <li key={item.face}>
+        <h3>{relationshipTerms(item.face, foundation.axis)}</h3><p>{item.interpretation}</p><p>{item.consequence}</p>
+      </li>)}</ul>
+    </details>
+    <Sources records={sources} />
+    {foundation.openQuestion && <p className="byb-foundation-question">{foundation.openQuestion}</p>}
+    {adjusting && <form className="byb-foundation-adjust" onSubmit={async (event) => {
+      event.preventDefault();
+      if (await onAdjust(note)) { setNote(""); setAdjusting(false); }
+    }}>
+      <label className="byb-field"><span>What would you put differently?</span>
+        <textarea value={note} onChange={(event) => setNote(event.target.value)} required maxLength={1600} rows={2} />
+      </label>
+      <div className="byb-actions"><button className="byb-primary" disabled={busy || !note.trim()}>Revise the foundation</button>
+        <button type="button" className="byb-outline" onClick={() => setAdjusting(false)}>Cancel</button></div>
+    </form>}
+    {!adjusting && <div className="byb-actions">
+      <button className="byb-primary" disabled={busy} onClick={() => void onContinue()}>Use this foundation <ArrowRight size={16} /></button>
+      <button className="byb-outline" disabled={busy} onClick={() => setAdjusting(true)}>Correct the reading <Pencil size={14} /></button>
+      <button className="byb-textlink" disabled={busy} onClick={onReturn}>Edit the starting brief</button>
+    </div>}
+  </section>;
 }
 
 function SectionEdit({ section, text, example, busy, onSave, onRevise }: { section: string; text: string; example: string; busy: boolean; onSave: (details: Record<string, unknown>) => Promise<unknown>; onRevise: (note: string) => Promise<unknown> }) {
@@ -273,7 +351,7 @@ function SectionEdit({ section, text, example, busy, onSave, onRevise }: { secti
   </div>;
 }
 
-interface BibleProps { system: BrandSystem; sources: BrandSourceRecord[]; image?: string; version: number; onGuidelines: () => void }
+interface BibleProps { system: BrandSystem; axis: BrandDiscovery["axis"]; sources: BrandSourceRecord[]; image?: string; version: number; onGuidelines: () => void }
 
 function BibleReader(props: BibleProps) {
   const [reading, setReading] = useState(false);
@@ -288,8 +366,8 @@ function BibleReader(props: BibleProps) {
   </>;
 }
 
-function BrandBible({ system, sources, image, version, onGuidelines }: BibleProps) {
-  const [chapter, setChapter] = useState<typeof chapters[number]>("Strategy");
+function BrandBible({ system, axis, sources, image, version, onGuidelines }: BibleProps) {
+  const [chapter, setChapter] = useState<typeof chapters[number]>("Foundation");
   const narrative = system.sections.find((entry) => entry.id === "narrative");
   return <article className={`byb-bible byb-type-${system.theme.typeStyle} byb-bible-${system.theme.layout} tw:overflow-hidden tw:rounded-2xl`} style={themeStyle(system.theme)}>
     <header className="byb-bible-header tw:flex tw:flex-wrap tw:items-center tw:justify-between tw:gap-3"><span>{system.name}</span><span>Brand Bible · {version ? `Version ${version}` : "Draft"}</span></header>
@@ -298,22 +376,25 @@ function BrandBible({ system, sources, image, version, onGuidelines }: BibleProp
       {image ? <img loading="lazy" src={image} alt="" className="byb-bible-image" /> : <div className="byb-bible-graphic" aria-hidden="true"><span>{system.name.slice(0, 1)}</span></div>}
     </section>
     <div className="byb-bible-inner tw:mx-auto tw:w-full" id="brand-bible-chapters">
-      <nav aria-label="Brand Bible chapters" className="byb-bible-chapters tw:flex tw:flex-wrap tw:gap-3">{chapters.map((item) => <button key={item} aria-pressed={chapter === item} onClick={() => setChapter(item)}>{item}</button>)}</nav>
+      <nav aria-label="Brand Bible chapters" className="byb-bible-chapters tw:flex tw:flex-wrap tw:gap-3">{chapters.map((item) => <button key={item} aria-pressed={chapter === item} onClick={() => setChapter(item)}>{chapterLabel[item]}</button>)}</nav>
       <div className="byb-bible-sections tw:grid tw:gap-8">{sectionList.filter((item) => item.group === chapter).map((item) => {
         const section = system.sections.find((part) => part.id === item.id);
         if (!section) return null;
-        return <section key={item.id} className="byb-bible-section"><h3>{item.title}</h3><div><p>{section.text}</p><blockquote>{section.example}</blockquote><Sources records={sources.filter(({ id }) => section.sourceIds.includes(id))} /></div></section>;
+        return <section key={item.id} className="byb-bible-section"><h3>{item.title}</h3><div><p>{section.text}</p><blockquote>{section.example}</blockquote>
+          <MeaningNote meaning={section.meaning} axis={axis} />
+          <Sources records={sources.filter(({ id }) => section.sourceIds.includes(id))} /></div></section>;
       })}</div>
       <button className="byb-bible-link" onClick={onGuidelines}>Open visual guidelines <ArrowUpRight size={16} /></button>
     </div>
   </article>;
 }
 
-function Guidelines({ system, workspace, image, onBrand }: { system: BrandSystem; workspace: ProductWorkspace; image?: string; onBrand: () => void }) {
+function Guidelines({ system, axis, workspace, image, onBrand }: { system: BrandSystem; axis: BrandDiscovery["axis"]; workspace: ProductWorkspace; image?: string; onBrand: () => void }) {
   const logos = workspace.brand.logoVariants;
   const legacy = !logos.length && workspace.brand.logoDataUrl;
   const samples = [["Background", system.theme.paper], ["Text", system.theme.ink], ["Accent", system.theme.accent]];
-  const ruleRows = [["Composition", system.guidelines.layout], ["Photography & imagery", system.guidelines.imagery], ["Motion", system.guidelines.motion], ["What to avoid", system.guidelines.avoid]];
+  const ruleRows = [["Composition", "layout"], ["Photography & imagery", "imagery"], ["Motion", "motion"], ["What to avoid", "avoid"]] as const;
+  const meaningFor = (rule: keyof BrandSystem["guidelines"]) => system.guidelineMeanings?.find((entry) => entry.rule === rule)?.meaning;
   const sample = system.sections.find((item) => item.id === "voice")?.example || system.idea;
   return <div className={`byb-guidelines byb-type-${system.theme.typeStyle}`} style={themeStyle(system.theme)}>
     <div className="byb-guide-hero"><div><h2>Visual guidelines</h2><p>{system.theme.direction}</p></div><div className="byb-guide-monogram" aria-hidden="true">{system.name.slice(0, 2)}</div></div>
@@ -321,20 +402,20 @@ function Guidelines({ system, workspace, image, onBrand }: { system: BrandSystem
       {logos.length ? <div className="byb-logo-grid">{logos.map((logo) => <figure key={logo.id}><div className={logo.usage === "dark" ? "on-dark" : ""}><img src={logo.url} alt={logo.name} /></div><figcaption>{logo.name} · {logo.usage}</figcaption></figure>)}</div> :
         legacy ? <div className="byb-logo-grid"><figure><div><img src={workspace.brand.logoDataUrl} alt={workspace.brand.logoName || "Project logo"} /></div><figcaption>{workspace.brand.logoName || "Project logo"}</figcaption></figure></div> :
           <p>No logo file is assigned to this project.</p>}
-      <p>{system.guidelines.logo}</p><button className="byb-textlink" onClick={onBrand}>Manage approved logos <ArrowUpRight size={14} /></button>
+      <p>{system.guidelines.logo}</p><MeaningNote meaning={meaningFor("logo")} axis={axis} /><button className="byb-textlink" onClick={onBrand}>Manage approved logos <ArrowUpRight size={14} /></button>
     </section>
-    <section className="byb-guide-card"><h3>Color</h3><div className="byb-palette">{samples.map(([label, value]) => <figure key={label}><div style={{ backgroundColor: value }} /><figcaption>{label}<code>{value}</code></figcaption></figure>)}</div><p>{system.guidelines.palette}</p></section>
-    <section className="byb-guide-card"><h3>Typography</h3><div className="byb-type-specimen">{system.idea}</div><p>{sample}</p><p>{system.guidelines.type}</p></section>
+    <section className="byb-guide-card"><h3>Color</h3><div className="byb-palette">{samples.map(([label, value]) => <figure key={label}><div style={{ backgroundColor: value }} /><figcaption>{label}<code>{value}</code></figcaption></figure>)}</div><p>{system.guidelines.palette}</p><MeaningNote meaning={meaningFor("palette")} axis={axis} /></section>
+    <section className="byb-guide-card"><h3>Typography</h3><div className="byb-type-specimen">{system.idea}</div><p>{sample}</p><p>{system.guidelines.type}</p><MeaningNote meaning={meaningFor("type")} axis={axis} /></section>
     <section className="byb-guide-card"><h3>Apply the system</h3>
       <Artwork theme={system.theme} preview={system.faces[0].preview} name={system.name} image={image} />
-      <div className="byb-guide-rules">{ruleRows.map(([label, value]) => <div key={label}><h4>{label}</h4><p>{value}</p></div>)}</div>
+      <div className="byb-guide-rules">{ruleRows.map(([label, rule]) => <div key={rule}><h4>{label}</h4><p>{system.guidelines[rule]}</p><MeaningNote meaning={meaningFor(rule)} axis={axis} /></div>)}</div>
     </section>
     <section className="byb-guide-card"><h3>Before it goes out</h3><ul>{system.checks.map((item) => <li key={item}>{item}</li>)}</ul></section>
   </div>;
 }
 
-function Cube({ system, axis, initialFace, applied, image, editable, busy, onApply }: {
-  system: BrandSystem; axis: BrandDiscovery["axis"]; initialFace?: BrandFace; applied: BrandBuilderData["focus"]; image?: string;
+function Cube({ system, axis, foundation, initialFace, applied, image, editable, busy, onApply }: {
+  system: BrandSystem; axis: BrandDiscovery["axis"]; foundation?: BrandFoundation; initialFace?: BrandFace; applied: BrandBuilderData["focus"]; image?: string;
   editable: boolean; busy: boolean; onApply: (face: BrandFace, context: string, reason: string) => Promise<unknown>;
 }) {
   const [face, setFace] = useState<BrandFace>(initialFace || "both");
@@ -348,11 +429,8 @@ function Cube({ system, axis, initialFace, applied, image, editable, busy, onApp
   const hypothetical = face === "neither" || face.endsWith("contradiction");
   const contextNames = [...new Set(["Default", "Homepage", "Limited release", ...applied.map((item) => item.context)])];
   const active = applied.find((item) => item.context.trim().toLowerCase() === context.trim().toLowerCase());
-  const conditions = {
-    both: `${axis.first} + ${axis.second}`, neither: `${axis.notFirst} + ${axis.notSecond}`,
-    first: `${axis.first} + ${axis.notSecond}`, second: `${axis.second} + ${axis.notFirst}`,
-    "first-contradiction": `${axis.first} + ${axis.notFirst}`, "second-contradiction": `${axis.second} + ${axis.notSecond}`,
-  };
+  const reading = foundation?.readings.find((entry) => entry.face === face);
+  const linkedSections = sectionList.filter((section) => system.sections.some((item) => item.id === section.id && item.meaning?.face === face));
   return <section className="byb-cube-page">
     <div className="byb-cube-header"><h2>Vocabulary cube</h2><p>{axis.domain} <span>·</span> {axis.first} ↔ {axis.second}</p></div>
     <div className="byb-cube-grid">
@@ -363,7 +441,12 @@ function Cube({ system, axis, initialFace, applied, image, editable, busy, onApp
         <div className="byb-face-buttons" aria-label="Cube faces">{faceOrder.map((item) => <button key={item} aria-pressed={item === face} onClick={() => { setFace(item); setWord(""); }}>{labelFace(item, axis)}</button>)}</div>
       </div>
       <div className="byb-cube-reading">
-        <small>{conditions[face]}</small><h3>{labelFace(face, axis)}</h3><p>{selected.story}</p><p className="byb-boundary"><b>{hypothetical ? "What to watch for" : "Boundary"}</b> {selected.boundary}</p>
+        <small>{relationshipTerms(face, axis)}</small><h3>{labelFace(face, axis)}</h3><p>{selected.story}</p>
+        {reading && <details className="byb-meaning-note"><summary>What this means for the product</summary><p>{reading.interpretation}</p><p>{reading.consequence}</p></details>}
+        <p className="byb-boundary"><b>{hypothetical ? "What to watch for" : "Boundary"}</b> {selected.boundary}</p>
+        {linkedSections.length > 0 && <details className="byb-meaning-note"><summary>Decisions shaped by this reading</summary>
+          <ul>{linkedSections.map((section) => <li key={section.id}>{section.title}</li>)}</ul>
+        </details>}
         <div className="byb-words" aria-label="Vocabulary on this face">{words.map((item) => <button key={item.id} aria-pressed={item.id === selectedWord?.id} onClick={() => setWord(item.id)}>{item.word}</button>)}</div>
         {selectedWord && <div className="byb-word-detail"><strong>{selectedWord.word}</strong><p>{selectedWord.meaning}</p><p>{selectedWord.application}</p>
           {selectedWord.links.length > 0 && <ul>{selectedWord.links.map((link) => {
@@ -372,7 +455,7 @@ function Cube({ system, axis, initialFace, applied, image, editable, busy, onApp
           })}</ul>}</div>}
       </div>
     </div>
-    <section className="byb-cube-preview"><header><h3>{hypothetical ? "Homepage counterexample" : "Homepage with this focus"}</h3>{active && <span className="byb-status"><Check size={14} /> {active.context} uses {labelFace(active.face, axis)}</span>}</header>
+    <section className="byb-cube-preview"><header><h3>{hypothetical ? "Identity counterexample" : "Identity study with this focus"}</h3>{active && <span className="byb-status"><Check size={14} /> {active.context} uses {labelFace(active.face, axis)}</span>}</header>
       <Artwork theme={system.theme} preview={selected.preview} name={system.name} image={image} />
       {editable && !hypothetical && <div className="byb-apply-focus">
         {detail ? <form onSubmit={async (event) => { event.preventDefault(); if (await onApply(face, context, reason)) { setDetail(false); setReason(""); } }}>

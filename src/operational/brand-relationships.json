@@ -1,0 +1,8 @@
+[
+  { "face": "both", "terms": ["first", "second"], "relation": "complex", "guide": "Both ideas become active together. Explain what each contributes and which decision depends on the combination." },
+  { "face": "neither", "terms": ["notFirst", "notSecond"], "relation": "neutral", "guide": "Neither idea is active. Explore what that absence means for the product. Do not assume the result is a compromise." },
+  { "face": "first", "terms": ["first", "notSecond"], "relation": "positive deixis", "guide": "The first idea is reinforced by the absence of the second. Show what this emphasis changes in practice." },
+  { "face": "second", "terms": ["second", "notFirst"], "relation": "negative deixis", "guide": "The second idea is reinforced by the absence of the first. Show what this emphasis changes in practice." },
+  { "face": "first-contradiction", "terms": ["first", "notFirst"], "relation": "contradiction", "guide": "The first idea and its negation are in tension. Treat this as a diagnostic, such as a design rule that undermines the stated principle." },
+  { "face": "second-contradiction", "terms": ["second", "notSecond"], "relation": "contradiction", "guide": "The second idea and its negation are in tension. Treat this as a diagnostic, such as behavior that undoes the intended meaning." }
+]

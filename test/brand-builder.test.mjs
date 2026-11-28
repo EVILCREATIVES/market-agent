@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import sections from "../src/operational/brand-builder-sections.json" with { type: "json" };
-import { brandChaptersAfterEdit, emptyBrandBuild, isBrandMethodOwner, normalizeBrandSystem, normalizeBrandTheme } from "../server/brand-builder.mjs";
+import relationships from "../src/operational/brand-relationships.json" with { type: "json" };
+import { brandChaptersAfterEdit, emptyBrandBuild, isBrandMethodOwner, normalizeBrandFoundation, normalizeBrandSystem, normalizeBrandTheme, normalizeIdentityDirections } from "../server/brand-builder.mjs";
 import { approvedBrandInstructions, projectBrandProjection, relevantBrandLessons, repeatedBrandFeedback } from "../server/brand-canon.mjs";
+import { readBrandBuilderSources } from "../server/agent.mjs";
 
 const theme = { paper: "#f6f1e3", ink: "#172222", accent: "#ad4228", layout: "editorial", typeStyle: "serif", direction: "Use one repeating shape each season." };
 const faces = ["both", "neither", "first", "second", "first-contradiction", "second-contradiction"];
@@ -14,7 +16,7 @@ function fixture() {
     idea: "A daily ritual with a seasonal variation",
     theme,
     sections: sections.map(({ id }) => ({ id, text: `Working chapter for ${id}`, example: `Example for ${id}`, sourceIds: ["source-1", "made-up"] })),
-    faces: faces.map((face) => ({ face, story: `A story on ${face}`, boundary: "Honor what the customer can expect.", preview })),
+    faces: faces.map((face) => ({ face, story: `A story on ${face}`, boundary: "Honor what the customer can expect.", preview: { ...preview, imagery: `${preview.imagery} This composition reflects ${face}.` } })),
     words: faces.map((face, index) => ({
       id: `word-${index}`, face, word: `Word ${index}`, meaning: "Invites one new sensation", application: "Shift the expression on a seasonal pack.",
       links: [{ id: `word-${(index + 1) % faces.length}`, reason: "The second term modifies the scene." }, { id: "unknown", reason: "Invalid target" }],
@@ -41,7 +43,89 @@ test("the Bible keeps all 19 sections, six related vocabulary faces, and user co
   assert.equal(result.words[0].links.length, 1);
   assert.equal(result.words[0].links[0].id, result.words[1].id);
   assert.throws(() => normalizeBrandSystem({ ...raw, faces: raw.faces.slice(0, 5) }, draft, { theme }), { statusCode: 502 });
-  assert.deepEqual(new Set(brandChaptersAfterEdit(["Strategy", "Identity", "Practice"], "visual")), new Set(["Strategy"]));
+  assert.deepEqual(brandChaptersAfterEdit(["Foundation", "Identity", "Strategy", "Practice"], "visual"), ["Foundation"]);
+});
+
+function founderReading() {
+  return {
+    origin: "I wanted to make an object that gives the first cup of the day its own moment.",
+    belief: "A small deliberate action can make time feel like your own.",
+    character: "Unhurried, tactile, and open to small surprises.",
+    commitment: "Keep the same sequence to prepare the blend, and vary the seasonal wrapping.",
+    openQuestion: "",
+    axis: {
+      domain: "How the morning cup takes shape",
+      first: "Ritual",
+      second: "Spontaneity",
+      notFirst: "Actions without an intentional sequence",
+      notSecond: "Actions without an unplanned choice",
+    },
+    readings: relationships.map(({ face, relation }) => ({
+      face,
+      interpretation: `The ${relation} reading explores ${face}.`,
+      consequence: `A separate product consequence for ${face}.`,
+    })),
+  };
+}
+
+test("the creator-led reading keeps independent negations and every prescribed relationship", () => {
+  const raw = founderReading();
+  const found = normalizeBrandFoundation(raw);
+  assert.deepEqual(found.readings.map(({ face }) => face), faces);
+  assert.equal(found.belief, raw.belief);
+  assert.deepEqual(relationships.map(({ terms }) => terms), [
+    ["first", "second"], ["notFirst", "notSecond"], ["first", "notSecond"], ["second", "notFirst"], ["first", "notFirst"], ["second", "notSecond"],
+  ]);
+  assert.throws(() => normalizeBrandFoundation({ ...raw, axis: { ...raw.axis, notFirst: "spontaneity!" } }), { statusCode: 502 });
+  assert.throws(() => normalizeBrandFoundation({ ...raw, readings: raw.readings.slice(1) }), { statusCode: 502 });
+});
+
+test("identity studies use the approved square and carry concrete product choices without purchase actions", () => {
+  const foundation = normalizeBrandFoundation(founderReading());
+  const base = { thesis: foundation.belief, payoff: foundation.character, tradeoff: "Keep the first step a physical gesture.", theme };
+  const ritual = { ...base, focus: "first", title: "Return to the gesture", proof: "Keep the order of preparation fixed.", preview: { line: "A moment kept", expression: "Make space for the morning.", imagery: "One recurring frame", action: "Buy now" } };
+  const variation = { ...base, focus: "second", title: "Leave a door open", proof: "Vary the wrapping with the release.", preview: { line: "Room for a variation", expression: "Let preparation change with the day.", imagery: "Changing crops" } };
+  const input = { brandName: "Fable Coffee", audience: "Busy executives", axis: { first: "Buy", second: "Wait" }, directions: [ritual, variation] };
+  const discovery = normalizeIdentityDirections(input, foundation, []);
+  assert.deepEqual(discovery.axis, foundation.axis);
+  assert.equal(discovery.audience, "");
+  assert.equal(discovery.directions[0].preview.headline, "A moment kept");
+  assert.equal(discovery.directions[0].preview.action, "");
+  assert.throws(() => normalizeIdentityDirections({ ...input, directions: [ritual, { ...variation, proof: ritual.proof }] }, foundation, []), { statusCode: 502 });
+});
+
+test("the starting foundation reads project evidence without independent market research", async (t) => {
+  const network = t.mock.method(globalThis, "fetch", () => { throw new Error("Market search should not run during the foundation."); });
+  const sources = await readBrandBuilderSources({
+    materials: [{ name: "Founder notes", summary: "Every morning should have a small moment you own." }],
+    sectorExpertise: { items: [{ kind: "market", statement: "Saved market material" }] },
+  }, "", { OPENAI_API_KEY: "unused" }, { identityOnly: true });
+  assert.deepEqual(sources.map(({ label, kind }) => ({ label, kind })), [{ label: "Founder notes", kind: "project" }]);
+  assert.equal(network.mock.callCount(), 0);
+});
+
+test("a creator-led system requires meaning links in every section and visual rule", () => {
+  const raw = fixture();
+  const foundation = normalizeBrandFoundation(founderReading());
+  const draft = { ...emptyBrandBuild().draft, foundation, discovery: { brandName: raw.name, sources: [] } };
+  assert.throws(() => normalizeBrandSystem(raw, draft, { theme }), { statusCode: 502 });
+  const meaning = { face: "first", consequence: "Use the repeated preparation sequence to give the product a sense of ritual." };
+  const linked = {
+    ...raw,
+    sections: raw.sections.map((entry) => ({ ...entry, meaning })),
+    guidelineMeanings: Object.keys(raw.guidelines).map((rule) => ({ rule, meaning })),
+  };
+  const system = normalizeBrandSystem(linked, draft, { theme });
+  assert.equal(system.sections.length, 19);
+  assert.ok(system.sections.every((entry) => entry.meaning.face === "first"));
+  assert.equal(system.guidelineMeanings.length, 7);
+  const projected = projectBrandProjection({ version: 2, axis: foundation.axis, foundation, system }, [], []);
+  assert.equal(projected.foundation.belief, foundation.belief);
+  assert.equal(projected.conclusions[0].meaning.consequence, meaning.consequence);
+  assert.match(approvedBrandInstructions({ creativeBrand: projected }), /creator’s approved worldview/);
+  assert.throws(() => normalizeBrandSystem({ ...linked, guidelineMeanings: linked.guidelineMeanings.slice(1) }, draft, { theme }), { statusCode: 502 });
+  const isolatedVocabulary = linked.words.map((word, index) => ({ ...word, links: [{ id: `word-${index ^ 1}`, reason: "Only related within this isolated pair." }] }));
+  assert.throws(() => normalizeBrandSystem({ ...linked, words: isolatedVocabulary }, draft, { theme }), { statusCode: 502 });
 });
 
 test("approved focus and remembered examples resolve by context and version", () => {

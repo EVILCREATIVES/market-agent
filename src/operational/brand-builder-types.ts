@@ -38,6 +38,16 @@ export interface BrandSourceRecord {
   kind: "project" | "market";
 }
 
+export interface BrandFoundation {
+  origin: string;
+  belief: string;
+  character: string;
+  commitment: string;
+  openQuestion: string;
+  axis: BrandDiscovery["axis"];
+  readings: { face: BrandFace; interpretation: string; consequence: string }[];
+}
+
 export interface BrandDiscovery {
   brandName: string;
   audience: string;
@@ -46,6 +56,7 @@ export interface BrandDiscovery {
   axis: { domain: string; first: string; second: string; notFirst: string; notSecond: string };
   directions: BrandDirection[];
   sources: BrandSourceRecord[];
+  marketSearched?: boolean;
 }
 
 export interface BrandSection {
@@ -53,6 +64,12 @@ export interface BrandSection {
   text: string;
   example: string;
   sourceIds: string[];
+  meaning?: BrandMeaning;
+}
+
+export interface BrandMeaning {
+  face: BrandFace;
+  consequence: string;
 }
 
 export interface BrandCubeFace {
@@ -87,6 +104,7 @@ export interface BrandSystem {
     avoid: string;
     motion: string;
   };
+  guidelineMeanings?: { rule: keyof BrandSystem["guidelines"]; meaning: BrandMeaning }[];
   checks: string[];
 }
 
@@ -117,6 +135,7 @@ export interface BrandApproval {
   system: BrandSystem;
   axis: BrandDiscovery["axis"];
   sources: BrandSourceRecord[];
+  foundation?: BrandFoundation;
 }
 
 export interface BrandDraft {
@@ -128,6 +147,7 @@ export interface BrandDraft {
   dirty: boolean;
   reviewed: string[];
   corrections?: Record<string, { text: string; example: string }>;
+  foundation?: BrandFoundation;
 }
 
 export interface BrandMethod {
@@ -149,6 +169,7 @@ export interface BrandBuilderData {
   memory: BrandLesson[];
   canEditMethods: boolean;
   methods: BrandMethod[];
+  pendingFoundation?: { brief: string; foundation: BrandFoundation; sources: BrandSourceRecord[] } | null;
   workspaceRevision?: number;
   workspacePatch?: Partial<ProductWorkspace>;
 }

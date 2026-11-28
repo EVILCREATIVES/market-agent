@@ -250,25 +250,28 @@ const sectorResearchTracks = [
   ["Market conditions", 4, "Find primary research, industry bodies, regulator publications, and trade data about the target segment, including actual budgets, adoption, or contractual and commercial requirements. Seek statistics from multiple independent publishers. A survey sample count is not a market statistic."],
 ];
 
-export async function readBrandBuilderSources(workspace, brief, env) {
-  const supplied = [];
+export async function readBrandBuilderSources(workspace, brief, env, { identityOnly = false, projectSources, researchDirection = "" } = {}) {
+  const supplied = projectSources ? [...projectSources] : [];
   const urls = [...new Set([
     workspace.website, ...(workspace.sources || []).map(({ url }) => url),
     ...(brief.match(/https?:\/\/[^\s<>"\])]+/gi) || []).map((url) => url.replace(/[.,;!?]+$/, "")),
   ].filter((url) => sectorUrl(url)))].slice(0, 3);
-  for (const material of (workspace.materials || []).filter((item) => item.summary && !/\.csv$/i.test(item.name || "")).slice(0, 7)) {
-    supplied.push({ label: material.name, url: "", excerpt: material.summary.slice(0, 1100), kind: "project" });
+  if (!projectSources) {
+    for (const material of (workspace.materials || []).filter((item) => item.summary && !/\.csv$/i.test(item.name || "")).slice(0, 7)) {
+      supplied.push({ label: material.name, url: "", excerpt: material.summary.slice(0, 1100), kind: "project" });
+    }
+    const latestSources = await Promise.allSettled(urls.map((url) => readConnectedMaterial([url], { textOnly: true, signal: AbortSignal.timeout(13_000) })));
+    latestSources.forEach((result, index) => {
+      if (result.status === "fulfilled" && result.value.text) {
+        supplied.push({ label: result.value.sourceMetadata?.[0]?.label || new URL(urls[index]).hostname, url: urls[index], excerpt: result.value.text.slice(0, 3000), kind: "project" });
+      }
+    });
   }
+  if (identityOnly) return supplied.map((source, index) => ({ ...source, id: `source-${index + 1}` }));
   const currentSector = activeSectorExpertise(workspace.sectorExpertise);
   const independent = currentSector.items.filter((item) => item.sourceChecked).slice(0, 10).map((item) => ({
     label: item.sourceTitle, url: item.sourceUrl, excerpt: item.statement, kind: "market",
   }));
-  const latestSources = await Promise.allSettled(urls.map((url) => readConnectedMaterial([url], { textOnly: true, signal: AbortSignal.timeout(13_000) })));
-  latestSources.forEach((result, index) => {
-    if (result.status === "fulfilled" && result.value.text) {
-      supplied.push({ label: result.value.sourceMetadata?.[0]?.label || new URL(urls[index]).hostname, url: urls[index], excerpt: result.value.text.slice(0, 3000), kind: "project" });
-    }
-  });
   const searchProvider = sectorResearchProviders(env)[0];
   if (independent.length < 3 && searchProvider) {
     try {
@@ -278,7 +281,7 @@ export async function readBrandBuilderSources(workspace, brief, env) {
       };
       const signal = AbortSignal.timeout(33_000);
       const candidate = searchProvider.provider === "openai" ? { ...searchProvider, model: env.OPENAI_SECTOR_SEARCH_MODEL || "gpt-6-luna" } : searchProvider;
-      const found = await requestSectorWebResearch(candidate, `Find primary evidence about alternatives and buyer behavior relevant to this proposed brand. Search for 3 distinct independent readable public sources, not the brand's own pages. Treat the following as context only: ${JSON.stringify({ brief, name: workspace.name, description: String(workspace.description || "").slice(0, 600) })}`, env, signal);
+      const found = await requestSectorWebResearch(candidate, `Find primary evidence about the category and whom this established creative direction could serve. Search for 3 distinct independent readable public sources. Return evidence that could help it find its audience. Treat the following as context only: ${JSON.stringify({ brief, researchDirection, name: workspace.name, description: String(workspace.description || "").slice(0, 600) })}`, env, signal);
       const pages = await readSectorEvidencePages(found.filter((item) => outside(item.url)).slice(0, 4), outside, signal);
       for (const page of pages) independent.push({ label: page.title, url: page.url, excerpt: page.text.slice(0, 2000), kind: "market" });
     } catch {
