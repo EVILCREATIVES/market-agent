@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import sections from "../src/operational/brand-builder-sections.json" with { type: "json" };
 import relationships from "../src/operational/brand-relationships.json" with { type: "json" };
-import { brandChaptersAfterEdit, emptyBrandBuild, isBrandMethodOwner, normalizeBrandFoundation, normalizeBrandSystem, normalizeBrandTheme, normalizeIdentityDirections } from "../server/brand-builder.mjs";
+import { brandChaptersAfterEdit, emptyBrandBuild, isBrandMethodOwner, normalizeBrandFoundation, normalizeBrandSystem, normalizeBrandTheme, normalizeGuidedDraft, nextBrandQuestion } from "../server/brand-builder.mjs";
 import { approvedBrandInstructions, projectBrandProjection, relevantBrandLessons, repeatedBrandFeedback } from "../server/brand-canon.mjs";
 import { readBrandBuilderSources } from "../server/agent.mjs";
 
@@ -80,18 +80,37 @@ test("the creator-led reading keeps independent negations and every prescribed r
   assert.throws(() => normalizeBrandFoundation({ ...raw, readings: raw.readings.slice(1) }), { statusCode: 502 });
 });
 
-test("identity studies use the approved square and carry concrete product choices without purchase actions", () => {
-  const foundation = normalizeBrandFoundation(founderReading());
-  const base = { thesis: foundation.belief, payoff: foundation.character, tradeoff: "Keep the first step a physical gesture.", theme };
-  const ritual = { ...base, focus: "first", title: "Return to the gesture", proof: "Keep the order of preparation fixed.", preview: { line: "A moment kept", expression: "Make space for the morning.", imagery: "One recurring frame", action: "Buy now" } };
-  const variation = { ...base, focus: "second", title: "Leave a door open", proof: "Vary the wrapping with the release.", preview: { line: "Room for a variation", expression: "Let preparation change with the day.", imagery: "Changing crops" } };
-  const input = { brandName: "Fable Coffee", audience: "Busy executives", axis: { first: "Buy", second: "Wait" }, directions: [ritual, variation] };
-  const discovery = normalizeIdentityDirections(input, foundation, []);
-  assert.deepEqual(discovery.axis, foundation.axis);
-  assert.equal(discovery.audience, "");
-  assert.equal(discovery.directions[0].preview.headline, "A moment kept");
-  assert.equal(discovery.directions[0].preview.action, "");
-  assert.throws(() => normalizeIdentityDirections({ ...input, directions: [ritual, { ...variation, proof: ritual.proof }] }, foundation, []), { statusCode: 502 });
+test("one creator-led draft uses the derived square with no purchase action", () => {
+  const foundation = founderReading();
+  const direction = {
+    title: "Return to the gesture", thesis: foundation.belief, payoff: foundation.character, tradeoff: "Keep the first step a physical gesture.",
+    focus: "first", proof: "Keep the order of preparation fixed.", theme,
+    preview: { line: "A moment kept", expression: "Make space for the morning.", imagery: "One recurring frame", action: "Buy now" },
+  };
+  const input = { brandName: "Fable Coffee", audience: "Busy executives", axis: { first: "Buy", second: "Wait" }, foundation, direction };
+  const corrections = { voice: { text: "Speak plainly.", example: "Pour slowly." } };
+  const draft = normalizeGuidedDraft(input, "A note from the creator.", [], corrections);
+  assert.deepEqual(draft.discovery.axis, foundation.axis);
+  assert.equal(draft.discovery.audience, "");
+  assert.equal(draft.discovery.directions.length, 1);
+  assert.equal(draft.discovery.directions[0].id, draft.directionId);
+  assert.equal(draft.discovery.directions[0].preview.headline, "A moment kept");
+  assert.equal(draft.discovery.directions[0].preview.action, "");
+  assert.deepEqual(draft.corrections, corrections);
+  assert.throws(() => normalizeGuidedDraft({ ...input, direction: { ...direction, proof: "" } }, "", []), { statusCode: 502 });
+});
+
+test("the guide asks one open question and skips topics it already covered", () => {
+  const answers = [{ topic: "project", question: "What are you working on?", answer: "An app for people who grow food." }];
+  const followUp = { topic: "origin", question: "What made you want to build this app?" };
+  assert.deepEqual(nextBrandQuestion(followUp, answers, 0), { status: "question", ...followUp });
+  for (const question of ["Would you choose an app or a service?", "What is it? Who uses it?", "Do you want to try it?", "What are you working on?"]) {
+    assert.equal(nextBrandQuestion({ ...followUp, question }, answers, 0).question, "What made you start this?");
+  }
+  const answered = [...answers, { ...followUp, answer: "I kept forgetting what I planted." }];
+  assert.equal(nextBrandQuestion(followUp, answered, 0).topic, "care");
+  assert.equal(nextBrandQuestion({ topic: "ready", question: "" }, answered, 0).status, "ready");
+  assert.equal(nextBrandQuestion(followUp, [...answered, ...answers, ...answers], 0).status, "ready");
 });
 
 test("the starting foundation reads project evidence without independent market research", async (t) => {

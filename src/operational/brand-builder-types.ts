@@ -169,7 +169,11 @@ export interface BrandBuilderData {
   memory: BrandLesson[];
   canEditMethods: boolean;
   methods: BrandMethod[];
-  pendingFoundation?: { brief: string; foundation: BrandFoundation; sources: BrandSourceRecord[] } | null;
+  guide?: {
+    status: "question" | "ready" | "building" | "done";
+    question: string;
+    answers: { question: string; answer: string }[];
+  } | null;
   workspaceRevision?: number;
   workspacePatch?: Partial<ProductWorkspace>;
 }
